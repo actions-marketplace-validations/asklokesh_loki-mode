@@ -1,13 +1,13 @@
 {
-  "generated_at": "2026-07-02T00:06:58Z",
-  "current_version": "7.105.0",
+  "generated_at": "2026-07-02T14:54:21Z",
+  "current_version": "7.114.0",
   "github": {
-    "stars": 998,
+    "stars": 999,
     "forks": 193,
     "open_issues": 2,
     "created_at": "2025-12-26T16:26:14Z",
     "status": "ok",
-    "fetched_at": "2026-07-02T00:06:58Z"
+    "fetched_at": "2026-07-02T14:54:21Z"
   },
   "npm": {
     "total": 23798,
@@ -134,13 +134,13 @@
       }
     ],
     "status": "ok",
-    "fetched_at": "2026-07-02T00:06:58Z"
+    "fetched_at": "2026-07-02T14:54:21Z"
   },
   "docker": {
-    "pulls": 56289,
-    "last_updated": "2026-07-01T23:54:42.33964Z",
+    "pulls": 57275,
+    "last_updated": "2026-07-02T14:35:02.174569Z",
     "status": "ok",
-    "fetched_at": "2026-07-02T00:06:58Z"
+    "fetched_at": "2026-07-02T14:54:21Z"
   },
   "homebrew": {
     "status": "not_available",
@@ -148,9 +148,54 @@
   },
   "releases_downloads": [
     {
+      "tag": "v7.114.0",
+      "date": "2026-07-02",
+      "downloads": 7
+    },
+    {
+      "tag": "v7.113.0",
+      "date": "2026-07-02",
+      "downloads": 1
+    },
+    {
+      "tag": "v7.112.0",
+      "date": "2026-07-02",
+      "downloads": 7
+    },
+    {
+      "tag": "v7.111.0",
+      "date": "2026-07-02",
+      "downloads": 7
+    },
+    {
+      "tag": "v7.110.0",
+      "date": "2026-07-02",
+      "downloads": 7
+    },
+    {
+      "tag": "v7.109.0",
+      "date": "2026-07-02",
+      "downloads": 13
+    },
+    {
+      "tag": "v7.108.0",
+      "date": "2026-07-02",
+      "downloads": 19
+    },
+    {
+      "tag": "v7.107.0",
+      "date": "2026-07-02",
+      "downloads": 13
+    },
+    {
+      "tag": "v7.106.0",
+      "date": "2026-07-02",
+      "downloads": 13
+    },
+    {
       "tag": "v7.105.0",
       "date": "2026-07-01",
-      "downloads": 7
+      "downloads": 13
     },
     {
       "tag": "v7.104.5",
@@ -251,54 +296,54 @@
       "tag": "v7.92.0",
       "date": "2026-06-29",
       "downloads": 15
-    },
-    {
-      "tag": "v7.91.1",
-      "date": "2026-06-27",
-      "downloads": 13
-    },
-    {
-      "tag": "v7.91.0",
-      "date": "2026-06-26",
-      "downloads": 20
-    },
-    {
-      "tag": "v7.90.2",
-      "date": "2026-06-20",
-      "downloads": 14
-    },
-    {
-      "tag": "v7.90.1",
-      "date": "2026-06-20",
-      "downloads": 7
-    },
-    {
-      "tag": "v7.90.0",
-      "date": "2026-06-20",
-      "downloads": 7
-    },
-    {
-      "tag": "v7.89.1",
-      "date": "2026-06-20",
-      "downloads": 7
-    },
-    {
-      "tag": "v7.89.0",
-      "date": "2026-06-20",
-      "downloads": 7
-    },
-    {
-      "tag": "v7.88.0",
-      "date": "2026-06-20",
-      "downloads": 2
-    },
-    {
-      "tag": "v7.87.0",
-      "date": "2026-06-20",
-      "downloads": 1
     }
   ],
   "releases_timeline": [
+    {
+      "version": "7.114.0",
+      "date": "2026-07-02",
+      "summary": "Accuracy + speed moat batch (4 research-grounded items, RED/GREEN measured)"
+    },
+    {
+      "version": "7.113.0",
+      "date": "2026-07-02",
+      "summary": "Wave-4 bug-hunt fixes (4 real, reproduced, RED/GREEN-tested)"
+    },
+    {
+      "version": "7.112.0",
+      "date": "2026-07-02",
+      "summary": "HLW-5: shareable \"Verified by Loki\" Evidence Receipt badge (now honest)"
+    },
+    {
+      "version": "7.111.0",
+      "date": "2026-07-02",
+      "summary": "Trust-core fixes (bug-hunt wave 3) + honesty relabel of the proof non-forgeability claim"
+    },
+    {
+      "version": "7.110.0",
+      "date": "2026-07-01",
+      "summary": "Bug-hunt wave 2: dashboard 500-hardening, MCP lsp-proxy HTTP fix, provider flag fixes"
+    },
+    {
+      "version": "7.109.0",
+      "date": "2026-07-01",
+      "summary": "Bug-hunt-and-fix wave 1: 5 reproduced bugs fixed (false-RED elimination + rate-limit correctness)"
+    },
+    {
+      "version": "7.108.0",
+      "date": "2026-07-01",
+      "summary": "Accuracy: two additive verification gates (runtime boot smoke + annotate-before-act ledger)"
+    },
+    {
+      "version": "7.107.0",
+      "date": "2026-07-01",
+      "summary": "Hardening + latent crash fix: loki mcp --transport http (loopback bind + optional bearer auth)"
+    },
+    {
+      "version": "7.106.0",
+      "date": "2026-07-01",
+      "summary": "Accuracy: reverse-classical test provenance (a green test suite must actually prove the change)"
+    },
     {
       "version": "7.105.0",
       "date": "2026-07-01",
@@ -428,51 +473,6 @@
       "version": "7.90.0",
       "date": "2026-06-20",
       "summary": "Proven PR: every PR Loki opens carries its own re-verifiable proof"
-    },
-    {
-      "version": "7.89.1",
-      "date": "2026-06-20",
-      "summary": "Plainer language in the live dashboard"
-    },
-    {
-      "version": "7.89.0",
-      "date": "2026-06-20",
-      "summary": "Live dashboard + wiki: a polished experience while you watch a build"
-    },
-    {
-      "version": "7.88.0",
-      "date": "2026-06-20",
-      "summary": "Finish and own: a plain-English handoff for whoever owns the result"
-    },
-    {
-      "version": "7.87.0",
-      "date": "2026-06-20",
-      "summary": "Secure-by-default gate (advisory by default)"
-    },
-    {
-      "version": "7.86.0",
-      "date": "2026-06-20",
-      "summary": "The trust story, made visible (honestly)"
-    },
-    {
-      "version": "7.85.0",
-      "date": "2026-06-20",
-      "summary": "Evidence Receipt: verify it yourself, Loki never lies about done"
-    },
-    {
-      "version": "7.84.0",
-      "date": "2026-06-20",
-      "summary": "Enterprise-grade dashboard overhaul"
-    },
-    {
-      "version": "7.83.1",
-      "date": "2026-06-20",
-      "summary": "Fix: loki ship now reviews the work being shipped"
-    },
-    {
-      "version": "7.83.0",
-      "date": "2026-06-20",
-      "summary": "UX: less friction, more wow"
     }
   ],
   "benchmarks": [
@@ -589,6 +589,46 @@
       ]
     }
   ],
+  "acs": {
+    "rows": [
+      {
+        "metric": "Convergence speed (v7.105 fix)",
+        "provenance": "measured",
+        "value": "28.6min -> 7.4min (74% faster)",
+        "detail": "13 iters/11 claims -> 1 iter/1 claim, real builds",
+        "source": "benchmarks/results/speed-before-20260701T231328Z.json vs speed-after-20260701T234348Z.json"
+      },
+      {
+        "metric": "Convergence floor (v7.114 rank15)",
+        "provenance": "measured",
+        "value": "stops iter 2 not iter 5",
+        "detail": "no-promise run w/ green evidence evaluates at MIN_ITERATIONS; same full council_evaluate (no fake-green). RED/GREEN verified.",
+        "source": "tests/test-council-convergence-floor.sh (14/14)"
+      },
+      {
+        "metric": "Mergeability quality_score (v7.114 rank9)",
+        "provenance": "designed",
+        "value": "100 clean / 95 one-medium / 0 blocker",
+        "detail": "test-fixture threshold values (100 - 5*medium - 2*low), NOT measured on production builds yet",
+        "source": "tests/test-mergeability-review.sh (designed thresholds)"
+      },
+      {
+        "metric": "Review cost (v7.114 rank9)",
+        "provenance": "projected",
+        "value": "+33% (3 -> 4 reviewers)",
+        "detail": "arithmetic projection from reviewer count, NOT a measured dollar figure; advisory-only score, opt-in enforcement",
+        "source": "arithmetic (4/3), not metered"
+      },
+      {
+        "metric": "Acceptance-oracle false positives (v7.114 rank2)",
+        "provenance": "measured",
+        "value": "0 on 3 clean fixtures",
+        "detail": "source-grounded checklist; zero false High findings on 3 clean real-framework fixtures",
+        "source": "tests/test-oracle-source-grounded.sh (FP=0)"
+      }
+    ],
+    "live_note": "Convergence deltas are measured on real builds; quality_score is a designed threshold and review cost is an arithmetic projection (labeled). A live v7.114 calibration confirms the composed behavior end-to-end."
+  },
   "what_worked": [
     {
       "item": "Completion council trust moat (fail-closed gates)",

@@ -272,6 +272,24 @@
       </div>
     </section>
 
+    <!-- ACCURACY / COST / SPEED (per-release measurable deltas, provenance-labeled) -->
+    <section id="acs">
+      <h2>Accuracy / Cost / Speed - measurable deltas</h2>
+      <div class="caveat" id="acs-caveat">
+        Each row states its provenance. Only <b>measured</b> rows come from a real build
+        artifact; <b>designed</b> rows are test-fixture thresholds and <b>projected</b>
+        rows are arithmetic, not measured. Nothing here is plotted as a trend unless it
+        is measured.
+      </div>
+      <div class="speed-row" id="acs-cards">
+        <div class="loading">Loading accuracy/cost/speed data...</div>
+      </div>
+      <div class="chart-wrap" style="margin-top:12px;">
+        <div class="chart-title">Convergence speed - measured (before vs after, real builds)</div>
+        <div id="acs-live-note" style="font-size:11px;color:var(--faint);margin-top:4px;"></div>
+      </div>
+    </section>
+
     <!-- RELEASES -->
     <section id="releases">
       <h2>Release Timeline</h2>
@@ -626,6 +644,32 @@ function renderDecisions(list) {
   `).join('');
 }
 
+// Accuracy / Cost / Speed - each row carries explicit provenance so nothing
+// reads as a measured trend unless it truly is. Data comes from data.json.acs
+// (built by fetch-data.sh from real artifacts + honestly-labeled non-measurements).
+function renderACS(acs) {
+  const el = document.getElementById('acs-cards');
+  const liveNote = document.getElementById('acs-live-note');
+  if (!acs || !acs.rows || !acs.rows.length) {
+    el.innerHTML = '<div class="loading">No accuracy/cost/speed rows yet.</div>';
+    if (liveNote) liveNote.textContent = '';
+    return;
+  }
+  const badge = (p) => {
+    const c = p === 'measured' ? '#2ea043' : (p === 'designed' ? '#d29922' : '#8b949e');
+    return `<span style="font-size:10px;font-weight:700;color:#fff;background:${c};padding:1px 6px;border-radius:8px;text-transform:uppercase;">${p}</span>`;
+  };
+  el.innerHTML = acs.rows.map(r => `
+    <div class="speed-card ${r.provenance === 'measured' ? 'after' : 'before'}">
+      <div class="label">${r.metric} ${badge(r.provenance)}</div>
+      <div class="val">${r.value}</div>
+      <div class="note">${r.detail || ''}</div>
+      ${r.source ? `<div class="note" style="margin-top:4px;">Source: ${r.source}</div>` : ''}
+    </div>
+  `).join('');
+  if (liveNote) liveNote.textContent = acs.live_note || '';
+}
+
 // Load data and render
 fetch('data.json')
   .then(r => r.json())
@@ -652,6 +696,9 @@ fetch('data.json')
 
     // Benchmarks
     renderBenchmarks(data.benchmarks || []);
+
+    // Accuracy / Cost / Speed (provenance-labeled)
+    renderACS(data.acs || null);
 
     // Releases
     renderReleases(data.releases_timeline || []);
