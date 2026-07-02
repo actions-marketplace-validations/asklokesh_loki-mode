@@ -334,6 +334,22 @@ _verify_zero_tests_executed() {
             fi
             return 1
             ;;
+        go-test)
+            # #89: `go test ./...` on a package with NO *_test.go files prints
+            # `?   <pkg>  [no test files]` and EXITS 0 (unlike vitest/pytest/mocha,
+            # which exit non-zero on zero tests and are already caught as not-pass).
+            # So a Go project with source but no tests would score `pass` -- a mini
+            # fake-green. Detect it POSITIVELY: at least one `[no test files]` line
+            # AND ZERO package results that actually ran (`ok `/`FAIL`). A mixed
+            # run (some pkgs tested -> `ok`, others not -> `[no test files]`) has
+            # `ok` present, so it is NOT downgraded (verified: real passing prints
+            # `ok  <pkg>  0.2s`, a bare pkg prints `[no test files]`).
+            if printf '%s' "$_zt_out" | grep -qE '\[no test files\]' 2>/dev/null \
+               && ! printf '%s' "$_zt_out" | grep -qE '^(ok|FAIL|--- FAIL)' 2>/dev/null; then
+                return 0
+            fi
+            return 1
+            ;;
         *)
             return 1
             ;;

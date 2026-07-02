@@ -430,6 +430,42 @@ else
     _no "G: node-test branch wrong: empty=$G_NE (want zero), real=$G_NR (want has)"
 fi
 
+# ---- Case H: _loki_zero_tests_executed go-test branch (#89, durable) --------
+# go test ./... on a package with no *_test.go EXITS 0 (unlike vitest/pytest/
+# mocha, which exit non-zero on zero tests -> already not-pass), so it is the one
+# runner in this class that would fake-green. CANNED against the REAL strings
+# captured from `go test` (verified live): zero = `[no test files]` only; a real
+# pass = `ok  <pkg>  0.2s`; a MIXED run (some pkgs tested) has `ok` so it must NOT
+# be downgraded -- that false-downgrade direction is the load-bearing guard.
+(
+    # shellcheck source=/dev/null
+    source "$HARNESS"
+    # zero tests: only "[no test files]" lines, no ran-package result.
+    if _loki_zero_tests_executed go-test "?   	zt	[no test files]"; then
+        echo "GG-EMPTY:zero"; else echo "GG-EMPTY:has"; fi
+    # real passing run: an "ok  <pkg>  <dur>" package result.
+    if _loki_zero_tests_executed go-test "ok  	zt	0.233s"; then
+        echo "GG-REAL:zero"; else echo "GG-REAL:has"; fi
+    # MIXED run: one pkg tested (ok), one bare ([no test files]) -> has tests.
+    if _loki_zero_tests_executed go-test "ok  	zt	(cached)
+?   	zt/sub	[no test files]"; then
+        echo "GG-MIXED:zero"; else echo "GG-MIXED:has"; fi
+    # a FAILING go run must not read as zero-tests either (FAIL line present).
+    if _loki_zero_tests_executed go-test "--- FAIL: TestAdd (0.00s)
+FAIL	zt	0.1s"; then
+        echo "GG-FAIL:zero"; else echo "GG-FAIL:has"; fi
+) > "$TMP_ROOT/H.out" 2>/dev/null
+H_E="$(grep '^GG-EMPTY:' "$TMP_ROOT/H.out" | cut -d: -f2)"
+H_R="$(grep '^GG-REAL:'  "$TMP_ROOT/H.out" | cut -d: -f2)"
+H_M="$(grep '^GG-MIXED:' "$TMP_ROOT/H.out" | cut -d: -f2)"
+H_F="$(grep '^GG-FAIL:'  "$TMP_ROOT/H.out" | cut -d: -f2)"
+printf '  [H helper] go-empty=%s go-real=%s go-mixed=%s go-fail=%s\n' "$H_E" "$H_R" "$H_M" "$H_F"
+if [ "$H_E" = "zero" ] && [ "$H_R" = "has" ] && [ "$H_M" = "has" ] && [ "$H_F" = "has" ]; then
+    _ok "H: helper go-test branch (#89): '[no test files]' only -> zero; ok/mixed/FAIL -> has (no false-downgrade)"
+else
+    _no "H: go-test branch wrong: empty=$H_E(want zero) real=$H_R mixed=$H_M fail=$H_F (want has)"
+fi
+
 # ---- results ---------------------------------------------------------------
 echo "=== results: $PASS passed, $FAIL failed ==="
 [ "$FAIL" -eq 0 ]

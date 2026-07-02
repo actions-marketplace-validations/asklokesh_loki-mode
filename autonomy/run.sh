@@ -9145,6 +9145,21 @@ _loki_zero_tests_executed() {
             fi
             return 1
             ;;
+        go-test)
+            # #89: `go test ./...` on a package with NO *_test.go EXITS 0 and prints
+            # `?   <pkg>  [no test files]` -- so a Go project with source but no
+            # tests would score `pass` (a mini fake-green; unlike vitest/pytest/
+            # mocha which exit NON-zero on zero tests and are already not-pass, so
+            # go-test is the only runner in this class that needs detection).
+            # POSITIVE detection: a `[no test files]` line AND no ran-package result
+            # (`ok `/`FAIL`). A mixed run (some pkgs tested) has `ok`, so it is NOT
+            # downgraded. Verified: real passing prints `ok  <pkg>  0.2s`.
+            if printf '%s' "$_zt_out" | grep -qE '\[no test files\]' 2>/dev/null \
+               && ! printf '%s' "$_zt_out" | grep -qE '^(ok|FAIL|--- FAIL)' 2>/dev/null; then
+                return 0
+            fi
+            return 1
+            ;;
         *)
             # Unknown/unparseable runner -> never claim zero-tests (safe default).
             return 1
