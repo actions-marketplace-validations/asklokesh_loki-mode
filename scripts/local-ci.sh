@@ -507,6 +507,7 @@ run_check "tests/test-codex-model-trusted.sh (LOKI_CODEX_MODEL verbatim, generic
 # genuine unanimous COMPLETE is not always vetoed to CONTINUE. Mutation guard
 # included.
 run_check "tests/test-council-devils-advocate.sh (structured test-evidence, no spurious veto)" "bash tests/test-council-devils-advocate.sh 2>&1 | tail -3"
+run_check "tests/test-council-da-veto.sh (anti-sycophancy DA veto forces CONTINUE)" "bash tests/test-council-da-veto.sh 2>&1 | tail -3"
 
 # v7.7.31: STOP-aware countdown + dead-pid authoritative + autonomy override
 # (--append-system-prompt) parity. Verifies the dashboard Stop button responds

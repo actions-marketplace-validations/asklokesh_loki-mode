@@ -162,6 +162,12 @@ run_test "Council Live-Vote Quorum (WAVE13 fail-closed)" "$SCRIPT_DIR/test-counc
 # unanimous COMPLETE is not always vetoed. Includes a mutation guard.
 run_test "Council Devil's Advocate (structured test-evidence)" "$SCRIPT_DIR/test-council-devils-advocate.sh"
 
+# Anti-sycophancy DA veto: on a UNANIMOUS approve, a non-confirming devil's-advocate
+# verdict MUST drive approve_count below the effective completion threshold so
+# council_vote returns CONTINUE (recorded REJECTED), for a council of size >= 3.
+# Guards the silent-no-op regression where a bare approve_count-1 still cleared 2/3.
+run_test "Council DA Veto (anti-sycophancy forces CONTINUE)" "$SCRIPT_DIR/test-council-da-veto.sh"
+
 # check_human_intervention signal dispatch + security: STOP -> rc 2; HUMAN_INPUT
 # symlink rejected; prompt injection disabled-by-default quarantines input.
 run_test "Human Intervention Signals (STOP/HUMAN_INPUT security)" "$SCRIPT_DIR/test-human-intervention-signals.sh"
