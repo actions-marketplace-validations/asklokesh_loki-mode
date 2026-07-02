@@ -9,6 +9,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (none)
 
+## [7.114.0] - 2026-07-02
+
+### Accuracy + speed moat batch (4 research-grounded items, RED/GREEN measured)
+
+Driven from docs/research-2026-07/gap-analysis-backlog.json (ranks 2, 8, 9, 15).
+Each built in an isolated worktree, proven with a fixture RED/GREEN test, parity-locked
+with the loki-ts runner where a mirror exists, and gated by a full 3-reviewer council.
+No trust-core gate weakened; the deterministic evidence gate and anti-sycophancy
+devil's-advocate remain authoritative.
+
+- **rank 15 -- council convergence floor (speed).** For the convergence-detection
+  path ONLY (a run with NO explicit completion claim), the council may now evaluate
+  as early as `LOKI_COUNCIL_MIN_ITERATIONS` when affirmative evidence is already green
+  (tests present + passing; checklist has items and none failing), instead of waiting
+  for the next `LOKI_COUNCIL_CHECK_INTERVAL` boundary. MEASURABLE: on the fixture a
+  genuinely-complete no-promise run stops at iteration 2 instead of grinding to
+  iteration 5. This changes only WHEN the council evaluates, never WHETHER it approves:
+  an early evaluation flows into the SAME council_evaluate (hard checklist gate +
+  evidence gate + aggregate vote + devil's-advocate-on-unanimous); there is no
+  green-evidence shortcut that returns DONE bypassing the vote. Stagnation and evidence
+  gates still block premature/unverified stops; the explicit-claim and circuit-breaker
+  paths are byte-unchanged. New knob `LOKI_COUNCIL_CONVERGENCE_EARLY` (default ON --
+  this IS a live default behavior change to the no-claim stop path); set 0 to restore
+  interval-only checking. Bash-only (the loki-ts council shouldStop is a stub). Test:
+  tests/test-council-convergence-floor.sh (14/14; the early branch reverted makes 3
+  positive cases fail = non-vacuous).
+- **rank 8 -- mode-aware RARV instruction (speed).** The build_prompt "RALPH WIGGUM"
+  instruction emitted "There is NEVER a 'finished' state - always find the next
+  improvement" in EVERY mode, including finite PRD/checkpoint runs that carry a
+  completion promise -- a self-contradiction that drove unrequested extra iterations.
+  Now gated: perpetual / no-completion-promise runs keep the never-finished directive;
+  finite runs instead get "when the PRD requirements are implemented and completion
+  gates pass, claim done and STOP; the completion gates are the authority on done." The
+  unverifiable "2-3x quality improvement" clause is removed from ALL modes.
+  Parity-locked with rarvInstruction() in loki-ts.
+- **rank 16 -- parallel independent tool calls (speed).** build_prompt now instructs
+  the inner agent to issue independent read-only lookups (reads, greps, file lookups,
+  LSP checks) in a single message so they run in parallel. No new env knob.
+  Parity-locked in loki-ts. (Applies to every prompt-carrying mode; the deliberately
+  minimal legacy-degraded escape-hatch prompt is unchanged.) Ranks 8+16 test:
+  tests/test-rarv-parallel-build-prompt.sh (18/18); loki-ts build_prompt parity 60/60.
+- **rank 9 -- maintainer-mergeability reviewer + weighted quality score (accuracy).**
+  run_code_review gains an always-on "would a maintainer merge this" reviewer (rubric:
+  scope creep, dead/duplicated code, convention-conformance) alongside
+  architecture-strategist. NOTE: this makes the review council spawn 4 reviewers
+  instead of 3 (roughly +33% review LLM cost; the unanimous-approve + devil's-advocate
+  path now keys on 4/4). The aggregator emits a numeric `quality_score` in aggregate.json:
+  0 if any blocker, else 100 - 5*medium - 2*low (floored at 0). MEASURABLE: a tight fix
+  with no non-blockers scores 100; one Medium non-blocker scores 95; any blocker scores
+  0. Existing Critical/High = block, Medium/Low = non-blocking is UNCHANGED -- the score
+  is reported, and only ADVISORY unless the opt-in `LOKI_REVIEW_MERGEABILITY_MIN` floor
+  is set (default OFF, so no new blocking behavior). Parity-locked in loki-ts
+  quality_gates.ts. Tests: tests/test-mergeability-review.sh (10/10) + loki-ts
+  quality_gates (105/105).
+- **rank 2 -- source-grounded acceptance checklist (accuracy, critical).**
+  checklist_oracle_triangulate now triangulates the acceptance checklist against actual
+  codebase source, not spec prose alone: (1) each spec'd HTTP endpoint must map to a
+  real route/handler in source across express/fastify/flask/fastapi/django/spring/
+  jax-rs/go/rails, path-params normalized (unmatched -> High `oracle-route-missing`,
+  mirroring the existing oracle-datastore-conflict shape); (2) spec'd public API symbols
+  are verified to EXIST via the LSP proxy (new additive `mcp/lsp_proxy.py --check-symbols`
+  one-shot probe that mirrors the existing --write-diagnostics contract), NOT via LLM
+  grep -- and fail-open to inconclusive (never a fabricated exists) when no language
+  server is reachable; (3) a plaintext-password domain-invariant check (positive-evidence
+  only; suppressed when a hash primitive is present). MEASURABLE: on 3 clean fixtures the
+  false-positive count is 0; a spec naming an absent /orders endpoint yields a High
+  finding; a plaintext password store yields an invariant finding. Bash-only (no loki-ts
+  oracle mirror exists). Test: tests/test-oracle-source-grounded.sh (16/16, FP rate 0).
+  HONEST LIMITATION: the LSP symbol-miss High path needs a live fast language server; in
+  environments without one (or a cold server past the timeout) the LSP leg fail-opens to
+  inconclusive, which the test covers explicitly.
+
+All four tests are wired into tests/run-all-tests.sh AND scripts/local-ci.sh. No
+behavior change to any shipping `loki` command surface.
+
 ## [7.113.0] - 2026-07-02
 
 ### Wave-4 bug-hunt fixes (4 real, reproduced, RED/GREEN-tested)

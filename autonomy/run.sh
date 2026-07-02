@@ -10490,6 +10490,23 @@ _severity_is_blocking() {
     grep -qiE '(\[(critical|high)\])|(\*\*[[:space:]]*(critical|high)[[:space:]]*\*\*)|(severity:?[[:space:]]*(critical|high))|(^[[:space:]]*[-*][[:space:]]+(critical|high)([[:space:]:.,*]|$))' "$file"
 }
 
+# 7.114.0 (rank 9): count non-blocking (Medium/Low) findings in a reviewer file.
+# Feeds the weighted mergeability quality score. Mirrors the severity-token
+# tolerance of _severity_is_blocking (bracketed, bold, 'Severity:', or bullet).
+# Echoes "<medium_count> <low_count>" so the caller can weight them differently.
+# Parity-locked with countNonBlockingFindings() in loki-ts/src/runner/quality_gates.ts.
+_count_nonblocking_findings() {
+    local file="$1"
+    if [ ! -f "$file" ]; then
+        echo "0 0"
+        return 0
+    fi
+    local med low
+    med=$(grep -icE '(\[medium\])|(\*\*[[:space:]]*medium[[:space:]]*\*\*)|(severity:?[[:space:]]*medium)|(^[[:space:]]*[-*][[:space:]]+medium([[:space:]:.,*]|$))' "$file")
+    low=$(grep -icE '(\[low\])|(\*\*[[:space:]]*low[[:space:]]*\*\*)|(severity:?[[:space:]]*low)|(^[[:space:]]*[-*][[:space:]]+low([[:space:]:.,*]|$))' "$file")
+    echo "${med:-0} ${low:-0}"
+}
+
 run_code_review() {
     local loki_dir="${TARGET_DIR:-.}/.loki"
     local review_dir="$loki_dir/quality/reviews"
@@ -10638,7 +10655,7 @@ MANAGED_SELECTION
         log_warn "Managed review council unavailable; falling back to CLI fan-out"
     fi
 
-    log_info "Selecting 3 specialist reviewers from pool..."
+    log_info "Selecting reviewers (architecture-strategist + maintainer-mergeability always on, plus keyword-scored specialists)..."
 
     # Write diff/files to temp files for python to read (avoid env var size limits)
     # Use printf to prevent shell variable expansion in diff content (#78)
@@ -10770,13 +10787,25 @@ if all(s == 0 for s in scores.values()):
 else:
     selected = ranked[:2]
 
-# Output JSON: architecture-strategist always first, then the 2 selected
+# Output JSON: architecture-strategist + maintainer-mergeability always first
+# (both carry a mandate no keyword-selected specialist does), then the 2 selected.
+# 7.114.0 (rank 9): maintainer-mergeability is the "would a real maintainer merge
+# this PR" reviewer. It covers scope creep, dead/duplicated code, and conformance
+# to the surrounding code's conventions -- the tech-lead axes the security/test/
+# perf/dependency/architecture pool misses. Its findings feed the SAME
+# Critical/High=block, Medium/Low=non-blocking mechanism and additionally the
+# weighted quality score in aggregate.json (rank 9).
 result = {
     "reviewers": [
         {
             "name": "architecture-strategist",
             "focus": "SOLID, coupling, cohesion, patterns, abstraction, dependency direction",
             "checks": "SOLID violations, excessive coupling, wrong patterns, missing abstractions, dependency direction issues, god classes/functions"
+        },
+        {
+            "name": "maintainer-mergeability",
+            "focus": "Would a maintainer merge this PR as-is: scope discipline, dead/duplicated code, convention conformance",
+            "checks": "scope creep (changes unrelated to the stated task, drive-by edits, unrequested refactors), dead code (unreachable, unused, commented-out, leftover debug), duplicated logic that should reuse an existing helper, non-conformance to the surrounding code's conventions (naming, error handling, structure, formatting), and anything a careful human reviewer would ask to be changed before merging"
         }
     ] + [
         {
@@ -10812,7 +10841,9 @@ SPECIALIST_SELECT
         "reviewers=$reviewer_names" \
         "iteration=$ITERATION_COUNT"
 
-    # Dispatch 3 parallel blind reviews using provider-specific invocation
+    # Dispatch all selected reviewers as parallel blind reviews (provider-specific
+    # invocation). Count is dynamic: 2 always-on (architecture-strategist,
+    # maintainer-mergeability) + up to 2 keyword-scored specialists.
     local pids=()
     local reviewer_count
     reviewer_count=$(echo "$selected_specialists" | python3 -c "import sys,json; print(len(json.load(sys.stdin)['reviewers']))")
@@ -10906,6 +10937,10 @@ BUILD_PROMPT
     # Such a review proves nothing, so we treat it as INCONCLUSIVE -> blocking.
     local real_verdict_count=0
     local no_output_count=0
+    # 7.114.0 (rank 9): accumulate non-blocking (Medium/Low) findings across all
+    # reviewers to compute the weighted mergeability quality score below.
+    local nonblocking_medium=0
+    local nonblocking_low=0
 
     for i in $(seq 0 $((reviewer_count - 1))); do
         local reviewer_name
@@ -10945,6 +10980,16 @@ BUILD_PROMPT
             continue
         fi
         ((real_verdict_count++))
+        # 7.114.0 (rank 9): tally this reviewer's non-blocking (Medium/Low)
+        # findings for the weighted quality score. Counted for BOTH PASS and FAIL
+        # reviewers -- a PASS verdict can still list Low-severity nits that should
+        # lower the mergeability score without blocking the gate.
+        local _nb_counts _nb_med _nb_low
+        _nb_counts=$(_count_nonblocking_findings "$review_output")
+        _nb_med=${_nb_counts%% *}
+        _nb_low=${_nb_counts##* }
+        nonblocking_medium=$((nonblocking_medium + _nb_med))
+        nonblocking_low=$((nonblocking_low + _nb_low))
         if [ "$verdict" = "FAIL" ]; then
             ((fail_count++))
             # Check for Critical/High severity findings (bracketed OR unbracketed
@@ -10988,6 +11033,23 @@ BUILD_PROMPT
         fi
     fi
 
+    # 7.114.0 (rank 9): weighted mergeability quality score (FrontierCode-style).
+    # A SCORE reported alongside the binary block verdict, NOT a new hard gate
+    # (surfaced only; opt-in enforcement via LOKI_REVIEW_MERGEABILITY_MIN below).
+    # Deterministic rubric: start at 100; any blocker (Critical/High) => 0; else
+    # subtract 5 per Medium finding and 2 per Low finding, floored at 0. This
+    # separates a tight, mergeable change (high score, no blocker) from a
+    # sprawling one whose scope/dead-code/convention findings pile up.
+    # Parity-locked with computeMergeabilityScore() in loki-ts/src/runner/quality_gates.ts.
+    local quality_score
+    if [ "$has_blocking" = "true" ]; then
+        quality_score=0
+    else
+        quality_score=$((100 - (nonblocking_medium * 5) - (nonblocking_low * 2)))
+        [ "$quality_score" -lt 0 ] && quality_score=0
+    fi
+    log_info "Mergeability quality score: ${quality_score}/100 (medium=${nonblocking_medium}, low=${nonblocking_low}, blocker=${has_blocking})"
+
     # Save aggregate results via python3 + env vars (no shell interpolation in JSON)
     export LOKI_REVIEW_AGG_FILE="$review_dir/$review_id/aggregate.json"
     export LOKI_REVIEW_AGG_ID="$review_id"
@@ -10998,6 +11060,9 @@ BUILD_PROMPT
     export LOKI_REVIEW_AGG_VERDICTS="$verdicts_summary"
     export LOKI_REVIEW_AGG_REAL="$real_verdict_count"
     export LOKI_REVIEW_AGG_INCONCLUSIVE="$review_inconclusive"
+    export LOKI_REVIEW_AGG_QSCORE="$quality_score"
+    export LOKI_REVIEW_AGG_QMED="$nonblocking_medium"
+    export LOKI_REVIEW_AGG_QLOW="$nonblocking_low"
     python3 << 'AGG_SCRIPT'
 import json, os
 result = {
@@ -11008,7 +11073,12 @@ result = {
     "has_blocking": os.environ["LOKI_REVIEW_AGG_BLOCKING"] == "true",
     "real_verdict_count": int(os.environ["LOKI_REVIEW_AGG_REAL"]),
     "inconclusive": os.environ["LOKI_REVIEW_AGG_INCONCLUSIVE"] == "true",
-    "verdicts": os.environ["LOKI_REVIEW_AGG_VERDICTS"].strip()
+    "verdicts": os.environ["LOKI_REVIEW_AGG_VERDICTS"].strip(),
+    # rank 9: weighted mergeability quality score (0 if any blocker, else
+    # 100 - 5*medium - 2*low, floored at 0). Reported metric, not a hard gate.
+    "quality_score": int(os.environ["LOKI_REVIEW_AGG_QSCORE"]),
+    "nonblocking_medium": int(os.environ["LOKI_REVIEW_AGG_QMED"]),
+    "nonblocking_low": int(os.environ["LOKI_REVIEW_AGG_QLOW"])
 }
 with open(os.environ["LOKI_REVIEW_AGG_FILE"], "w") as f:
     json.dump(result, f, indent=2)
@@ -11016,6 +11086,7 @@ AGG_SCRIPT
     unset LOKI_REVIEW_AGG_FILE LOKI_REVIEW_AGG_ID LOKI_REVIEW_AGG_ITER
     unset LOKI_REVIEW_AGG_PASS LOKI_REVIEW_AGG_FAIL LOKI_REVIEW_AGG_BLOCKING LOKI_REVIEW_AGG_VERDICTS
     unset LOKI_REVIEW_AGG_REAL LOKI_REVIEW_AGG_INCONCLUSIVE
+    unset LOKI_REVIEW_AGG_QSCORE LOKI_REVIEW_AGG_QMED LOKI_REVIEW_AGG_QLOW
 
     emit_event_json "code_review_complete" \
         "review_id=$review_id" \
@@ -11138,6 +11209,18 @@ DA_AGG_PATCH
     if [ "$has_blocking" = "true" ]; then
         log_error "CODE REVIEW BLOCKED: Critical/High findings detected"
         log_error "Review details: $review_dir/$review_id/"
+        return 1
+    fi
+
+    # 7.114.0 (rank 9): OPT-IN mergeability-score gate. Default OFF -- the score
+    # is reported in aggregate.json regardless, but it only BLOCKS when the
+    # operator explicitly sets a floor via LOKI_REVIEW_MERGEABILITY_MIN. This
+    # keeps the existing Critical/High=block, Medium/Low=non-blocking contract
+    # unchanged by default while giving teams a knob to demand a minimum
+    # mergeability score. Never fabricates a pass; a low score only ever blocks.
+    if [ -n "${LOKI_REVIEW_MERGEABILITY_MIN:-}" ] && [ "$quality_score" -lt "${LOKI_REVIEW_MERGEABILITY_MIN}" ]; then
+        log_error "CODE REVIEW BLOCKED: mergeability quality score ${quality_score} < floor ${LOKI_REVIEW_MERGEABILITY_MIN} (LOKI_REVIEW_MERGEABILITY_MIN)"
+        log_error "  Review details: $review_dir/$review_id/ ; unset LOKI_REVIEW_MERGEABILITY_MIN to disable this gate"
         return 1
     fi
 
@@ -13956,7 +14039,24 @@ build_prompt() {
     phases="${phases%,}"  # Remove trailing comma
 
     # Ralph Wiggum Mode - Reason-Act-Reflect-VERIFY cycle with self-verification loop (Boris Cherny pattern)
-    local rarv_instruction="RALPH WIGGUM MODE ACTIVE. Use Reason-Act-Reflect-VERIFY cycle: 1) REASON - READ .loki/CONTINUITY.md including 'Mistakes & Learnings' section to avoid past errors. CHECK .loki/state/relevant-learnings.json for cross-project learnings from previous projects (mistakes to avoid, patterns to apply). Check .loki/state/ and .loki/queue/, identify next task. CHECK .loki/state/resources.json for system resource warnings - if CPU or memory is high, reduce parallel agent spawning or pause non-critical tasks. Limit to MAX_PARALLEL_AGENTS=${MAX_PARALLEL_AGENTS}. If queue empty, find new improvements. 2) ACT - Execute task, write code, commit changes atomically (git checkpoint). 3) REFLECT - Update .loki/CONTINUITY.md with progress, update state, identify NEXT improvement. Save valuable learnings for future projects. 4) VERIFY - Run automated tests (unit, integration, E2E), check compilation/build, verify against spec. IF VERIFICATION FAILS: a) Capture error details (stack trace, logs), b) Analyze root cause, c) UPDATE 'Mistakes & Learnings' in CONTINUITY.md with what failed, why, and how to prevent, d) Rollback to last good git checkpoint if needed, e) Apply learning and RETRY from REASON. If verification passes, mark task complete and continue. This self-verification loop achieves 2-3x quality improvement. CRITICAL: There is NEVER a 'finished' state - always find the next improvement, optimization, test, or feature."
+    # 7.114.0 (rank 8): rarv_instruction is now mode-aware. The never-finished
+    # tail is a self-contradiction in a finite PRD/checkpoint run (which has an
+    # auto-derived COMPLETION_PROMISE and was switched out of perpetual). Gate the
+    # never-finished tail on the SAME split that completion_instruction uses
+    # (perpetual OR no completion promise). Finite runs instead get a concise
+    # "stop when verified-done, the completion gates are the authority" directive.
+    # The unverifiable "2-3x quality improvement" clause is removed from ALL modes.
+    # Parity-locked with rarvInstruction() in loki-ts/src/runner/build_prompt.ts.
+    local _rarv_perpetual="false"
+    if [ "$AUTONOMY_MODE" = "perpetual" ] || [ "$PERPETUAL_MODE" = "true" ] || [ -z "$COMPLETION_PROMISE" ]; then
+        _rarv_perpetual="true"
+    fi
+    local rarv_instruction="RALPH WIGGUM MODE ACTIVE. Use Reason-Act-Reflect-VERIFY cycle: 1) REASON - READ .loki/CONTINUITY.md including 'Mistakes & Learnings' section to avoid past errors. CHECK .loki/state/relevant-learnings.json for cross-project learnings from previous projects (mistakes to avoid, patterns to apply). Check .loki/state/ and .loki/queue/, identify next task. CHECK .loki/state/resources.json for system resource warnings - if CPU or memory is high, reduce parallel agent spawning or pause non-critical tasks. Limit to MAX_PARALLEL_AGENTS=${MAX_PARALLEL_AGENTS}. If queue empty, find new improvements. 2) ACT - Execute task, write code, commit changes atomically (git checkpoint). 3) REFLECT - Update .loki/CONTINUITY.md with progress, update state, identify NEXT improvement. Save valuable learnings for future projects. 4) VERIFY - Run automated tests (unit, integration, E2E), check compilation/build, verify against spec. IF VERIFICATION FAILS: a) Capture error details (stack trace, logs), b) Analyze root cause, c) UPDATE 'Mistakes & Learnings' in CONTINUITY.md with what failed, why, and how to prevent, d) Rollback to last good git checkpoint if needed, e) Apply learning and RETRY from REASON. If verification passes, mark task complete and continue."
+    if [ "$_rarv_perpetual" = "true" ]; then
+        rarv_instruction="${rarv_instruction} CRITICAL: There is NEVER a 'finished' state - always find the next improvement, optimization, test, or feature."
+    else
+        rarv_instruction="${rarv_instruction} When the PRD requirements are implemented and completion gates pass, claim done via loki_complete_task and STOP; do not add unrequested improvements. Verify once -- the completion gates (tests, checklist, evidence) are the authority on done; do not re-verify redundantly."
+    fi
 
     # Completion instruction (S0.2 -- structured tool call).
     # When PRD requirements are implemented, tests pass, and the checklist is
@@ -14049,7 +14149,7 @@ build_prompt() {
     # writing any reference to a symbol the agent has not already read with
     # the Read tool, prefer mcp__loki-mode-lsp-proxy__lsp_check_exists. This
     # is the single most leveraged grounding primitive per OpenCode research.
-    local lsp_grounding_instruction="LSP_GROUNDING: When the loki-mode-lsp-proxy MCP server is available, prefer LSP tools for symbol verification BEFORE writing code that references those symbols. Workflow: (1) Need to call \`foo.bar()\` you have not already read? -> mcp__loki-mode-lsp-proxy__lsp_check_exists with symbol='bar' (sub-200ms when cached). If exists:false, do NOT write the call -- use mcp__loki-mode-lsp-proxy__lsp_workspace_symbols with the concept name to find the real symbol, or use Read to see the actual API. (2) Just edited a file? -> mcp__loki-mode-lsp-proxy__lsp_get_diagnostics on that file to see new errors before the next iteration. (3) Need to jump to a definition by name (no file:line known)? -> mcp__loki-mode-lsp-proxy__lsp_find_definition_by_name. Skip these tools silently when the server is not available -- check the tool list, do not retry on errors. Goal: eliminate hallucinated API calls before they ship."
+    local lsp_grounding_instruction="LSP_GROUNDING: When the loki-mode-lsp-proxy MCP server is available, prefer LSP tools for symbol verification BEFORE writing code that references those symbols. Workflow: (1) Need to call \`foo.bar()\` you have not already read? -> mcp__loki-mode-lsp-proxy__lsp_check_exists with symbol='bar' (sub-200ms when cached). If exists:false, do NOT write the call -- use mcp__loki-mode-lsp-proxy__lsp_workspace_symbols with the concept name to find the real symbol, or use Read to see the actual API. (2) Just edited a file? -> mcp__loki-mode-lsp-proxy__lsp_get_diagnostics on that file to see new errors before the next iteration. (3) Need to jump to a definition by name (no file:line known)? -> mcp__loki-mode-lsp-proxy__lsp_find_definition_by_name. Skip these tools silently when the server is not available -- check the tool list, do not retry on errors. Goal: eliminate hallucinated API calls before they ship. PARALLEL_TOOL_CALLS: When issuing independent read-only operations (reads, greps, file lookups, LSP checks) that do not depend on each other, issue them in a single message so they run in parallel; do not serialize independent lookups."
 
     # AGENTS.md instruction (agents.md standard: plain Markdown at repo root,
     # nearest-file-wins, read natively by Claude Code/Codex/etc.). Loki prefers
