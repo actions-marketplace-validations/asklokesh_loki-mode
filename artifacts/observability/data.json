@@ -1,13 +1,13 @@
 {
-  "generated_at": "2026-07-02T14:54:21Z",
-  "current_version": "7.114.0",
+  "generated_at": "2026-07-02T15:50:24Z",
+  "current_version": "7.116.0",
   "github": {
     "stars": 999,
     "forks": 193,
     "open_issues": 2,
     "created_at": "2025-12-26T16:26:14Z",
     "status": "ok",
-    "fetched_at": "2026-07-02T14:54:21Z"
+    "fetched_at": "2026-07-02T15:50:24Z"
   },
   "npm": {
     "total": 23798,
@@ -134,19 +134,24 @@
       }
     ],
     "status": "ok",
-    "fetched_at": "2026-07-02T14:54:21Z"
+    "fetched_at": "2026-07-02T15:50:24Z"
   },
   "docker": {
-    "pulls": 57275,
-    "last_updated": "2026-07-02T14:35:02.174569Z",
+    "pulls": 57335,
+    "last_updated": "2026-07-02T15:36:41.393633Z",
     "status": "ok",
-    "fetched_at": "2026-07-02T14:54:21Z"
+    "fetched_at": "2026-07-02T15:50:24Z"
   },
   "homebrew": {
     "status": "not_available",
     "note": "not available (custom tap has no public install API)"
   },
   "releases_downloads": [
+    {
+      "tag": "v7.115.0",
+      "date": "2026-07-02",
+      "downloads": 7
+    },
     {
       "tag": "v7.114.0",
       "date": "2026-07-02",
@@ -291,14 +296,19 @@
       "tag": "v7.93.0",
       "date": "2026-06-29",
       "downloads": 13
-    },
-    {
-      "tag": "v7.92.0",
-      "date": "2026-06-29",
-      "downloads": 15
     }
   ],
   "releases_timeline": [
+    {
+      "version": "7.116.0",
+      "date": "2026-07-02",
+      "summary": "Trust-core fixes surfaced by a live calibration build (RED/GREEN, council-gated)"
+    },
+    {
+      "version": "7.115.0",
+      "date": "2026-07-02",
+      "summary": "Adoption-friction + accuracy batch (ranks 6, 7, 10; RED/GREEN measured)"
+    },
     {
       "version": "7.114.0",
       "date": "2026-07-02",
@@ -463,16 +473,6 @@
       "version": "7.90.2",
       "date": "2026-06-20",
       "summary": "Cleanup: remove dead keyboard-shortcut and theme-toggle markup"
-    },
-    {
-      "version": "7.90.1",
-      "date": "2026-06-20",
-      "summary": "Dashboard polish: a calmer, more readable live view"
-    },
-    {
-      "version": "7.90.0",
-      "date": "2026-06-20",
-      "summary": "Proven PR: every PR Loki opens carries its own re-verifiable proof"
     }
   ],
   "benchmarks": [
@@ -625,6 +625,13 @@
         "value": "0 on 3 clean fixtures",
         "detail": "source-grounded checklist; zero false High findings on 3 clean real-framework fixtures",
         "source": "tests/test-oracle-source-grounded.sh (FP=0)"
+      },
+      {
+        "metric": "Trust false-negative fix (v7.116 #79)",
+        "provenance": "measured",
+        "value": "NOT VERIFIED -> VERIFIED on identical work",
+        "detail": "live calibration builds of the SHIPPED artifact: same correct+tested Node deliverable recorded runner:none/not_run (headline NOT VERIFIED) on v7.115, and runner:node-test/pass:true/status:verified on v7.116. node --test detection added to both the in-loop gate and loki verify.",
+        "source": "live calibration v7.115 vs v7.116 (.loki/quality/test-results.json)"
       }
     ],
     "live_note": "Convergence deltas are measured on real builds; quality_score is a designed threshold and review cost is an arithmetic projection (labeled). A live v7.114 calibration confirms the composed behavior end-to-end."

@@ -330,6 +330,10 @@ acs_rows += [
      "value": "0 on 3 clean fixtures",
      "detail": "source-grounded checklist; zero false High findings on 3 clean real-framework fixtures",
      "source": "tests/test-oracle-source-grounded.sh (FP=0)"},
+    {"metric": "Trust false-negative fix (v7.116 #79)", "provenance": "measured",
+     "value": "NOT VERIFIED -> VERIFIED on identical work",
+     "detail": "live calibration builds of the SHIPPED artifact: same correct+tested Node deliverable recorded runner:none/not_run (headline NOT VERIFIED) on v7.115, and runner:node-test/pass:true/status:verified on v7.116. node --test detection added to both the in-loop gate and loki verify.",
+     "source": "live calibration v7.115 vs v7.116 (.loki/quality/test-results.json)"},
 ]
 acs = {"rows": acs_rows,
        "live_note": "Convergence deltas are measured on real builds; quality_score is a designed threshold and review cost is an arithmetic projection (labeled). A live v7.114 calibration confirms the composed behavior end-to-end."}
