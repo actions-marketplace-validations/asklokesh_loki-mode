@@ -1382,8 +1382,14 @@ _parse_json_field() {
     if command -v python3 >/dev/null 2>&1; then
         python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2],''))" "$file" "$field" 2>/dev/null
     else
-        # Shell fallback: extract value for simple flat JSON
-        sed 's/.*"'"$field"'":\s*//' "$file" 2>/dev/null | sed 's/[",}].*//' | head -1
+        # Shell fallback (no python3): extract value for simple flat JSON. Handles
+        # BOTH quoted string values ("kind":"wrapper") and bare numeric values
+        # ("ppid":206). The prior impl stripped the leading quote's content to empty
+        # for string fields -- broke "kind" parsing on python3-less hosts, which
+        # would drop wrapper entries into the legacy child path (loki-mode #92).
+        sed 's/.*"'"$field"'":[[:space:]]*//' "$file" 2>/dev/null \
+            | sed 's/^"//' \
+            | sed 's/[",}].*//' | head -1
     fi
 }
 
@@ -1435,6 +1441,93 @@ kill_registered_pid() {
     unregister_pid "$pid"
 }
 
+# Register the CURRENTLY-RUNNING loki-run wrapper itself in the registry.
+# The wrapper registers its children but historically never itself, so a wrapper
+# whose launching session dies is never reaped (loki-mode #92). We record the
+# LAUNCHER's mortal pid (NOT $$ -- $$ is the wrapper's own pid, which would make
+# the parent-death check always succeed and the reaper INERT; NOT $PPID either --
+# in the detached setsid/nohup path bash caches getppid()==1 at exec, and kill -0 1
+# is always true -> also inert). The launcher exports LOKI_LAUNCHER_PID=$$ at each
+# backgrounding site; that launcher shell exits immediately after backgrounding, so
+# the recorded ppid genuinely dies and the parent-death precondition CAN fire. For
+# the foreground path LOKI_LAUNCHER_PID is unset -> $PPID (the user's shell) is the
+# correct mortal fallback. Reap-vs-spare is then decided by the LIVENESS predicate,
+# not by parentage alone. Uses a "kind":"wrapper" tag so cleanup_orphan_pids routes
+# only wrapper entries through the predicate and keeps child entries byte-identical.
+register_self_wrapper() {
+    [ -z "$PID_REGISTRY_DIR" ] && init_pid_registry
+    local launcher_ppid="${LOKI_LAUNCHER_PID:-$PPID}"
+    case "$launcher_ppid" in ''|*[!0-9]*) launcher_ppid="$PPID" ;; esac
+    local entry_file="$PID_REGISTRY_DIR/$$.json"
+    cat > "$entry_file" << EOF
+{"pid":$$,"label":"loki-wrapper","started":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","ppid":$launcher_ppid,"kind":"wrapper","extra":""}
+EOF
+}
+
+# Pure, side-effect-free reap predicate (loki-mode #92). ALL inputs are
+# pre-computed scalars (0/1 booleans or integer ms); NO stat/kill/pgrep inside so
+# it is hermetically unit-testable. Prints "1" (reap) or "0" (spare); returns 0.
+# Reap ONLY when: parent dead AND no live engine child AND idle past the budget.
+# Mirrors the SaaS BFF sweepStuckBuilds and the #91 worker "no-activity != dead"
+# symmetry: a genuinely-detached run that keeps writing .loki activity is spared.
+#   parent_alive:     1 if recorded ppid is still alive, else 0
+#   last_activity_ms: epoch-ms of most recent .loki activity (0 if none found)
+#   now_ms:           current epoch-ms
+#   idle_budget_ms:   generous idle budget (default 900000 = 15 min)
+#   has_live_child:   1 if wrapper has a live ENGINE child (claude/node), else 0
+shouldReapOrphan() {
+    local parent_alive="$1" last_activity_ms="$2" now_ms="$3" idle_budget_ms="$4" has_live_child="$5"
+    if [ "$parent_alive" = "0" ] && [ "$has_live_child" = "0" ] \
+       && [ $(( now_ms - last_activity_ms )) -ge "$idle_budget_ms" ]; then
+        echo 1
+    else
+        echo 0
+    fi
+}
+
+# Most-recent .loki activity as epoch-ms across events.jsonl, signals/*,
+# autonomy-state.json. Cross-platform stat (macOS -f %m / Linux -c %Y). On a stat
+# PARSE FAILURE we default to now_ms (SPARE), never 0 -- a wrong flag must not make a
+# live run look maximally idle and get reaped. "No activity files exist" legitimately
+# yields 0 (reap-eligible); that is distinct from a stat error.
+_loki_last_activity_ms() {
+    local loki_dir="${TARGET_DIR:-.}/.loki"
+    local newest=0 f mt stat_ok=0
+    local candidates=()
+    [ -f "$loki_dir/events.jsonl" ] && candidates+=("$loki_dir/events.jsonl")
+    [ -f "$loki_dir/autonomy-state.json" ] && candidates+=("$loki_dir/autonomy-state.json")
+    if [ -d "$loki_dir/signals" ]; then
+        for f in "$loki_dir/signals"/*; do [ -e "$f" ] && candidates+=("$f"); done
+    fi
+    for f in "${candidates[@]:-}"; do
+        [ -e "$f" ] || continue
+        mt=$(stat -f %m "$f" 2>/dev/null) || mt=""
+        [ -z "$mt" ] && { mt=$(stat -c %Y "$f" 2>/dev/null) || mt=""; }
+        case "$mt" in ''|*[!0-9]*) continue ;; esac
+        stat_ok=1
+        [ "$mt" -gt "$newest" ] && newest="$mt"
+    done
+    # candidates present but every stat failed -> parse failure -> spare (now_ms)
+    if [ "${#candidates[@]}" -gt 0 ] && [ "$stat_ok" = "0" ]; then
+        echo "$(( $(date +%s) * 1000 ))"
+        return 0
+    fi
+    echo "$(( newest * 1000 ))"
+}
+
+# Count LIVE ENGINE children of a wrapper (claude/node), EXCLUDING sleep and the
+# status/resource monitors. The observed 3h orphan had only sleep children, so a
+# naive `pgrep -P` (any child) would falsely spare it; the comm filter is what makes
+# the reaper actually fire on the real orphan shape. Prints 1 (has engine child) or 0.
+_loki_has_live_engine_child() {
+    local wrapper_pid="$1" c cc
+    for c in $(pgrep -P "$wrapper_pid" 2>/dev/null); do
+        cc=$(ps -o comm= -p "$c" 2>/dev/null)
+        case "$cc" in *claude*|*node*) echo 1; return 0 ;; esac
+    done
+    echo 0
+}
+
 # Scan registry for orphaned processes and kill them
 # Called on startup and by `loki cleanup`
 # Returns: number of orphans killed
@@ -1457,6 +1550,9 @@ cleanup_orphan_pids() {
             ''|*[!0-9]*) continue ;;
         esac
 
+        # Never reap the currently-running wrapper itself (loki-mode #92 self-skip).
+        [ "$pid" = "$$" ] && continue
+
         if kill -0 "$pid" 2>/dev/null; then
             # Process is alive -- check if its parent session is dead
             local ppid_val=""
@@ -1464,7 +1560,30 @@ cleanup_orphan_pids() {
 
             # Validate ppid_val is numeric before using with kill
             case "$ppid_val" in ''|*[!0-9]*) ppid_val="" ;; esac
-            if [ -n "$ppid_val" ] && [ "$ppid_val" != "$$" ]; then
+
+            # Route WRAPPER entries through the liveness predicate; CHILD entries
+            # (no "kind" field) keep the exact parent-death-only behavior (#92).
+            local kind=""
+            kind=$(_parse_json_field "$entry_file" "kind") || true
+
+            if [ "$kind" = "wrapper" ]; then
+                # Wrapper: reap only if orphaned AND idle-past-budget AND no live
+                # engine child. Compute the impure inputs here (predicate stays pure).
+                if [ -n "$ppid_val" ]; then
+                    local parent_alive=0
+                    kill -0 "$ppid_val" 2>/dev/null && parent_alive=1
+                    local last_activity_ms now_ms has_live_child idle_budget_ms
+                    last_activity_ms=$(_loki_last_activity_ms)
+                    now_ms=$(( $(date +%s) * 1000 ))
+                    has_live_child=$(_loki_has_live_engine_child "$pid")
+                    idle_budget_ms="${LOKI_WRAPPER_IDLE_BUDGET_MS:-900000}"
+                    if [ "$(shouldReapOrphan "$parent_alive" "$last_activity_ms" "$now_ms" "$idle_budget_ms" "$has_live_child")" = "1" ]; then
+                        log_warn "Reaping idle orphaned loki wrapper PID=$pid (parent $ppid_val dead, idle >=$((idle_budget_ms/60000))m, no engine child)" >&2
+                        kill_registered_pid "$pid"
+                        orphan_count=$((orphan_count + 1))
+                    fi
+                fi
+            elif [ -n "$ppid_val" ] && [ "$ppid_val" != "$$" ]; then
                 if ! kill -0 "$ppid_val" 2>/dev/null; then
                     # Parent is dead -- this is an orphan
                     local label=""
@@ -1498,6 +1617,9 @@ kill_all_registered() {
         case "$pid" in
             ''|*[!0-9]*) continue ;;
         esac
+        # Never SIGKILL the running wrapper itself mid-shutdown (loki-mode #92):
+        # it now self-registers, so it would otherwise appear in this sweep.
+        [ "$pid" = "$$" ] && continue
         kill_registered_pid "$pid"
     done
 }
@@ -19039,13 +19161,13 @@ main() {
         # pgid.
         case "$_sess_launcher" in
             setsid)
-                LOKI_RUNNING_FROM_TEMP='' LOKI_OWN_SESSION=1 nohup setsid "$original_script" "${cmd_args[@]}" > "$log_file" 2>&1 & ;;
+                LOKI_RUNNING_FROM_TEMP='' LOKI_OWN_SESSION=1 LOKI_LAUNCHER_PID=$$ nohup setsid "$original_script" "${cmd_args[@]}" > "$log_file" 2>&1 & ;;
             perl-setsid)
-                LOKI_RUNNING_FROM_TEMP='' LOKI_OWN_SESSION=1 nohup perl -e 'use POSIX qw(setsid); setsid(); exec @ARGV or exit 127;' "$original_script" "${cmd_args[@]}" > "$log_file" 2>&1 & ;;
+                LOKI_RUNNING_FROM_TEMP='' LOKI_OWN_SESSION=1 LOKI_LAUNCHER_PID=$$ nohup perl -e 'use POSIX qw(setsid); setsid(); exec @ARGV or exit 127;' "$original_script" "${cmd_args[@]}" > "$log_file" 2>&1 & ;;
             python-setsid)
-                LOKI_RUNNING_FROM_TEMP='' LOKI_OWN_SESSION=1 nohup python3 -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$original_script" "${cmd_args[@]}" > "$log_file" 2>&1 & ;;
+                LOKI_RUNNING_FROM_TEMP='' LOKI_OWN_SESSION=1 LOKI_LAUNCHER_PID=$$ nohup python3 -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$original_script" "${cmd_args[@]}" > "$log_file" 2>&1 & ;;
             *)
-                LOKI_RUNNING_FROM_TEMP='' nohup "$original_script" "${cmd_args[@]}" > "$log_file" 2>&1 & ;;
+                LOKI_RUNNING_FROM_TEMP='' LOKI_LAUNCHER_PID=$$ nohup "$original_script" "${cmd_args[@]}" > "$log_file" 2>&1 & ;;
         esac
         local bg_pid=$!
         echo "$bg_pid" > "$pid_file"
@@ -19224,8 +19346,11 @@ main() {
         echo "${LOKI_SESSION_ID}" > ".loki/sessions/${LOKI_SESSION_ID}/session_id"
     fi
 
-    # Initialize PID registry and clean up orphans from previous sessions
+    # Initialize PID registry, self-register this wrapper (loki-mode #92 -- so a
+    # future session can reap it if this run is orphaned+idle), then clean up
+    # orphans from previous sessions.
     init_pid_registry
+    register_self_wrapper
     local orphan_count
     orphan_count=$(cleanup_orphan_pids)
     if [ "$orphan_count" -gt 0 ]; then
