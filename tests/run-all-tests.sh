@@ -92,6 +92,13 @@ run_test "Acceptance-oracle source-grounded (rank 2 routes/LSP-symbols/invariant
 run_test "Verify scope record (rank 10 locality, advisory-first)" "$SCRIPT_DIR/test-verify-scope-record.sh"
 run_test "Verify setup-recipe writer (rank 7, env NAMES not values)" "$SCRIPT_DIR/test-verify-setup-recipe.sh"
 
+# Task #79 trust defect: node --test (built-in Node runner, no package.json)
+# detection in BOTH enforce_test_coverage (run.sh) and verify_gate_tests
+# (verify.sh). A passing slug.js+slug.test.js was recorded as
+# source_without_tests -> NOT VERIFIED (false-negative, symmetric to fake-green).
+run_test "node --test detection (run.sh + verify.sh, task #79 false-negative)" "$SCRIPT_DIR/test-node-test-detection.sh"
+run_test "LOKI_DIR double-.loki path guard (#80 COMPLETED marker)" "$SCRIPT_DIR/test-loki-dir-double-path.sh"
+
 # Process Supervisor Tests
 run_test "Process Supervisor Tests" "$SCRIPT_DIR/test-process-supervisor.sh"
 

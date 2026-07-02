@@ -1668,7 +1668,7 @@ _loki_trust_run_id() {
 # Args: $1 = the new phase value (REASONING, BUILDING, VERIFYING, COMPLETED, etc.)
 _advance_current_phase() {
     local new_phase="${1:?phase required}"
-    local loki_dir="${LOKI_DIR:-${TARGET_DIR:-.}}/.loki"
+    local loki_dir="${LOKI_DIR:-${TARGET_DIR:-.}/.loki}"
     local orch="$loki_dir/state/orchestrator.json"
     [ -f "$orch" ] || return 0
     # Values are passed via argv (not interpolated into the source) so a phase or
@@ -9159,6 +9159,51 @@ sys.stdout.write(t.strip())
         details="cargo test: $(echo "$output" | tail -3 | tr '\n' ' ')"
     fi
 
+    # node --test (built-in Node test runner) -- config-less fallback (task #79).
+    # Node's built-in runner (stable since Node 18) runs *.test.{js,mjs,cjs}
+    # with ZERO config and NO package.json. A deliverable of slug.js +
+    # slug.test.js (a real, passing suite) previously fell straight through to
+    # runner="none" and recorded verification_gap="source_without_tests" -- a
+    # FALSE-NEGATIVE trust defect (symmetric to fake-green): genuinely-correct,
+    # fully-tested work read as NOT VERIFIED. This branch fires ONLY as a
+    # fallback below every explicit-framework path (vitest/jest/mocha/scripts.test
+    # via package.json, monorepo, pytest, go, cargo all gate on
+    # test_runner=="none"), so package.json-with-jest still selects jest. It runs
+    # only when node is on PATH AND *.test.{js,mjs,cjs} files exist at root or
+    # under test/ or tests/. A failing suite records test_passed=false (never
+    # swallowed); absence of node or test files falls through to the honest
+    # "none"/inconclusive path below (never fabricates a pass).
+    if [ "$test_runner" = "none" ] && command -v node &>/dev/null; then
+        local _nt_files=()
+        local _nt_f
+        # Root-level test files (maxdepth 1) plus test/ and tests/ dirs, skipping
+        # vendored trees so we never walk node_modules.
+        while IFS= read -r _nt_f; do
+            [ -n "$_nt_f" ] && _nt_files+=("$_nt_f")
+        done < <(find "${TARGET_DIR:-.}" -maxdepth 1 -type f \
+                    \( -name '*.test.js' -o -name '*.test.mjs' -o -name '*.test.cjs' \) \
+                    2>/dev/null)
+        for _nt_dir in test tests; do
+            [ -d "${TARGET_DIR:-.}/$_nt_dir" ] || continue
+            while IFS= read -r _nt_f; do
+                [ -n "$_nt_f" ] && _nt_files+=("$_nt_f")
+            done < <(find "${TARGET_DIR:-.}/$_nt_dir" -maxdepth 3 -type f \
+                        \( -name '*.test.js' -o -name '*.test.mjs' -o -name '*.test.cjs' \) \
+                        -not -path '*/node_modules/*' 2>/dev/null)
+        done
+        if [ "${#_nt_files[@]}" -gt 0 ]; then
+            test_runner="node-test"
+            local output
+            # Pass matched files explicitly (node --test globbing is
+            # Node-version-sensitive); quote each so paths with spaces survive.
+            output=$(cd "${TARGET_DIR:-.}" && timeout "${LOKI_GATE_TIMEOUT:-300}" \
+                         node --test "${_nt_files[@]}" 2>&1) || test_passed=false
+            # tail -14 so node's TAP summary block (# tests / # pass N / # fail N,
+            # ~10 lines) survives truncation for the best-effort count parse below.
+            details="node --test: $(echo "$output" | tail -14 | tr '\n' ' ')"
+        fi
+    fi
+
     if [ "$test_runner" = "none" ]; then
         log_info "Test coverage: no test runner detected, recording inconclusive (not pass)"
         # v7.41.x fail-open fix: previously this wrote pass:true, so a project
@@ -9258,6 +9303,10 @@ TREOF
     local _tr_passed_n _tr_failed_n
     _tr_passed_n=$(printf '%s' "$details" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' | head -1)
     _tr_failed_n=$(printf '%s' "$details" | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' | head -1)
+    # node --test emits TAP-ish "# pass N" / "# fail N" summary lines, which the
+    # "N passed"/"N failed" pattern above does not match. Fall back to those.
+    [ -n "$_tr_passed_n" ] || _tr_passed_n=$(printf '%s' "$details" | grep -oE '# pass [0-9]+' | grep -oE '[0-9]+' | head -1)
+    [ -n "$_tr_failed_n" ] || _tr_failed_n=$(printf '%s' "$details" | grep -oE '# fail [0-9]+' | grep -oE '[0-9]+' | head -1)
     [ -n "$_tr_passed_n" ] || _tr_passed_n=null
     [ -n "$_tr_failed_n" ] || _tr_failed_n=null
 
@@ -19316,7 +19365,7 @@ main() {
     # engine's own is_completed() recognise this session as terminal. Write the
     # file-system COMPLETED marker (checked by is_completed() in the main loop).
     _advance_current_phase "COMPLETED"
-    local loki_dir="${LOKI_DIR:-${TARGET_DIR:-.}}/.loki"
+    local loki_dir="${LOKI_DIR:-${TARGET_DIR:-.}/.loki}"
     echo "Session completed at $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$loki_dir/COMPLETED" 2>/dev/null || true
 
     # Finish-and-own (v7.88.0): write a plain-English ownership handoff

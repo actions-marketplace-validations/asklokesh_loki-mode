@@ -9,6 +9,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (none)
 
+## [7.116.0] - 2026-07-02
+
+### Trust-core fixes surfaced by a live calibration build (RED/GREEN, council-gated)
+
+A real bounded engine build (the shipped v7.115 artifact against a 3-item PRD)
+produced a genuinely-working, fully-tested deliverable, and surfaced two real
+defects that no fixture caught. Both are fixed here with RED/GREEN tests.
+
+- **TRUST DEFECT: passing tests were recorded as `tests: not_run`, so
+  genuinely-correct, fully-tested work got a NOT VERIFIED headline (false
+  negative).** The test-runner detection did not recognize Node's built-in
+  `node --test` runner (stable since Node 18, runs `*.test.{js,mjs,cjs}` with
+  zero config and NO package.json). A deliverable of slug.js + slug.test.js
+  (9/9 passing) fell through to `runner:none / status:not_run /
+  verification_gap:source_without_tests`, so the proof honestly derived NOT
+  VERIFIED -- a false negative that is as corrosive to a trust-as-product engine
+  as fake-green. The detection lives in BOTH paths (the in-loop test gate in
+  autonomy/run.sh AND the `loki verify` gate in autonomy/verify.sh); both are
+  now fixed. A `node --test` branch was added as a FALLBACK below every explicit
+  path (a package.json declaring vitest/jest/mocha still selects that runner):
+  it fires only when `node` is on PATH and matching test files exist, records
+  the REAL result (runner="node-test", pass from exit code, parsed counts), and
+  a FAILING suite records pass:false (never swallowed). Source without test
+  files still records source_without_tests (no over-fire); no node still falls
+  through to the honest inconclusive path (never fabricates a pass). Test:
+  tests/test-node-test-detection.sh (9/9 incl. both-paths + failing-honesty +
+  jest-no-regression cases).
+- **BUG: double-`.loki` path when writing the COMPLETED / orchestrator state
+  markers.** `autonomy/loki` sets `LOKI_DIR="${LOKI_DIR:-.loki}"`, and two sites
+  in autonomy/run.sh defined `loki_dir` with the `/.loki` OUTSIDE the `:-`
+  default (`"${LOKI_DIR:-${TARGET_DIR:-.}}/.loki"`), so a set LOKI_DIR of `.loki`
+  became `.loki/.loki` -- the build failed with
+  `.loki/.loki/COMPLETED: No such file or directory`. Both sites
+  (`_advance_current_phase` + `main`) are corrected to the sibling form
+  `"${LOKI_DIR:-${TARGET_DIR:-.}/.loki}"` (the `/.loki` inside the default), so a
+  set LOKI_DIR is used as-is. Behavior when LOKI_DIR is unset is unchanged. An
+  exhaustive repo-wide audit confirms these were the only two buggy sites. Test:
+  tests/test-loki-dir-double-path.sh (11/11).
+
+Both tests are wired into run-all-tests.sh + local-ci.sh. No behavior change to
+any shipping command surface beyond correctly recording a Node test run and
+writing the marker to the right path.
+
 ## [7.115.0] - 2026-07-02
 
 ### Adoption-friction + accuracy batch (ranks 6, 7, 10; RED/GREEN measured)

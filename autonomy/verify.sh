@@ -383,6 +383,41 @@ verify_gate_tests() {
         fi
     fi
 
+    # node --test (built-in Node runner) -- config-less fallback (task #79).
+    # Node's built-in test runner (stable since Node 18) runs
+    # *.test.{js,mjs,cjs} with ZERO config and NO package.json, so a real
+    # passing suite (slug.js + slug.test.js, no package.json) previously fell
+    # through to runner="none" -> tests "skipped" -- a FALSE-NEGATIVE on the
+    # verdict surface (symmetric to fake-green). This branch fires ONLY below
+    # the explicit-framework paths (vitest/jest/mocha via package.json all set
+    # runner above), so package.json-with-jest still selects jest. Runs only
+    # when node is on PATH AND *.test.{js,mjs,cjs} exist at root or under
+    # test/ or tests/. A FAILING run records fail (never swallowed); absence of
+    # node or test files falls through to the honest "skipped" path below.
+    if [ "$runner" = "none" ] && command -v node >/dev/null 2>&1; then
+        local _nt_files=()
+        local _nt_f _nt_dir
+        while IFS= read -r _nt_f; do
+            [ -n "$_nt_f" ] && _nt_files+=("$_nt_f")
+        done < <(find "$tree" -maxdepth 1 -type f \
+                    \( -name '*.test.js' -o -name '*.test.mjs' -o -name '*.test.cjs' \) \
+                    2>/dev/null)
+        for _nt_dir in test tests; do
+            [ -d "$tree/$_nt_dir" ] || continue
+            while IFS= read -r _nt_f; do
+                [ -n "$_nt_f" ] && _nt_files+=("$_nt_f")
+            done < <(find "$tree/$_nt_dir" -maxdepth 3 -type f \
+                        \( -name '*.test.js' -o -name '*.test.mjs' -o -name '*.test.cjs' \) \
+                        -not -path '*/node_modules/*' 2>/dev/null)
+        done
+        if [ "${#_nt_files[@]}" -gt 0 ]; then
+            runner="node-test"
+            # Pass matched files explicitly (node --test globbing is
+            # Node-version-sensitive); quote each so paths with spaces survive.
+            out="$(cd "$tree" && timeout "$timeout_s" node --test "${_nt_files[@]}" 2>&1)" || rc=$?
+        fi
+    fi
+
     if [ "$runner" = "none" ]; then
         _verify_add_gate "tests" "skipped" "" "no test framework detected" "true"
         return 0
