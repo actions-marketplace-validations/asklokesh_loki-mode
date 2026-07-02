@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (none)
 
+## [7.117.0] - 2026-07-02
+
+### Trust + adoption batch (zero-test hardening + rank 13; RED/GREEN, council-gated)
+
+- **Anti-fake-green: a runner that executed ZERO tests now records INCONCLUSIVE,
+  not pass.** Completing the v7.116 node --test arc: a `*.test.js` with no `test()`
+  calls (node --test exits 0, "# tests 0") and `jest --passWithNoTests` with no
+  suites previously recorded pass:true / passed_count:0 -- a mini fake-green.
+  Fixed across ALL runners in BOTH the recording paths (autonomy/run.sh in-loop
+  test gate + autonomy/verify.sh) AND the READING path (autonomy/completion-council.sh
+  evidence gate): a real runner that ran zero tests records
+  {pass:"inconclusive", status:"no_tests_run"}, and the completion gate routes
+  that to INCONCLUSIVE (pass-through, NOT affirmative green, NOT a block) rather
+  than counting the string as pass. A real test file with >=1 passing test still
+  records pass (unchanged); a failing suite still blocks (unchanged). This is a
+  shipping-contract change (a repo with jest --passWithNoTests and no tests goes
+  from VERIFIED to inconclusive -- intended, honest, source_without_runnable_tests).
+  Tests: tests/test-zero-test-inconclusive.sh (13/13) + Case 8 in
+  test-evidence-gate-no-tests.sh (29/29; a targeted revert of only the gate proves
+  the gate fix is load-bearing).
+- **rank 13 -- `loki heal --assess` read-only modernization readiness triage.** A
+  new read-only subcommand that scans a codebase and emits a readiness report:
+  LOC / language mix, technical-debt signals, maintenance-risk indicators, a
+  modernization maturity-level placement, and ranked candidate targets with
+  rationale -- all from real deterministic scans (never fabricated numbers).
+  Proven READ-ONLY: `git status` stays clean and no .loki dir is created in the
+  target after --assess. Test: tests/test-heal-assess-readiness.sh (9/9, incl. the
+  read-only assertion).
+
+Both tests wired into run-all-tests.sh + local-ci.sh. The zero-test verdict-path
+change was confirmed by a live calibration of the shipped artifact: a real repo
+with a `*.test.js` containing zero `test()` calls recorded runner:node-test,
+status:inconclusive ("runner ran but executed zero tests"), verdict CONCERNS -- no
+fake-green. Reviewed by a 3-reviewer council; a third item (grill-report wiring)
+was deferred because it widened the surface of a separate, pre-existing no-HITL
+hang on spec-internal contradictions.
+
 ## [7.116.0] - 2026-07-02
 
 ### Trust-core fixes surfaced by a live calibration build (RED/GREEN, council-gated)

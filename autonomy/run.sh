@@ -8965,6 +8965,71 @@ except Exception:
     return 0
 }
 
+# _loki_zero_tests_executed -- shared "no real tests ran" detector (#82).
+# A runner that exits 0 but executed ZERO actual tests is a mini fake-green: it
+# records pass while proving nothing. This inspects a runner's raw output and
+# returns 0 (true, "zero tests executed") ONLY on positive detection; any
+# unrecognized/unparseable shape returns 1 (false) so a legitimate suite this
+# helper cannot parse is NEVER false-downgraded (bounded blast radius).
+#
+#   $1 = runner label (node-test|jest|vitest|...)
+#   $2 = raw runner output
+#   $3.. = (optional) test-file paths that were passed to node --test; their
+#          basenames are node's file-wrapper subtest labels and must be excluded
+#          from the "real test" count.
+#
+# node --test: even a *.test.js with NO test() calls emits `# tests 1 # pass 1`
+#   because node counts the FILE ITSELF as one passing pseudo-test, printed as
+#   `ok N - <file-basename>`. So `# tests 0` NEVER fires (verified on Node 22).
+#   The true executed count = ok/not-ok lines whose label is NOT a passed file
+#   basename. Zero such lines + exit 0 = no real tests ran.
+# jest --passWithNoTests: prints "No tests found" and NO "Tests:" summary line.
+_loki_zero_tests_executed() {
+    local _zt_runner="$1"; shift
+    local _zt_out="$1"; shift
+    case "$_zt_runner" in
+        node-test)
+            # node's file-wrapper subtest label is the ARGUMENT VERBATIM (the
+            # full path we passed), and separately its basename for older node.
+            # Register BOTH forms so the wrapper line is excluded either way.
+            # Delimited with newlines so a path containing spaces still matches
+            # exactly (space-delimited would split it).
+            local _zt_f _zt_bases=$'\n'
+            for _zt_f in "$@"; do
+                [ -n "$_zt_f" ] || continue
+                _zt_bases="${_zt_bases}${_zt_f}"$'\n'"$(basename "$_zt_f")"$'\n'
+            done
+            # Count ok/not-ok lines whose label is a REAL test (label not a
+            # file-wrapper). node prints "ok N - <label>" / "not ok N - <label>".
+            local _zt_real=0 _zt_line _zt_label
+            while IFS= read -r _zt_line; do
+                # Strip "ok N - " / "not ok N - " prefix to get the label.
+                _zt_label="${_zt_line#* - }"
+                # A file-wrapper label equals a passed file path or basename -> skip.
+                case "$_zt_bases" in
+                    *$'\n'"$_zt_label"$'\n'*) continue ;;
+                esac
+                _zt_real=$((_zt_real + 1))
+            done < <(printf '%s\n' "$_zt_out" | grep -E '^(ok|not ok) [0-9]+ - ' 2>/dev/null)
+            [ "$_zt_real" -eq 0 ] && return 0
+            return 1
+            ;;
+        jest|monorepo-jest)
+            # jest --passWithNoTests: "No tests found, exiting with code 0" and no
+            # "Tests:" summary. A real run prints "Tests: N passed, ...".
+            if printf '%s' "$_zt_out" | grep -qiE 'no tests found' 2>/dev/null \
+               && ! printf '%s' "$_zt_out" | grep -qE '^Tests:' 2>/dev/null; then
+                return 0
+            fi
+            return 1
+            ;;
+        *)
+            # Unknown/unparseable runner -> never claim zero-tests (safe default).
+            return 1
+            ;;
+    esac
+}
+
 enforce_test_coverage() {
     local loki_dir="${TARGET_DIR:-.}/.loki"
     local quality_dir="$loki_dir/quality"
@@ -9299,6 +9364,27 @@ TREOF
         *)           _tr_cmd="$test_runner" ;;
     esac
     if [ "$test_passed" = "true" ]; then _tr_exit=0; _tr_status="verified"; else _tr_exit=1; _tr_status="failed"; fi
+
+    # #82 (zero-test-file hardening): a runner that EXITED 0 but executed ZERO
+    # real tests is a mini fake-green -- it records "verified" while proving
+    # nothing. node --test on a *.test.js with no test() calls exits 0 (node
+    # counts the FILE ITSELF as one passing pseudo-test, so `# tests 0` never
+    # fires); jest --passWithNoTests exits 0 on an empty suite. Detect the
+    # zero-real-test case ONLY on a green run (a red run already records fail
+    # and must stay fail), and downgrade the record from affirmative to an
+    # HONEST inconclusive (status=no_tests_run, gap=source_without_runnable_tests,
+    # pass:"inconclusive"). This is NOT a failure: the completion-council
+    # evidence gate treats it as pass-through, exactly like runner=="none".
+    # Positive-detection only -- an unparseable runner is left UNCHANGED
+    # (pass:true) so a legitimate suite is never false-downgraded.
+    local _tr_zero_tests=false
+    if [ "$test_passed" = "true" ] \
+       && _loki_zero_tests_executed "$test_runner" "${output:-}" "${_nt_files[@]:-}"; then
+        _tr_zero_tests=true
+        _tr_status="no_tests_run"
+        log_warn "Verification gap: $test_runner exited 0 but ran ZERO tests -- recording inconclusive (no_tests_run), not verified"
+    fi
+
     # Best-effort pass/fail counts from the summary text (null when not found).
     local _tr_passed_n _tr_failed_n
     _tr_passed_n=$(printf '%s' "$details" | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' | head -1)
@@ -9310,11 +9396,19 @@ TREOF
     [ -n "$_tr_passed_n" ] || _tr_passed_n=null
     [ -n "$_tr_failed_n" ] || _tr_failed_n=null
 
-    # verification_gap is "none" whenever a real runner executed: the suite ran,
-    # so there is no docs-without-execution / source-without-tests gap. Keeping
-    # the key on BOTH writers gives consumers a single stable schema shape.
+    # verification_gap is "none" whenever a real runner executed AND ran tests:
+    # the suite ran, so there is no docs-without-execution / source-without-tests
+    # gap. The #82 zero-test case is the exception -- a runner ran but executed
+    # NO tests -- so it records pass:"inconclusive" (the string, distinct from the
+    # bool true/false) + gap:source_without_runnable_tests. Keeping the key on
+    # BOTH writers gives consumers a single stable schema shape.
+    local _tr_pass_json="$test_passed" _tr_gap_json="none"
+    if [ "$_tr_zero_tests" = "true" ]; then
+        _tr_pass_json='"inconclusive"'
+        _tr_gap_json="source_without_runnable_tests"
+    fi
     cat > "$quality_dir/test-results.json" << TREOF
-{"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","runner":"$test_runner","pass":$test_passed,"min_coverage":$min_coverage,"summary":"$details","command":"$_tr_cmd","exit_code":$_tr_exit,"status":"$_tr_status","passed_count":$_tr_passed_n,"failed_count":$_tr_failed_n,"verification_gap":"none"}
+{"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","runner":"$test_runner","pass":$_tr_pass_json,"min_coverage":$min_coverage,"summary":"$details","command":"$_tr_cmd","exit_code":$_tr_exit,"status":"$_tr_status","passed_count":$_tr_passed_n,"failed_count":$_tr_failed_n,"verification_gap":"$_tr_gap_json"}
 TREOF
     # Finding #598: stamp the per-iteration freshness marker (see above).
     printf '%s\n' "${ITERATION_COUNT:-0}" > "$quality_dir/.test-results.iter" 2>/dev/null || true

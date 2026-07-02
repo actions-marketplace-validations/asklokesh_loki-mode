@@ -1764,10 +1764,21 @@ except (json.JSONDecodeError, IOError, KeyError, ValueError):
     sys.exit(0)
 runner = d.get('runner', 'none')
 passed = d.get('pass', True)
+status = d.get('status', '')
+#82 (zero-test-file hardening): a runner that ran but executed ZERO real tests
+# (node --test on a *.test.js with no test() calls; jest --passWithNoTests with
+# no suites) records pass:"inconclusive" + status:"no_tests_run" -- a mini
+# fake-green when read as affirmative. The pass value is then the STRING
+# "inconclusive" (not the bool True/False), so the old else-branch (PASS) would
+# have counted it as green. Route it to INCONCLUSIVE (pass-through, never a
+# block): a real runner ran but proved nothing, exactly like runner=="none".
+# Only the boolean True passes as affirmative; only the boolean False blocks.
 if runner == 'none':
     print('PASS:none:true')
 elif passed is False:
     print('FAIL:%s:false' % runner)
+elif status == 'no_tests_run' or passed is not True:
+    print('INCONCLUSIVE:%s:true' % runner)
 else:
     print('PASS:%s:true' % runner)
 " 2>/dev/null || echo "INCONCLUSIVE:none:true")
@@ -1786,6 +1797,16 @@ else:
         if [ "$test_runner" = "none" ] && [ "${LOKI_EVIDENCE_NO_TESTS_AFFIRMATIVE:-0}" != "1" ]; then
             test_inconclusive="true"
             test_inconclusive_reason="no_test_runner"
+        fi
+        # #82: a real runner that executed ZERO tests (pass:"inconclusive" +
+        # status:"no_tests_run") is INCONCLUSIVE, not affirmative. Mirror the
+        # runner=="none" pass-through so it routes to the council instead of
+        # reading as green. Honest (not a block): test_fails stays "false".
+        # Not gated by LOKI_EVIDENCE_NO_TESTS_AFFIRMATIVE -- a zero-test run is
+        # never affirmative evidence regardless of that opt-out.
+        if [ "$_verdict" = "INCONCLUSIVE" ] && [ "$test_runner" != "none" ]; then
+            test_inconclusive="true"
+            test_inconclusive_reason="no_tests_executed"
         fi
     else
         # Missing test-results.json: no suite was recorded at all. Like the

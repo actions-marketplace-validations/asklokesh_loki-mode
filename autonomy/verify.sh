@@ -292,6 +292,54 @@ verify_gate_build() {
     return 0
 }
 
+# _verify_zero_tests_executed -- "no real tests ran" detector (#82), mirrors
+# _loki_zero_tests_executed in run.sh. Returns 0 (true) ONLY on positive
+# detection of a runner that exited 0 yet executed ZERO actual tests; any
+# unrecognized shape returns 1 (false) so a legitimate suite is never
+# false-downgraded.  $1=runner  $2=raw output  $3..=node --test file paths.
+#
+# node --test: a *.test.js with no test() calls still emits `# tests 1 # pass 1`
+#   (node counts the FILE as one passing pseudo-test: `ok N - <file-basename>`),
+#   so the true executed count = ok/not-ok lines whose label is NOT a passed
+#   file basename. Zero such = no real tests.
+# jest --passWithNoTests: prints "No tests found" and no "Tests:" summary.
+_verify_zero_tests_executed() {
+    local _zt_runner="$1"; shift
+    local _zt_out="$1"; shift
+    case "$_zt_runner" in
+        node-test)
+            # node's file-wrapper label is the argument verbatim (full path) and,
+            # on older node, its basename. Register BOTH (newline-delimited so a
+            # spaced path still matches exactly).
+            local _zt_f _zt_bases=$'\n'
+            for _zt_f in "$@"; do
+                [ -n "$_zt_f" ] || continue
+                _zt_bases="${_zt_bases}${_zt_f}"$'\n'"$(basename "$_zt_f")"$'\n'
+            done
+            local _zt_real=0 _zt_line _zt_label
+            while IFS= read -r _zt_line; do
+                _zt_label="${_zt_line#* - }"
+                case "$_zt_bases" in
+                    *$'\n'"$_zt_label"$'\n'*) continue ;;
+                esac
+                _zt_real=$((_zt_real + 1))
+            done < <(printf '%s\n' "$_zt_out" | grep -E '^(ok|not ok) [0-9]+ - ' 2>/dev/null)
+            [ "$_zt_real" -eq 0 ] && return 0
+            return 1
+            ;;
+        jest)
+            if printf '%s' "$_zt_out" | grep -qiE 'no tests found' 2>/dev/null \
+               && ! printf '%s' "$_zt_out" | grep -qE '^Tests:' 2>/dev/null; then
+                return 0
+            fi
+            return 1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 # ---------------------------------------------------------------------------
 # Gate: tests (faithful port of enforce_test_coverage detection, run.sh:6624).
 #
@@ -301,7 +349,9 @@ verify_gate_build() {
 # skipped  = no test framework detected at all (not-applicable).
 # inconclusive = a project is present but no runnable framework
 #                (e.g. package.json with no test runner, or a python project
-#                 with no pytest on PATH). Forces at-least-CONCERNS.
+#                 with no pytest on PATH), OR a runner that ran but executed
+#                 ZERO tests (#82: node --test empty file, jest --passWithNoTests).
+#                Forces at-least-CONCERNS.
 # fail     = tests ran and failed -> High finding.
 # pass     = tests ran green.
 # ---------------------------------------------------------------------------
@@ -429,7 +479,15 @@ verify_gate_tests() {
     fi
 
     if [ "$rc" -eq 0 ]; then
-        _verify_add_gate "tests" "pass" "$runner" "tests passed" "true"
+        # #82: a green run that executed ZERO real tests is a mini fake-green.
+        # Record it as HONEST inconclusive (forces at-least-CONCERNS), NOT pass
+        # and NOT fail. Positive-detection only; an unparseable runner stays pass.
+        if _verify_zero_tests_executed "$runner" "$out" "${_nt_files[@]:-}"; then
+            _verify_add_gate "tests" "inconclusive" "$runner" \
+                "runner ran but executed zero tests (source_without_runnable_tests)" "true"
+        else
+            _verify_add_gate "tests" "pass" "$runner" "tests passed" "true"
+        fi
     else
         _verify_add_gate "tests" "fail" "$runner" "tests failed (rc=$rc)" "true"
         _verify_add_finding "High" "tests" "deterministic:$runner" "" "null" \

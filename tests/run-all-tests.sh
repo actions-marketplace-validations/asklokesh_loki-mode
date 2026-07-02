@@ -98,6 +98,8 @@ run_test "Verify setup-recipe writer (rank 7, env NAMES not values)" "$SCRIPT_DI
 # source_without_tests -> NOT VERIFIED (false-negative, symmetric to fake-green).
 run_test "node --test detection (run.sh + verify.sh, task #79 false-negative)" "$SCRIPT_DIR/test-node-test-detection.sh"
 run_test "LOKI_DIR double-.loki path guard (#80 COMPLETED marker)" "$SCRIPT_DIR/test-loki-dir-double-path.sh"
+run_test "zero-test-file inconclusive (run.sh + verify.sh + council, #82 fake-green)" "$SCRIPT_DIR/test-zero-test-inconclusive.sh"
+run_test "Heal Assess Readiness Triage Tests (rank 13)" "$SCRIPT_DIR/test-heal-assess-readiness.sh"
 
 # Process Supervisor Tests
 run_test "Process Supervisor Tests" "$SCRIPT_DIR/test-process-supervisor.sh"
