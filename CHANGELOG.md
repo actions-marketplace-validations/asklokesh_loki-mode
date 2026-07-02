@@ -9,6 +9,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (none)
 
+## [7.113.0] - 2026-07-02
+
+### Wave-4 bug-hunt fixes (4 real, reproduced, RED/GREEN-tested)
+
+- **Healing friction gate: two HIGH fail-open bugs closed** (trust-adjacent).
+  The friction safety gate in `hook_pre_healing_modify` (`autonomy/hooks/migration-hooks.sh`)
+  decides whether an autonomous healing edit may remove catalogued friction.
+  Two independent fail-open holes let a removal through that should have been
+  blocked: (A) type-coercion -- `safe_to_remove` was read with Python truthiness,
+  so the JSON string `"false"` (truthy) wrongly cleared the block; (B)
+  blacklist-only -- the gate blocked only the two labels `business_rule`/`unknown`,
+  so any LLM-invented classification with `safe_to_remove:false` slipped past.
+  Fix: strict-boolean whitelist -- `safe = (friction.get('safe_to_remove') is True)`
+  then block unless explicitly cleared, regardless of classification label. Only
+  a real JSON boolean `true` clears; strings, ints, null, and missing keys all
+  block. Not over-blocking: the healing protocol's prescribed clearance path
+  (`safe_to_remove:true`) is preserved, and heal-mode-off / non-matching frictions
+  stay byte-identical no-ops. RED/GREEN test: `tests/test-healing-friction-gate.sh`
+  (8/8; old gate allowed cases A and B, proven by reconstruction).
+- **Dashboard task-detail modal no longer crashes on a non-array field.** In
+  `loki-task-board.js` `_renderTaskDetailModal`, `acceptance_criteria` and
+  `context_files` used `|| []` with no type guard, so a string value (truthy)
+  reached `.map()` and threw "not a function", blanking the modal. Fix:
+  `Array.isArray(...)` guards, matching the existing `notes`/`logs` pattern.
+  Test: `dashboard-ui/tests/loki-task-board-modal-guard.node.test.mjs` (6/6;
+  3/6 fail against pre-fix).
+- **Memory retrieval no longer returns the same record twice.**
+  `memory/retrieval.py` `_progressive_retrieve` emitted the same memory id in both
+  the Layer-2 summary and Layer-3 detail passes. Fix: dedup by id, preferring the
+  fuller record; records without an id are preserved. Test:
+  `tests/test-memory-retrieval-wave6-bugs.py` (8/8).
+- **Dashboard WebSocket leak on project switch fixed** (+ disconnect no longer
+  defeated by async onclose). `loki-overview.js` / `loki-api-client.js`: adopting
+  a new client on project switch left the old socket open; `disconnect()` fired
+  `onclose` asynchronously which then re-opened via `_scheduleReconnect`. Fix:
+  close the old client before adopting the new one; add an `_intentionalClose`
+  flag so a deliberate disconnect is not reconnected. Test:
+  `dashboard-ui/tests/loki-ws-leak-reconnect.node.test.mjs` (3/3).
+
+All four independently reproduced and RED/GREEN-verified; council 3-of-3 APPROVE
+(2 Opus + 1 Sonnet, reviewers ran the tests). No behavior change to any shipping
+`loki` command; no trust core / evidence gate touched.
+
 ## [7.112.0] - 2026-07-02
 
 ### HLW-5: shareable "Verified by Loki" Evidence Receipt badge (now honest)

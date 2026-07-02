@@ -405,9 +405,19 @@ for friction in data.get('frictions', []):
     loc = friction.get('location', '')
     if matches(file_path, loc):
         cls = friction.get('classification', 'unknown')
-        safe = friction.get('safe_to_remove', False)
-        if cls in ('business_rule', 'unknown') and not safe:
-            print(f'BLOCKED: Friction {friction.get(\"id\", \"?\")} in {loc} classified as {cls}')
+        # Fail-safe clearance: a friction is removable ONLY when it is EXPLICITLY
+        # marked safe with a real boolean True. A JSON string \"false\"/\"true\", an
+        # int 1, or None are all NOT safe -- 'is True' rejects them (a string is
+        # truthy, so 'not \"false\"' would have wrongly cleared it). This is a
+        # whitelist: removal is blocked unless explicitly cleared, rather than a
+        # blacklist of two hardcoded labels. The archaeology prompt defines no
+        # closed classification taxonomy, so the LLM invents labels freely
+        # (workaround, performance_hack, magic_value, ...); no label may serve as
+        # a clearance signal (including 'true_bug'), or a mislabel would bypass
+        # the gate. safe_to_remove is True is the sole clearance.
+        safe = (friction.get('safe_to_remove') is True)
+        if not safe:
+            print(f'BLOCKED: Friction {friction.get(\"id\", \"?\")} in {loc} ({cls}) not marked safe_to_remove=true')
             sys.exit(0)
         if strict and cls != 'true_bug':
             print(f'BLOCKED (strict): Friction {friction.get(\"id\", \"?\")} in {loc} - strict mode requires explicit approval')
@@ -417,7 +427,7 @@ print('OK')
 
         if [[ "$blocked" == BLOCKED* ]]; then
             echo "HOOK_BLOCKED: $blocked"
-            echo "To proceed: Update friction-map.json to classify this friction or set safe_to_remove=true"
+            echo "To proceed: Update friction-map.json to set safe_to_remove=true (must be a JSON boolean true, not the string \"true\") for this friction once it is characterized and cleared for removal."
             return 1
         fi
     fi
