@@ -87,6 +87,11 @@ run_test "Mergeability reviewer + quality score (rank 9 run_code_review)" "$SCRI
 run_test "Council Convergence Floor (rank 15 no-claim early check)" "$SCRIPT_DIR/test-council-convergence-floor.sh"
 run_test "Acceptance-oracle source-grounded (rank 2 routes/LSP-symbols/invariant)" "$SCRIPT_DIR/test-oracle-source-grounded.sh"
 
+# Batch-3 verify.sh: rank 10 code-scope/locality record (advisory-first) + rank 7
+# setup-recipe writer (env NAMES only, never secret values).
+run_test "Verify scope record (rank 10 locality, advisory-first)" "$SCRIPT_DIR/test-verify-scope-record.sh"
+run_test "Verify setup-recipe writer (rank 7, env NAMES not values)" "$SCRIPT_DIR/test-verify-setup-recipe.sh"
+
 # Process Supervisor Tests
 run_test "Process Supervisor Tests" "$SCRIPT_DIR/test-process-supervisor.sh"
 
@@ -127,6 +132,13 @@ run_test "Crash Reporting CLI Tests" "$SCRIPT_DIR/test-crash-cli.sh"
 if command -v python3 >/dev/null 2>&1; then
     run_test "Crash Scrubber Redaction Tests (Python)" \
         "$SCRIPT_DIR/crash/run_crash_redact_tests.sh"
+fi
+
+# Batch-3 rank 6: work-based engineering-hours estimator emitted into proof.json.
+# Python; wrapped so the bash runner (one executable per entry) can include it.
+if command -v python3 >/dev/null 2>&1; then
+    run_test "Effort Estimator (Rank 6 proof.json hours)" \
+        "$SCRIPT_DIR/run_effort_estimate_tests.sh"
 fi
 
 # Verified completion / evidence hard gate (v7.19.1) -- council_evidence_gate

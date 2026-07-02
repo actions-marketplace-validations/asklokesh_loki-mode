@@ -36,6 +36,7 @@ if _HERE not in sys.path:
 
 import proof_redact  # noqa: E402
 from efficiency_cost import collect_efficiency as _collect_efficiency  # noqa: E402
+import effort_estimator  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -741,6 +742,25 @@ def _build_proof(args, loki_dir, target_dir, repo_root):
         "evidence_gate": evidence_gate,
     }
 
+    # Effort estimate (Rank 6): equivalent human-engineering-hours for this
+    # build, from the REAL work signals (diff stat + files + tests + scope), NOT
+    # the iteration count alone. Emitted as a TOP-LEVEL additive key on purpose:
+    # it is an ESTIMATE (an opinion, LLM on the opt-in path), so it must never
+    # sit under `facts` where _compute_headline/_compute_degraded could let it
+    # leak into the deterministic VERIFIED headline. Fail-open: never raises,
+    # defaults to the deterministic heuristic when no model is available.
+    try:
+        effort_estimate = effort_estimator.estimate(
+            files_changed, tests, spec, iterations
+        )
+    except Exception:
+        effort_estimate = {
+            "hours": 0.0, "low": 0.0, "high": 0.0,
+            "method": "heuristic", "model": "", "inputs_hash": "",
+            "calibrated": False, "label": "estimated (uncalibrated, heuristic)",
+            "estimator_version": effort_estimator.ESTIMATOR_VERSION,
+        }
+
     # Assemble WITHOUT redaction / verification fields (advisor ordering).
     # Top-level flat keys are RETAINED as a back-compat mirror so existing
     # dashboard/CLI/template readers (schema v1.0 consumers) keep working; the
@@ -761,6 +781,8 @@ def _build_proof(args, loki_dir, target_dir, repo_root):
         "quality_gates": quality_gates,
         "cost": cost,
         "deployment": deployment,
+        # Rank 6: work-based engineering-hours estimate (top-level, NOT a fact).
+        "effort_estimate": effort_estimate,
         # v1.1 evidence model (additive).
         "facts": facts,
         "assessments": assessments,

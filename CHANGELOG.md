@@ -9,6 +9,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (none)
 
+## [7.115.0] - 2026-07-02
+
+### Adoption-friction + accuracy batch (ranks 6, 7, 10; RED/GREEN measured)
+
+Driven from docs/research-2026-07/gap-analysis-backlog.json. Built in isolated
+worktrees, each proven with a fixture RED/GREEN test, wired into run-all-tests.sh
+AND local-ci.sh. All three are bash/python-only (no loki-ts mirror exists for
+`loki verify` or the proof generator), so no Bun-parity surface is touched.
+
+- **rank 10 -- code-scope / locality record (accuracy, ADVISORY-first).**
+  `loki verify` now emits a structured scope record in evidence.json:
+  {files_changed, net_lines, verdict, advisory:true, thresholds}. Verdict is
+  "ok" under soft thresholds, "warn" over them, and "block" ONLY when an operator
+  explicitly sets a hard cap (`LOKI_SCOPE_MAX_FILES` / `LOKI_SCOPE_MAX_NET_LINES`)
+  and it is exceeded. Critically, the record NEVER feeds verify_compute_verdict and
+  never emits a gate, so by default it CANNOT change the exit code or block a build
+  (zero friction regression, verified). Greenfield builds are byte-identical by
+  construction (the helper is reachable only via `loki verify`, never `loki start`).
+  Test: tests/test-verify-scope-record.sh (4/4).
+- **rank 7 -- deterministic setup-recipe writer (adoption-friction).** After a
+  verified runtime boot, `loki verify` now writes .loki/setup-recipe.json
+  {install, seed, env_keys, start, port, health_path} so later verify/e2e runs
+  replay the exact steps instead of re-detecting heuristically (Devin's saved-setup
+  pattern; the CONSUMER already existed). SECURITY: env_keys are variable NAMES
+  ONLY -- the writer never reads the value side of any env line, proven by a test
+  that plants a secret value and asserts it is absent from the recipe. A failed
+  boot writes no recipe. Test: tests/test-verify-setup-recipe.sh (3/3, incl. the
+  secret-leak assertion).
+- **rank 6 -- work-based engineering-hours estimate in proof.json
+  (adoption-friction).** proof.json gains a top-level `effort_estimate`
+  {hours, low, high, method, model, inputs_hash, calibrated, label,
+  estimator_version}. It is a work-based estimate (diff insertions/deletions +
+  files + tests + brief size), so two builds of different scope get materially
+  different hours (a 1-line tweak vs a full-stack feature differ by >3x -- the old
+  flat "iterations x 15min" gave both the same 30min). HONESTY: it FAILS OPEN to
+  the deterministic heuristic when no model is available (method="heuristic",
+  model=""), and method="llm" ONLY when an opt-in `LOKI_EFFORT_LLM=1` model call
+  actually returned a parseable number -- it never fabricates an LLM figure. Every
+  estimate is labeled `calibrated:false` ("uncalibrated") until a real
+  ground-truth calibration dataset exists (tracked follow-up). effort_estimate is
+  a TOP-LEVEL key, kept out of the facts block, so the LLM opinion can never leak
+  into the deterministic proof headline. inputs_hash is a sha256 over the canonical
+  inputs (recomputable from the written receipt) for auditability. The existing
+  `loki metrics` iterations-based report is unchanged. Test:
+  tests/test_effort_estimate.py (7/7); no proof-verify change needed (re-hashes the
+  whole dict; 50 proof pytests still pass).
+
 ## [7.114.0] - 2026-07-02
 
 ### Accuracy + speed moat batch (4 research-grounded items, RED/GREEN measured)

@@ -276,6 +276,9 @@ if [ -n "$PROOF_PY" ]; then
   run_check "tests/test_proof_redaction.py (R1 redaction gate)" "$PROOF_PY -m pytest -q tests/test_proof_redaction.py 2>&1 | tail -5"
   # Schema + integrity hash + include-diffs + graceful degradation.
   run_check "tests/test_proof_generator.py (R1 generator schema/hash)" "$PROOF_PY -m pytest -q tests/test_proof_generator.py 2>&1 | tail -5"
+  # Rank 6: per-build effort_estimate (work-based hours, fail-open heuristic,
+  # honest LLM gate, deterministic inputs_hash). Two-scope separation gate.
+  run_check "tests/test_effort_estimate.py (Rank 6 effort estimator)" "$PROOF_PY -m pytest -q tests/test_effort_estimate.py 2>&1 | tail -5"
   # Evidence Receipt verifier: tamper + drift re-check (loki proof verify).
   run_check "tests/test_proof_verify.py (Evidence Receipt verify: tamper/drift)" "$PROOF_PY -m pytest -q tests/test_proof_verify.py 2>&1 | tail -5"
   run_check "tests/test_own_render.py (finish-and-own honesty: never green unless verified)" "$PROOF_PY -m pytest -q tests/test_own_render.py 2>&1 | tail -5"
@@ -681,6 +684,8 @@ run_check "tests/test-spec.sh (living spec lock/status/sync + drift finding)" "b
 run_check "tests/test-evidence-gate.sh (evidence gate + inconclusive lifecycle)" "bash tests/test-evidence-gate.sh 2>&1 | tail -3"
 run_check "tests/test-evidence-gate-no-tests.sh (P1-1 no-tests not affirmative)" "bash tests/test-evidence-gate-no-tests.sh 2>&1 | tail -3"
 run_check "tests/test-verify.sh (loki verify deterministic gates)" "bash tests/test-verify.sh 2>&1 | tail -3"
+run_check "tests/test-verify-scope-record.sh (rank 10 locality scope record, advisory-first)" "bash tests/test-verify-scope-record.sh 2>&1 | tail -3"
+run_check "tests/test-verify-setup-recipe.sh (rank 7 setup-recipe writer, env NAMES not values)" "bash tests/test-verify-setup-recipe.sh 2>&1 | tail -3"
 run_check "tests/dashboard/test_tenant_isolation.py (P3-7 tenant boundary enforcement)" "python3 -m unittest tests.dashboard.test_tenant_isolation 2>&1 | tail -3"
 
 # P0 verification-credibility sweep (docs/P0-SWEEP-PLAN.md): the static
