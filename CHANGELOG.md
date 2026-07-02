@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (none)
 
+## [7.112.0] - 2026-07-02
+
+### HLW-5: shareable "Verified by Loki" Evidence Receipt badge (now honest)
+
+- **`loki proof share <id>` now actually prints the badge** it was documented
+  to print in v7.100.0 (the CHANGELOG described it, but only the gist URL ever
+  printed -- the badge was never implemented). After publishing, the share path
+  now also prints a copy-paste markdown badge linked to the shared gist/hosted
+  URL. New `loki proof badge <id>` subcommand prints the same badge without
+  publishing (for pasting into a README/PR/post).
+- **DISPLAY-ONLY, anti-fake-green.** The badge's color and text derive ONLY from
+  the receipt's `honesty.headline`, read from the SAME redacted `proof.json` the
+  share path uses: `VERIFIED` -> green "Verified by Loki", `VERIFIED WITH GAPS`
+  -> amber "Verified with gaps", `NOT VERIFIED` -> red "Not verified". An absent,
+  empty, or unrecognized headline prints an honest "no badge" note -- never a
+  fabricated green. Green is reachable ONLY from the exact string `VERIFIED`.
+  This is additive and does not touch the trust core or any evidence gate.
+- Implemented on the Bun route (`loki-ts/src/commands/proof.ts`), the live route
+  when bun is installed. The `LOKI_LEGACY_BASH=1` bash route ALSO prints a
+  "Verified by Loki" share badge (autonomy/loki), so both routes carry the badge
+  on `loki proof share`. Both render a VERIFIED headline GREEN; the routes differ
+  only on the VERIFIED-WITH-GAPS color (bash orange, Bun yellow) and on message
+  style (bash: lowercase message + shields static-v1 URL; Bun: "Verified by Loki"
+  + shields badge-path, trimmed). What is Bun-only is the standalone
+  `loki proof badge <id>` subcommand and the image-only rendering. The badge uses
+  a shields.io static-badge image URL (external image host; no infra, no new
+  dependency). RED/GREEN test: `loki-ts/tests/commands/proof_badge.test.ts`.
+
 ## [7.111.0] - 2026-07-02
 
 ### Trust-core fixes (bug-hunt wave 3) + honesty relabel of the proof non-forgeability claim
