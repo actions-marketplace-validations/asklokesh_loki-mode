@@ -186,6 +186,63 @@
 
   /* Spinner / loading */
   .loading { color: var(--faint); font-size: 13px; padding: 12px 0; }
+
+  /* Interactive chart affordances */
+  svg.chart .hit { cursor: crosshair; }
+  svg.chart .hit:focus { outline: none; }
+  svg.chart .hit:focus + * , svg.chart .hit:focus { }
+  .chart-hint { font-size: 11px; color: var(--faint); margin-top: 6px; font-style: italic; }
+
+  /* Floating tooltip - body-level, fixed, never clipped by card overflow/backdrop-filter */
+  .chart-tooltip {
+    position: fixed; z-index: 9999; pointer-events: none;
+    background: var(--text); color: #F5F3FB;
+    border: 1px solid rgba(255,255,255,0.14); border-radius: 8px;
+    padding: 8px 11px; font-size: 12px; line-height: 1.4;
+    box-shadow: 0 8px 24px rgba(45,49,66,0.28);
+    max-width: 260px; opacity: 0; transform: translateY(2px);
+    transition: opacity 0.09s ease, transform 0.09s ease;
+    font-family: var(--sans);
+  }
+  .chart-tooltip.show { opacity: 1; transform: translateY(0); }
+  .chart-tooltip .tt-label { color: var(--faint-fill); font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; }
+  .chart-tooltip .tt-val { font-family: var(--mono); font-weight: 700; font-size: 15px; margin-top: 2px; color: #FFFFFF; }
+  .chart-tooltip .tt-sub { color: #C9CEE6; font-size: 11px; margin-top: 2px; }
+
+  /* Clickable stat card that maps to a chart */
+  .stat-card.clickable { cursor: pointer; transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease; }
+  .stat-card.clickable:hover { transform: translateY(-2px); box-shadow: 0 12px 36px rgba(61,82,160,0.16); border-color: rgba(108,99,255,0.35); }
+  .stat-card.clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .stat-card.clickable .go { font-size: 10px; color: var(--accent); margin-top: 6px; font-weight: 600; letter-spacing: 0.3px; }
+
+  /* Scrollable release timeline so all history is reachable */
+  .release-scroll {
+    max-height: 460px; overflow-y: auto; border: 1px solid var(--border);
+    border-radius: 12px; background: var(--panel); box-shadow: var(--glass-shadow);
+    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+  }
+  .release-scroll::-webkit-scrollbar { width: 10px; }
+  .release-scroll::-webkit-scrollbar-thumb { background: var(--panel-2); border-radius: 6px; border: 2px solid transparent; background-clip: padding-box; }
+  .release-scroll::-webkit-scrollbar-track { background: transparent; }
+  .release-scroll .release-table { border-collapse: separate; border-spacing: 0; }
+  .release-scroll thead th {
+    position: sticky; top: 0; z-index: 2; background: var(--panel-2);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  }
+  /* Navigable release rows: honest cursor - a click always scrolls to the downloads chart */
+  .release-table tbody tr { cursor: pointer; transition: background 0.1s ease; }
+  .release-table tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .release-table tbody tr.pulse td { animation: rowPulse 1.4s ease; }
+  @keyframes rowPulse {
+    0% { background: rgba(108,99,255,0.24); }
+    100% { background: transparent; }
+  }
+  /* Pulse a chart bar when its release is activated */
+  @keyframes barPulse {
+    0%, 100% { opacity: 0.85; }
+    50% { opacity: 1; }
+  }
+  svg.chart rect.bar-pulse { animation: barPulse 0.5s ease 3; stroke: var(--accent-bright); stroke-width: 1.5; }
 </style>
 </head>
 <body>
@@ -230,10 +287,12 @@
           <div class="val" id="gh-forks">--</div>
           <div class="note">Organic interest signal</div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card clickable" id="npm-total-card" role="button" tabindex="0"
+             aria-label="npm downloads last 30 days. Activate to view the daily downloads chart.">
           <div class="label">npm Downloads (30d)</div>
           <div class="val" id="npm-total">--</div>
           <div class="note">Last calendar month</div>
+          <div class="go">View daily chart -&gt;</div>
         </div>
         <div class="stat-card verified">
           <div class="label">Docker Pulls</div>
@@ -311,18 +370,21 @@
     <!-- RELEASES -->
     <section id="releases">
       <h2>Release Timeline</h2>
-      <table class="release-table">
-        <thead>
-          <tr>
-            <th>Version</th>
-            <th>Date</th>
-            <th>Summary</th>
-          </tr>
-        </thead>
-        <tbody id="release-tbody">
-          <tr><td colspan="3" class="loading">Loading...</td></tr>
-        </tbody>
-      </table>
+      <p class="chart-hint" style="margin-bottom:10px;">Scroll to reach all releases. Click any row to jump to its download bar above.</p>
+      <div class="release-scroll">
+        <table class="release-table">
+          <thead>
+            <tr>
+              <th>Version</th>
+              <th>Date</th>
+              <th>Summary</th>
+            </tr>
+          </thead>
+          <tbody id="release-tbody">
+            <tr><td colspan="3" class="loading">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
     </section>
 
     <!-- WHAT WORKED -->
@@ -380,6 +442,59 @@ function makeSVGEl(tag, attrs) {
   const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
   for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
   return el;
+}
+
+// Shared floating tooltip (single body-level node, positioned via clientX/clientY).
+// Kept out of the .chart-wrap cards so backdrop-filter / overflow never clip it.
+let _tooltipEl = null;
+function getTooltip() {
+  if (!_tooltipEl) {
+    _tooltipEl = document.createElement('div');
+    _tooltipEl.className = 'chart-tooltip';
+    _tooltipEl.setAttribute('role', 'status');
+    _tooltipEl.setAttribute('aria-live', 'polite');
+    document.body.appendChild(_tooltipEl);
+  }
+  return _tooltipEl;
+}
+function showTooltip(html, clientX, clientY) {
+  const tt = getTooltip();
+  tt.innerHTML = html;
+  tt.classList.add('show');
+  // Position with a small offset, flipping near the right/top viewport edges.
+  const pad = 14;
+  const rect = tt.getBoundingClientRect();
+  let x = clientX + pad;
+  let y = clientY + pad;
+  if (x + rect.width + 4 > window.innerWidth) x = clientX - rect.width - pad;
+  if (y + rect.height + 4 > window.innerHeight) y = clientY - rect.height - pad;
+  if (x < 4) x = 4;
+  if (y < 4) y = 4;
+  tt.style.left = x + 'px';
+  tt.style.top = y + 'px';
+}
+function hideTooltip() {
+  if (_tooltipEl) _tooltipEl.classList.remove('show');
+}
+// Position a tooltip at an SVG element's center (for keyboard focus, where there is no cursor).
+function tooltipAtEl(el, html) {
+  const r = el.getBoundingClientRect();
+  showTooltip(html, r.left + r.width / 2, r.top + r.height / 2 - 8);
+}
+// Wire an SVG hit element for hover + keyboard focus. moveWith=true tracks the cursor.
+function wireHit(hit, html, moveWith, onEnter, onLeave) {
+  hit.setAttribute('tabindex', '0');
+  hit.setAttribute('role', 'img');
+  const plain = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  hit.setAttribute('aria-label', plain);
+  const enter = (e) => { if (onEnter) onEnter(); showTooltip(html, e.clientX, e.clientY); };
+  const move = (e) => { if (moveWith) showTooltip(html, e.clientX, e.clientY); };
+  const leave = () => { if (onLeave) onLeave(); hideTooltip(); };
+  hit.addEventListener('mouseenter', enter);
+  hit.addEventListener('mousemove', move);
+  hit.addEventListener('mouseleave', leave);
+  hit.addEventListener('focus', () => { if (onEnter) onEnter(); tooltipAtEl(hit, html); });
+  hit.addEventListener('blur', leave);
 }
 
 function renderNpmChart(daily, svgId) {
@@ -443,8 +558,37 @@ function renderNpmChart(daily, svgId) {
     svg.appendChild(lbl);
   });
 
+  // Hidden crosshair + highlight dot, shown on hover/focus of a point.
+  const crosshair = makeSVGEl('line', {x1: 0, y1: PT, x2: 0, y2: PT + cH, stroke: 'rgba(108,99,255,0.45)', 'stroke-width': 1, 'stroke-dasharray': '3 3', visibility: 'hidden'});
+  svg.appendChild(crosshair);
+  const hl = makeSVGEl('circle', {cx: 0, cy: 0, r: 4.5, fill: '#6C63FF', stroke: '#FFFFFF', 'stroke-width': 1.5, visibility: 'hidden'});
+  svg.appendChild(hl);
+
+  // Transparent hit circles per point (appended last = on top). fill:transparent
+  // receives pointer events; fill:none would not.
+  daily.forEach((d, i) => {
+    const x = PL + i * step;
+    const y = PT + cH - (d.downloads / maxVal) * cH;
+    const hit = makeSVGEl('circle', {cx: x, cy: y, r: 9, fill: 'transparent', class: 'hit'});
+    const html = `<div class="tt-label">${d.day}</div><div class="tt-val">${d.downloads.toLocaleString()}</div><div class="tt-sub">npm downloads that day</div>`;
+    wireHit(hit, html, true,
+      () => {
+        crosshair.setAttribute('x1', x); crosshair.setAttribute('x2', x);
+        crosshair.setAttribute('visibility', 'visible');
+        hl.setAttribute('cx', x); hl.setAttribute('cy', y);
+        hl.setAttribute('visibility', 'visible');
+      },
+      () => { crosshair.setAttribute('visibility', 'hidden'); hl.setAttribute('visibility', 'hidden'); }
+    );
+    svg.appendChild(hit);
+  });
+
   document.getElementById('npm-chart-note').textContent =
     `Source: api.npmjs.org/downloads/range/last-month/loki-mode | Peak: ${daily[peakIdx].downloads.toLocaleString()} on ${daily[peakIdx].day}`;
+  const hint = document.createElement('div');
+  hint.className = 'chart-hint';
+  hint.textContent = 'Hover or tab through the line to read each day. All 30 days are individually inspectable.';
+  document.getElementById('npm-chart-note').after(hint);
 }
 
 function renderDlChart(releases, svgId) {
@@ -472,12 +616,16 @@ function renderDlChart(releases, svgId) {
     }
   });
 
+  // Track bars by normalized tag so release-timeline rows can pulse the matching bar.
+  window._dlBars = {};
+
   rel.forEach((r, i) => {
     const barH = Math.max(2, (r.downloads / maxVal) * cH);
     const x = PL + i * gap + (gap - barW) / 2;
     const y = PT + cH - barH;
     const rect = makeSVGEl('rect', {x, y, width: barW, height: barH, fill: '#6C63FF', rx: 2, opacity: 0.85});
     svg.appendChild(rect);
+    window._dlBars[r.tag] = rect;
 
     // Label every 5th bar or first/last
     if (i === 0 || i === rel.length - 1 || i % Math.ceil(rel.length / 8) === 0) {
@@ -489,10 +637,38 @@ function renderDlChart(releases, svgId) {
       lbl.textContent = r.tag;
       svg.appendChild(lbl);
     }
+
+    // Full-column-height transparent hit rect (short bars are near-impossible to
+    // hover otherwise). Appended after the visible bar so it captures on top.
+    const hit = makeSVGEl('rect', {x: PL + i * gap, y: PT, width: gap, height: cH, fill: 'transparent', class: 'hit'});
+    const html = `<div class="tt-label">${r.tag} - ${r.date}</div><div class="tt-val">${r.downloads.toLocaleString()}</div><div class="tt-sub">release asset downloads</div>`;
+    wireHit(hit, html, false,
+      () => { rect.setAttribute('opacity', '1'); rect.setAttribute('stroke', '#3D52A0'); rect.setAttribute('stroke-width', '1.5'); },
+      () => { rect.setAttribute('opacity', '0.85'); rect.removeAttribute('stroke'); rect.removeAttribute('stroke-width'); }
+    );
+    svg.appendChild(hit);
   });
 
   document.getElementById('dl-chart-note').textContent =
     `Source: gh api repos/asklokesh/loki-mode/releases | Showing last ${rel.length} releases, ordered oldest to newest`;
+  const hint = document.createElement('div');
+  hint.className = 'chart-hint';
+  hint.textContent = 'Hover any column for that release exact download count. Clicking a row in the Release Timeline below jumps here and highlights its bar.';
+  document.getElementById('dl-chart-note').after(hint);
+}
+
+// Scroll to the downloads chart and pulse the bar for a given release version.
+function focusReleaseBar(version) {
+  const wrap = document.getElementById('dl-chart');
+  if (wrap) wrap.closest('.chart-wrap').scrollIntoView({behavior: 'smooth', block: 'center'});
+  const tag = version.startsWith('v') ? version : 'v' + version;
+  const bar = window._dlBars && window._dlBars[tag];
+  if (bar) {
+    bar.classList.remove('bar-pulse');
+    void bar.getBoundingClientRect(); // reflow so re-adding restarts the animation
+    bar.classList.add('bar-pulse');
+    setTimeout(() => bar.classList.remove('bar-pulse'), 1600);
+  }
 }
 
 function renderIterChart(perIter, svgId) {
@@ -519,6 +695,18 @@ function renderIterChart(perIter, svgId) {
       valLbl.textContent = Math.round(p.work_s / 60) + 'm';
       svg.appendChild(valLbl);
     }
+
+    // Full-height transparent hit rect for hover/focus tooltip.
+    const mins = (p.work_s / 60);
+    const timeStr = mins >= 1 ? mins.toFixed(1) + ' min' : Math.round(p.work_s) + ' s';
+    const flag = p.work_s > 200 ? '<div class="tt-sub">disproportionately long iteration</div>' : '';
+    const hit = makeSVGEl('rect', {x: PL + i * gap, y: PT, width: gap, height: cH, fill: 'transparent', class: 'hit'});
+    const html = `<div class="tt-label">Iteration ${p.iteration}</div><div class="tt-val">${timeStr}</div><div class="tt-sub">${Math.round(p.work_s)}s of work</div>${flag}`;
+    wireHit(hit, html, false,
+      () => { rect.setAttribute('opacity', '1'); rect.setAttribute('stroke', color === '#C45B5B' ? '#A83A3A' : '#3D52A0'); rect.setAttribute('stroke-width', '1.5'); },
+      () => { rect.setAttribute('opacity', '0.85'); rect.removeAttribute('stroke'); rect.removeAttribute('stroke-width'); }
+    );
+    svg.appendChild(hit);
   });
 }
 
@@ -604,12 +792,29 @@ function renderReleases(timeline) {
     return;
   }
   tbody.innerHTML = timeline.map(r => `
-    <tr>
+    <tr tabindex="0" role="button" data-version="${r.version}"
+        aria-label="Release ${r.version}, ${r.date}. Activate to view its download bar.">
       <td><span class="tag-badge">${r.version}</span></td>
       <td class="date-col">${r.date}</td>
       <td>${r.summary || ''}</td>
     </tr>
   `).join('');
+
+  // Navigable rows: click or Enter/Space scrolls to the downloads chart, pulses
+  // the matching bar, and pulses the row so the interaction is visible.
+  tbody.querySelectorAll('tr[data-version]').forEach(tr => {
+    const activate = () => {
+      tbody.querySelectorAll('tr.pulse').forEach(t => t.classList.remove('pulse'));
+      void tr.getBoundingClientRect();
+      tr.classList.add('pulse');
+      setTimeout(() => tr.classList.remove('pulse'), 1600);
+      focusReleaseBar(tr.getAttribute('data-version'));
+    };
+    tr.addEventListener('click', activate);
+    tr.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate(); }
+    });
+  });
 }
 
 function renderWorked(list) {
@@ -716,6 +921,19 @@ fetch('data.json')
     // Charts
     renderNpmChart(npm.daily || [], 'npm-chart');
     renderDlChart(data.releases_downloads || [], 'dl-chart');
+
+    // Clickable npm stat card -> scroll to its daily chart (only card with a chart).
+    const npmCard = document.getElementById('npm-total-card');
+    if (npmCard) {
+      const goToNpmChart = () => {
+        const chart = document.getElementById('npm-chart');
+        if (chart) chart.closest('.chart-wrap').scrollIntoView({behavior: 'smooth', block: 'center'});
+      };
+      npmCard.addEventListener('click', goToNpmChart);
+      npmCard.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goToNpmChart(); }
+      });
+    }
 
     // Benchmarks
     renderBenchmarks(data.benchmarks || []);
