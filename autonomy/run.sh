@@ -16308,6 +16308,47 @@ except Exception:
         if type spec_interrogation_run &>/dev/null; then
             spec_interrogation_run "$prd_path" || true
         fi
+        # #87: no-HITL fast-fail on an unresolved spec-INTERNAL contradiction.
+        # A contradiction (class=contradictory) is NEVER auto-acked (P2-4) and only
+        # a human sets confirmed=true, so in an AUTONOMOUS run it can never clear ->
+        # the completion gate blocks EVERY iteration -> the loop grinds to
+        # max-iterations (~20min, opaque). This run is already doomed; here we fail
+        # FAST + HONEST + NAMED instead. Honesty: this is the no-HITL rule verbatim
+        # ("when unsafe to decide, inconclusive-and-proceed, never fake-green") --
+        # it NEVER declares done/green (inconclusive_spec_contradiction maps to a
+        # terminal-failure exit, tested), it just replaces the opaque grind.
+        # SCOPE (deliberately narrow, no regression): fires ONLY when
+        #   (a) non-interactive/no-HITL (a TTY human COULD resolve it -> let them), AND
+        #   (b) LOKI_ASSUMPTIONS_REQUIRE_CONFIRM != 1 (that knob means a human WILL
+        #       confirm -> do not pre-empt), AND
+        #   (c) there is >=1 UNRESOLVED class=contradictory entry (the contradiction-
+        #       specific count, NOT the broader high-unresolved which includes
+        #       auto-ackable non-contradictions).
+        # Opt-out: LOKI_SPEC_CONTRADICTION_FASTFAIL=0.
+        if [ "${LOKI_SPEC_CONTRADICTION_FASTFAIL:-1}" = "1" ] \
+           && [ ! -t 0 ] \
+           && [ "${LOKI_ASSUMPTIONS_REQUIRE_CONFIRM:-0}" != "1" ] \
+           && type spec_ledger_contradiction_unresolved_count &>/dev/null; then
+            _sc_out="$(spec_ledger_contradiction_unresolved_count 2>/dev/null)"
+            _sc_n="$(printf '%s' "$_sc_out" | head -1)"
+            case "$_sc_n" in ''|*[!0-9]*) _sc_n=0 ;; esac
+            if [ "$_sc_n" -ge 1 ]; then
+                # Option C: name the contradicting clauses so `loki why` is actionable.
+                local _sc_titles
+                _sc_titles="$(printf '%s' "$_sc_out" | tail -n +2 | sed 's/^/  - /' | head -5)"
+                log_error "Spec has ${_sc_n} unresolved internal contradiction(s); an autonomous run cannot resolve them (only a human can). Failing fast instead of grinding to max-iterations."
+                [ -n "$_sc_titles" ] && printf '%s\n' "$_sc_titles" >&2
+                if type _loki_write_last_error &>/dev/null; then
+                    _loki_write_last_error 0 "spec_contradiction" \
+                        "Spec is internally inconsistent (${_sc_n} unresolved contradiction(s)); resolve the conflicting requirements, then re-run."
+                fi
+                save_state "$retry" "inconclusive_spec_contradiction" 0
+                if type emit_completion_summary &>/dev/null; then
+                    emit_completion_summary inconclusive_spec_contradiction 2>/dev/null || true
+                fi
+                return 20
+            fi
+        fi
     fi
 
     # Auto-derive completion promise from PRD (v6.10.0)
@@ -19692,7 +19733,7 @@ main() {
         case "$_final_status" in
             council_approved|council_force_approved|completion_promise_fulfilled|force_stopped|paused|interrupted|budget_exceeded|stopped)
                 result=0 ;;
-            failed|max_iterations_reached|max_retries_exceeded|policy_blocked)
+            failed|max_iterations_reached|max_retries_exceeded|policy_blocked|inconclusive_spec_contradiction)
                 result=20 ;;
             *)
                 # Unknown/running/exited terminal: leave $result as-is (nonzero on a
