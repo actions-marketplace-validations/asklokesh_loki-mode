@@ -127,5 +127,66 @@ class TestsPassTrustGate(unittest.TestCase):
         self.assertTrue(result["passed"])
 
 
+class GrepCodebaseErrorInconclusiveGate(unittest.TestCase):
+    """#142 trust gate: a grep_codebase check whose grep ERRORS (returncode >= 2:
+    bad regex, or a grep variant like macOS ugrep that rejects a pattern GNU grep
+    accepts) must be INCONCLUSIVE (passed=None), NEVER a hard False.
+
+    Collapsing a grep ERROR to False is a fake-RED: it marks a genuinely-present
+    endpoint 'failing' -> the completion council hard-gate blocks a CORRECT build
+    forever. Observed live: an LLM-emitted pattern `app\\.get\\('/api/tasks'` made
+    ugrep error 'parentheses not balanced' (returncode 2), so 3 working endpoints
+    read 'failing' -> a 64-minute non-converging build (issue #124). A clean
+    returncode 1 (real no-match) stays an honest False; returncode 0 stays True.
+    """
+
+    def setUp(self):
+        self.mod = _load_module()
+        self.tmp = tempfile.mkdtemp()
+        self._orig_run = subprocess.run
+
+    def tearDown(self):
+        subprocess.run = self._orig_run
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _patch_run(self, completed):
+        def fake_run(cmd, **kwargs):
+            return completed
+        subprocess.run = fake_run
+
+    def _grep(self, pattern="app.get"):
+        return self.mod.run_check(
+            {"type": "grep_codebase", "pattern": pattern},
+            project_dir=self.tmp,
+            timeout=30,
+        )
+
+    def test_grep_error_is_inconclusive_not_false(self):
+        # returncode 2 = grep error (e.g. ugrep 'parentheses not balanced').
+        self._patch_run(_FakeCompleted(
+            returncode=2, stdout="", stderr="grep: parentheses not balanced"))
+        result = self._grep()
+        self.assertIsNone(
+            result["passed"],
+            "a grep ERROR must be inconclusive (None), never a hard False "
+            "(fake-RED that blocks a correct build)")
+        self.assertIn("inconclusive", result["output"])
+
+    def test_grep_no_match_stays_false(self):
+        # returncode 1 = clean 'not found' -> an honest False (moat: a genuinely
+        # absent pattern must NOT sneak to inconclusive/green).
+        self._patch_run(_FakeCompleted(returncode=1, stdout=""))
+        result = self._grep()
+        self.assertFalse(result["passed"])
+        self.assertIn("0 file", result["output"])
+
+    def test_grep_match_stays_true(self):
+        self._patch_run(_FakeCompleted(returncode=0, stdout="src/app.js\n"))
+        result = self._grep()
+        self.assertTrue(result["passed"])
+        self.assertIn("1 file", result["output"])
+
+
 if __name__ == "__main__":
     unittest.main()

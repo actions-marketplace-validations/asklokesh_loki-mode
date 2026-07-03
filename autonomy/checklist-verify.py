@@ -180,9 +180,31 @@ def run_check(check: dict, project_dir: str, timeout: int) -> dict:
                         text=True,
                         timeout=timeout,
                     )
-                    result["passed"] = proc.returncode == 0
-                    files_found = proc.stdout.strip().split("\n") if proc.stdout.strip() else []
-                    result["output"] = f"Found in {len(files_found)} file(s)"
+                    # grep exit codes: 0=match found, 1=no match, >=2=ERROR (bad
+                    # regex, unreadable file, or a grep variant -- e.g. ugrep on
+                    # macOS -- that rejects a pattern GNU grep accepts). A grep that
+                    # ERRORED has NOT proven the pattern is absent, so it must be
+                    # INCONCLUSIVE (passed=None), NOT a hard False. Collapsing an
+                    # error to False is a fake-RED: it marks a genuinely-present
+                    # endpoint 'failing' -> the council hard-gate blocks a correct
+                    # build forever (observed: an LLM-emitted pattern app\.get\('...'
+                    # made ugrep error position-26 mismatched-paren -> returncode 2
+                    # -> 3 working endpoints read failing -> a 64-min non-converging
+                    # build). Only a clean 1 (real no-match) is an honest False.
+                    if proc.returncode == 0:
+                        result["passed"] = True
+                        files_found = proc.stdout.strip().split("\n") if proc.stdout.strip() else []
+                        result["output"] = f"Found in {len(files_found)} file(s)"
+                    elif proc.returncode == 1:
+                        result["passed"] = False
+                        result["output"] = "Found in 0 file(s)"
+                    else:
+                        result["passed"] = None
+                        _err = (proc.stderr or "").strip().splitlines()
+                        result["output"] = (
+                            "grep error (inconclusive, not a failure): "
+                            + (_err[0] if _err else f"exit {proc.returncode}")
+                        )[:200]
                 except subprocess.TimeoutExpired:
                     result["passed"] = None
                     result["output"] = f"Timed out after {timeout}s"

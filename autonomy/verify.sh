@@ -423,8 +423,15 @@ verify_gate_tests() {
         # them so the gate runs (or goes inconclusive -> CONCERNS when no
         # runner is installed), never silently skipped.
         if [ "$has_python" = "false" ]; then
-            if find "$tree" -maxdepth 1 -type f \
+            # maxdepth 2 (was 1) + exclusions to MIRROR run.sh's enforce_test_coverage
+            # detection exactly (#139 parity): a shallow-but-not-root test_*.py (e.g.
+            # a src/-adjacent test) is now seen by BOTH gates, not just run.sh. Still
+            # the safe direction (under-detect only, never a fake-green): worst case a
+            # deeper test dir is inconclusive, never falsely VERIFIED.
+            if find "$tree" -maxdepth 2 -type f \
                 \( -name 'test_*.py' -o -name '*_test.py' \) \
+                -not -path '*/.loki/*' -not -path '*/.git/*' -not -path '*/node_modules/*' \
+                -not -path '*/.venv/*' -not -path '*/venv/*' \
                 -print -quit 2>/dev/null | grep -q .; then
                 has_python=true
             fi
