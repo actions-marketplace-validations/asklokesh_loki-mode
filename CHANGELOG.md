@@ -5,6 +5,11 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.121.2
+
+### Docs (non-functional)
+- **docs: refresh all user-facing markdown to v7.121.x and collapse advanced sections.** README now states the current release, describes the honest checklist verifier (ERE grep, runner-agnostic tests_pass, inconclusive-never-false, "rc==0 alone is not a pass"), and folds deep material (runtime + internal architecture, receipt-verification) behind <details> collapsibles so everyday developers see a crisp top and advanced readers can expand. Install/upgrade guides (INSTALLATION, SETUP, DOCKER_README, alternative-installations) updated to v7.121.x with Node 22 LTS noted; wiki (Quality-Gates, Completion-Council, Changelog, Contributing) refreshed. 8 stale "current version" strings fixed; all <details> balanced; no code changed; no fabricated claims (every trust-layer statement is grep-confirmable in autonomy/checklist-verify.py). Verified by a docs review pass.
+
 ## v7.121.1
 
 ### Trust / accuracy (patch on v7.121.0 -- close a tests_pass fake-green)
