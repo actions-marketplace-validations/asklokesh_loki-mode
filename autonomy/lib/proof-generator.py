@@ -130,6 +130,46 @@ def _collect_council(loki_dir):
         rec = _read_json(os.path.join(votes_dir, vf), default=None)
         if not isinstance(rec, dict):
             continue
+        # completion-council.sh writes ROUND-SUMMARY files (round-N.json,
+        # devils-advocate-round-N.json) shaped
+        # {round, verdict, votes:[{member, role, vote, reason}]} -- NOT a flat
+        # per-reviewer record. When we see that shape, expand the nested votes[]
+        # into per-reviewer rows (the real trust signal) and adopt the round
+        # verdict; otherwise fall back to the flat single-record shape. Without
+        # this, rec.get("role") is empty and the proof's council section renders
+        # blank reviewers even though the council genuinely ran and voted (#125).
+        nested = rec.get("votes")
+        if isinstance(nested, list) and nested:
+            rv = str(rec.get("verdict") or rec.get("result") or "")
+            if rv and not final_verdict:
+                final_verdict = rv
+            if threshold is None and rec.get("threshold") is not None:
+                tm = rec.get("total_members")
+                threshold = (
+                    "%s/%s" % (rec.get("threshold"), tm)
+                    if tm is not None else rec.get("threshold")
+                )
+            round_tag = str(rec.get("round") or "")
+            da = "devil" in vf.lower()
+            for v in nested:
+                if not isinstance(v, dict):
+                    continue
+                role = str(v.get("role") or v.get("member") or "")
+                vote = str(v.get("vote") or v.get("decision") or "")
+                # Skip empty vote rows (a blank role AND blank vote is noise, not
+                # a reviewer) so the proof never shows a phantom "-> " reviewer.
+                if not role and not vote:
+                    continue
+                if da and role:
+                    role = "%s (devil's advocate)" % role
+                reviewers.append({
+                    "role": role,
+                    "vote": vote,
+                    "summary": str(
+                        v.get("reason") or v.get("summary") or v.get("rationale") or ""
+                    ) + (" [round %s]" % round_tag if round_tag else ""),
+                })
+            continue
         reviewers.append({
             "role": str(rec.get("role") or rec.get("reviewer") or ""),
             "vote": str(rec.get("vote") or rec.get("decision") or ""),
@@ -222,6 +262,57 @@ def _collect_quality_gates(loki_dir):
             total += 1
             if status == "passed":
                 passed += 1
+
+    # #125: run.sh does NOT write state/quality-gates.json; it writes the gate
+    # outcomes under .loki/quality/ (a "<gate>.pass" marker on pass, plus
+    # per-gate result JSONs). When the aggregate above is empty/absent, read the
+    # real per-gate artifacts so a build that genuinely ran+passed its gates is
+    # not reported as quality_gates:{passed:0,total:0} (a receipt understatement
+    # that reads as "no verification ran"). Deterministic FACT from disk markers,
+    # never an LLM opinion. Only fills gates the aggregate did not already cover.
+    if not gates:
+        quality_dir = os.path.join(loki_dir, "quality")
+        seen = set()
+        # (gate name in proof, marker/result filename stem under quality/)
+        markers = [
+            ("static_analysis", "static-analysis"),
+            ("unit_tests", "unit-tests"),
+        ]
+        for gate_name, stem in markers:
+            pass_marker = os.path.join(quality_dir, stem + ".pass")
+            result_json = os.path.join(quality_dir, stem + ".json")
+            status = None
+            if os.path.exists(pass_marker):
+                status = "passed"
+            elif os.path.exists(result_json):
+                rj = _read_json(result_json, default=None)
+                if isinstance(rj, dict):
+                    status = _norm_gate_status(
+                        rj.get("passed", rj.get("status", "not_run"))
+                    )
+            if status is not None:
+                gates.append({"name": gate_name, "status": status})
+                seen.add(gate_name)
+                total += 1
+                if status == "passed":
+                    passed += 1
+        # test-results.json carries the suite outcome even when no .pass marker
+        # (e.g. {status:"verified"} = tests ran and passed).
+        if "unit_tests" not in seen:
+            tr = _read_json(
+                os.path.join(quality_dir, "test-results.json"), default=None
+            )
+            if isinstance(tr, dict):
+                st = str(tr.get("status") or "")
+                if st in ("verified", "pass", "passed"):
+                    gates.append({"name": "unit_tests", "status": "passed"})
+                    total += 1
+                    passed += 1
+                elif st:
+                    gates.append(
+                        {"name": "unit_tests", "status": _norm_gate_status(st)}
+                    )
+                    total += 1
     return {"passed": passed, "total": total, "gates": gates}
 
 
