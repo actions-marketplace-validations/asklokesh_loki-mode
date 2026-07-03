@@ -9317,6 +9317,21 @@ _loki_zero_tests_executed() {
             fi
             return 1
             ;;
+        unittest)
+            # #139: `python3 -m unittest discover` on ZERO discovered tests prints
+            # "Ran 0 tests" + "NO TESTS RAN". Depending on the Python version it
+            # exits 5 (newer, already not-pass) OR 0 (older = a silent fake-green,
+            # the #82/#89 trap). POSITIVE detection so it is inconclusive on BOTH:
+            # a "Ran 0 tests" line (authoritative), or the "NO TESTS RAN" banner,
+            # AND no ran-count >= 1. A real run prints "Ran N test(s)" with N>=1
+            # and "OK"/"FAILED", so it is never downgraded. Verified live: zero ->
+            # "Ran 0 tests"/"NO TESTS RAN"; one -> "Ran 1 test"/"OK".
+            if printf '%s' "$_zt_out" | grep -qE '^Ran 0 tests' 2>/dev/null \
+               || printf '%s' "$_zt_out" | grep -qE '^NO TESTS RAN$' 2>/dev/null; then
+                return 0
+            fi
+            return 1
+            ;;
         *)
             # Unknown/unparseable runner -> never claim zero-tests (safe default).
             return 1
@@ -9483,6 +9498,17 @@ sys.stdout.write(t.strip())
                 -print -quit 2>/dev/null | grep -q .; then
                 has_python_project=true
             fi
+        elif find "${TARGET_DIR:-.}" -maxdepth 2 -type f \
+                \( -name 'test_*.py' -o -name '*_test.py' \) \
+                -not -path '*/.loki/*' -not -path '*/.git/*' -not -path '*/node_modules/*' \
+                -not -path '*/.venv/*' -not -path '*/venv/*' \
+                -print -quit 2>/dev/null | grep -q .; then
+            # #139: a ROOT-LEVEL (or shallow) test_*.py / *_test.py with NO tests/
+            # dir and NO config file. The founder's invoice CLI had exactly this
+            # shape (test_invoice_cli.py at the root) -> was missed -> tests read
+            # "not run" on a genuinely-passing 16-test unittest suite. This is the
+            # same false-negative class as #79 (validated work reads as unvalidated).
+            has_python_project=true
         fi
         if [ "$has_python_project" = "true" ] && command -v pytest &>/dev/null; then
             test_runner="pytest"
@@ -9498,6 +9524,29 @@ sys.stdout.write(t.strip())
             else
                 [ "$pytest_exit" -ne 0 ] && test_passed=false
                 details="pytest: $(echo "$output" | tail -5 | tr '\n' ' ')"
+            fi
+        elif [ "$has_python_project" = "true" ] && command -v python3 &>/dev/null; then
+            # #139: pytest ABSENT but a Python test suite exists. stdlib unittest
+            # discovery runs test_*.py with ZERO third-party deps -- so a legit
+            # unittest suite (the invoice CLI's 16 tests) is verified instead of
+            # silently read as "not run". The zero-test guard (unittest case) makes
+            # a zero-discovery run inconclusive, NOT a fake-green pass (unittest
+            # prints "NO TESTS RAN" and exits 0 -- the #82/#89 trap, guarded).
+            test_runner="unittest"
+            local output unittest_exit _ut_to
+            _ut_to="${LOKI_PYTEST_TIMEOUT:-${LOKI_GATE_TIMEOUT:-300}}"
+            local _ut_cmd=(timeout "${_ut_to}s")
+            command -v gtimeout &>/dev/null && _ut_cmd=(gtimeout "${_ut_to}s")
+            command -v timeout &>/dev/null || command -v gtimeout &>/dev/null || _ut_cmd=()
+            output=$(cd "${TARGET_DIR:-.}" && "${_ut_cmd[@]}" python3 -m unittest discover -p 'test_*.py' 2>&1)
+            unittest_exit=$?
+            if [ "$unittest_exit" -eq 124 ]; then
+                test_passed=false
+                log_warn "unittest gate timed out after ${_ut_to}s (exit 124)"
+                details="unittest: TIMED OUT after ${_ut_to}s -- $(echo "$output" | tail -3 | tr '\n' ' ')"
+            else
+                [ "$unittest_exit" -ne 0 ] && test_passed=false
+                details="unittest: $(echo "$output" | tail -5 | tr '\n' ' ')"
             fi
         fi
     fi

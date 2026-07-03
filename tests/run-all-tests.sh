@@ -199,6 +199,12 @@ run_test "Council DA Veto (anti-sycophancy forces CONTINUE)" "$SCRIPT_DIR/test-c
 # hole where the writer laundered "unknown build system" into applicable:false.
 run_test "Build applicability (unrecognized build stays a gap, not fake N/A)" "$SCRIPT_DIR/test-build-check-applicability.sh"
 
+# #139 Python test detection: a ROOT-LEVEL test_*.py (no tests/ dir, no config)
+# is detected + run (pytest, or stdlib unittest fallback when pytest absent), so
+# a genuinely-passing Python suite reads verified -- not "tests not run" on
+# validated work. Zero-discovery stays inconclusive (never fake-green).
+run_test "Python test detection (root test_*.py + unittest fallback, no fake-green)" "$SCRIPT_DIR/test-python-test-detection.sh"
+
 # check_human_intervention signal dispatch + security: STOP -> rc 2; HUMAN_INPUT
 # symlink rejected; prompt injection disabled-by-default quarantines input.
 run_test "Human Intervention Signals (STOP/HUMAN_INPUT security)" "$SCRIPT_DIR/test-human-intervention-signals.sh"
