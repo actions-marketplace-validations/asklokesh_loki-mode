@@ -226,6 +226,12 @@ run_test "AGENTS.md Instruction Parity (bash vs Bun)" "$SCRIPT_DIR/test-parity-a
 # (simple -> minimal docs; standard/complex -> full architecture suite).
 run_test "DOC_SCOPE build_prompt Instruction (tier-conditional)" "$SCRIPT_DIR/test-doc-scope-build-prompt.sh"
 
+# F52 doc-scope generator + gate halves: a simple project must NOT trigger
+# 'loki docs generate' (the agentic architecture-suite writer, ~270s of burn),
+# and the doc-coverage gate must accept README+USAGE for simple tier so the
+# skip does not force wasted iterations. standard/complex keep the full suite.
+run_test "DOC_SCOPE generator + gate (tier-conditional)" "$SCRIPT_DIR/test-doc-scope-generator.sh"
+
 # caveman output-token compressor gates: ACTIVATE on free-form generation,
 # HARD-SUPPRESS (CAVEMAN_DEFAULT_MODE=off) on every parsed trust-gate subcall.
 # Includes the determinism / moat carve-out proof (suppression is unconditional)

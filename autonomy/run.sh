@@ -9890,10 +9890,39 @@ run_doc_quality_gate() {
     local score=100
     local issues=()
 
+    # F52 (doc-scope, gate half): for a "simple"-tier project the accepted
+    # documentation standard is README.md + USAGE.md, NOT the .loki/docs/
+    # architecture suite. auto_generate_docs_if_needed deliberately skips the
+    # suite for simple tier, so the manifest / API.md checks below MUST NOT
+    # penalize it (else the gate would nag for docs we intentionally did not
+    # generate, forcing extra iterations -- the exact waste F52 removes). Score
+    # simple tier on README + USAGE only. Mirrors DOC_SCOPE_INSTRUCTION_SIMPLE.
+    local doc_tier="${DETECTED_COMPLEXITY:-standard}"
+
     # Check 1: README.md exists
     if [ ! -f "$project_dir/README.md" ] || [ ! -s "$project_dir/README.md" ]; then
         score=$((score - 20))
         issues+=("README.md missing or empty")
+    fi
+
+    if [ "$doc_tier" = "simple" ]; then
+        # USAGE.md is the always-on end-user handoff doc (usage_doc_instruction);
+        # for a simple project it plus README is sufficient. Penalize only if the
+        # always-on USAGE.md is absent/empty.
+        if [ ! -f "$project_dir/USAGE.md" ] || [ ! -s "$project_dir/USAGE.md" ]; then
+            score=$((score - 20))
+            issues+=("USAGE.md missing or empty")
+        fi
+        if [ ${#issues[@]} -gt 0 ]; then
+            log_warn "Documentation Gate: Score $score/100 (simple tier: README + USAGE)"
+            for issue in "${issues[@]}"; do
+                log_warn "  - $issue"
+            done
+        else
+            log_info "Documentation Gate: PASS (Score $score/100, simple tier: README + USAGE)"
+        fi
+        [ "$score" -ge 70 ]
+        return $?
     fi
 
     # Check 2: Documentation freshness
@@ -9955,6 +9984,22 @@ run_doc_quality_gate() {
 
 auto_generate_docs_if_needed() {
     [ "${LOKI_AUTO_DOCS:-true}" = "true" ] || return 0
+
+    # F52 (doc-scope, generator half): a trivial "simple"-tier project does not
+    # warrant the eight-file architecture suite. 'loki docs generate' runs the
+    # provider agentically (claude -p), which writes ARCHITECTURE/API/COMPONENTS/
+    # DECISIONS/SETUP/TESTING/README/CLAUDE to the project -- ~270s of pure token
+    # + wall-clock burn with no reader for a 5-line CLI. The agent already wrote
+    # README.md + USAGE.md under DOC_SCOPE_INSTRUCTION_SIMPLE, so skip the suite.
+    # Parity: this is the generator-side mirror of DOC_SCOPE_INSTRUCTION_SIMPLE
+    # (build_prompt.ts / run.sh:14421); the gate half (run_doc_quality_gate)
+    # accepts README+USAGE for simple so skipping here does not fail Gate 7.
+    # DETECTED_COMPLEXITY is set once by run_autonomous before the first
+    # build_prompt, so it is populated by the time this runs (post code-review).
+    if [ "${DETECTED_COMPLEXITY:-standard}" = "simple" ]; then
+        log_info "Auto-documentation: simple project -- README + USAGE only, skipping architecture suite (F52 doc-scope)"
+        return 0
+    fi
 
     local project_dir="${TARGET_DIR:-.}"
     local manifest="$project_dir/.loki/docs/docs-manifest.json"
