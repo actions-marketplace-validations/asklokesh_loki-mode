@@ -142,18 +142,40 @@ def run_check(check: dict, project_dir: str, timeout: int) -> dict:
                     )
                     combined = proc.stdout + proc.stderr
                     _low = combined.lower()
-                    # Trust gate: a tests_pass check REQUIRES that at least one test
-                    # actually ran. A runner can exit 0 with nothing executed
-                    # (jest --passWithNoTests, a mismatched vitest filter, a no-op
-                    # `echo` test script) -> that would be a FAKE-GREEN (a required
-                    # verification passing with zero tests). Detect the no-test
-                    # signals across runners and refuse to pass on an empty run.
+                    # Trust gate: a tests_pass check REQUIRES POSITIVE PROOF that at
+                    # least one test actually ran and passed. rc==0 alone is NOT
+                    # proof: a no-op test script (`echo done`, `exit 0`, `true`, `:`)
+                    # exits 0 having run ZERO tests -> passing on rc==0 would be a
+                    # FAKE-GREEN (a required verification green with nothing tested).
+                    # So we require a runner's "N passed" signal. Absence of that
+                    # signal on rc==0 is INCONCLUSIVE (None -> pending), never True
+                    # (fake-green) and never False (that would fake-RED an exotic
+                    # passing runner). rc!=0 with real failures -> honest False. This
+                    # is the same inconclusive-never-false moat as grep_codebase.
                     no_tests = (
                         "no tests found" in _low            # jest
                         or "no test files found" in _low    # vitest
                         or "no tests ran" in _low           # pytest/jest phrasing
                         or "no tests to run" in _low
                         or proc.returncode == 5             # pytest: none collected
+                    )
+                    # Positive "tests ran and passed" signals across common runners.
+                    # jest:  "Tests: 3 passed"        vitest: "Tests  26 passed (26)"
+                    # pytest:"3 passed in 0.05s"      mocha:  "3 passing"
+                    # node:test: "# pass 3"           tap:    "pass 3"
+                    # The count MUST be >=1 (`[1-9]\d*`, never a literal 0): a
+                    # runner can print "0 passed" / "0 passing" (mocha over an
+                    # empty describe, all-.skip, node:test "# pass 0") on rc=0 with
+                    # ZERO tests run -- matching a bare `\d+` would re-open the
+                    # fake-green. A zero count falls through to the inconclusive
+                    # else -> None (pending), correctly never green.
+                    _ran_and_passed = bool(
+                        re.search(r'tests?:\s*[1-9]\d*\s+passed', _low)   # jest
+                        or re.search(r'tests?\s+[1-9]\d*\s+passed', _low) # vitest
+                        or re.search(r'\b[1-9]\d*\s+passed\b', _low)      # pytest/vitest
+                        or re.search(r'\b[1-9]\d*\s+passing\b', _low)     # mocha
+                        or re.search(r'#\s*pass\s+[1-9]\d*', _low)        # node:test
+                        or re.search(r'\bpass\s+[1-9]\d*\b', _low)        # tap
                     )
                     if no_tests:
                         result["passed"] = False
@@ -162,13 +184,26 @@ def run_check(check: dict, project_dir: str, timeout: int) -> dict:
                             "(a tests_pass check must run at least one test). "
                             "Output: "
                         ) + combined[:400]
-                    else:
-                        # rc==0 with tests run -> True; ran and FAILED -> False
-                        # (blocks). "Ran and failed" is an honest False; only a
-                        # runner that could not RUN (timeout / not found, below)
-                        # is inconclusive None -- same moat as grep_codebase.
-                        result["passed"] = proc.returncode == 0
+                    elif proc.returncode != 0:
+                        # Ran and FAILED -> honest False (blocks). A non-zero exit
+                        # from a real runner is a genuine negative, not inconclusive.
+                        result["passed"] = False
                         result["output"] = combined[:500]
+                    elif _ran_and_passed:
+                        # rc==0 WITH positive "N passed" proof -> True.
+                        result["passed"] = True
+                        result["output"] = combined[:500]
+                    else:
+                        # rc==0 but NO positive "tests ran" signal (a no-op script,
+                        # or a runner whose output we do not recognise). We cannot
+                        # prove tests ran -> INCONCLUSIVE (None -> pending), never a
+                        # fake-green True and never a fake-RED False.
+                        result["passed"] = None
+                        result["output"] = (
+                            "Test command exited 0 but produced no recognisable "
+                            "'N passed' signal -- cannot confirm any test ran "
+                            "(inconclusive, not a pass). Output: "
+                        ) + combined[:350]
                 except subprocess.TimeoutExpired:
                     result["passed"] = None  # timeout = pending (couldn't run)
                     result["output"] = f"Timed out after {timeout}s"

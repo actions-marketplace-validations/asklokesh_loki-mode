@@ -5,6 +5,24 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.121.1
+
+### Trust / accuracy (patch on v7.121.0 -- close a tests_pass fake-green)
+- **fix(engine): `tests_pass` requires POSITIVE "N passed" proof to read green;
+  rc==0 alone is no longer a pass.** The v7.121.0 runner-agnostic change passed a
+  check on `rc==0`, but a no-op `scripts.test` (`echo done`, `exit 0`, `true`, `:`)
+  exits 0 having run ZERO tests -> a required verification went green with nothing
+  tested (a FAKE-GREEN, and the v7.121.0 change had introduced it: the old hardcoded
+  `npx jest` printed "No tests found" -> blocked). Fix: True requires a runner's
+  "N passed" signal (jest/vitest `N passed`, pytest `N passed`, mocha `N passing`,
+  node:test `# pass N`, tap `pass N`) with the count `[1-9]\d*` (>=1, so a zero-count
+  line like mocha's "0 passing" over an empty suite does NOT count); rc==0 without
+  that proof -> INCONCLUSIVE (None -> pending), never green and never a fake-RED
+  False; rc!=0 real failure -> honest False; no-test signals -> False. Found by the
+  release council (two rounds: no-op scripts, then the zero-count regex hole), closed
+  empirically against real jest/vitest/pytest/mocha runs; council APPROVE, 1648 tests
+  passed. npm 7.121.0 was immutable once published, so this ships as 7.121.1.
+
 ## v7.121.0
 
 ### Trust / accuracy (#142 -- the real #124 non-convergence driver)

@@ -159,6 +159,45 @@ class TestsPassTrustGate(unittest.TestCase):
         result = self._check()
         self.assertTrue(result["passed"], "a real passing vitest run must pass")
 
+    def test_noop_test_script_is_inconclusive_not_green(self):
+        # FAKE-GREEN GUARD (council-found): a no-op scripts.test (`echo done`,
+        # `exit 0`, `true`, `:`) exits rc=0 having run ZERO tests. rc==0 alone is
+        # NOT proof of a passing test run -- passing it green would be a fake-green
+        # (a required verification green with nothing tested). Without a positive
+        # "N passed" runner signal the result MUST be inconclusive (None), never
+        # True. (Also not False -- that would fake-RED an exotic passing runner.)
+        self._make_jest_project()  # scripts.test present -> npm test path
+        self._patch_run(_FakeCompleted(returncode=0, stdout="done\n", stderr=""))
+        result = self._check()
+        self.assertIsNone(
+            result["passed"],
+            "rc=0 with no 'N passed' signal must be inconclusive, never green")
+        self.assertIn("no recognisable", result["output"].lower())
+
+    def test_rc0_with_passed_signal_is_true(self):
+        # The other side of the guard: rc=0 WITH a real "N passed" signal -> True.
+        self._make_jest_project()
+        self._patch_run(_FakeCompleted(
+            returncode=0, stdout="Tests: 7 passed, 7 total"))
+        result = self._check()
+        self.assertTrue(result["passed"], "rc=0 with 'N passed' proof must pass")
+
+    def test_zero_count_pass_signal_is_inconclusive_not_green(self):
+        # ZERO-COUNT FAKE-GREEN GUARD (council-found): a runner can print a pass
+        # line with count 0 on rc=0 with ZERO tests run -- mocha over an empty
+        # describe prints "0 passing"; node:test "# pass 0". A bare \d+ would
+        # match and read True = fake-green. The count must be >=1, so a zero
+        # count -> inconclusive None, never green.
+        self._make_jest_project()
+        for zero_out in ("0 passing (1ms)", "Tests: 0 passed, 0 total",
+                         "Tests  0 passed (0)", "# pass 0", "0 passed in 0.01s"):
+            self._patch_run(_FakeCompleted(returncode=0, stdout=zero_out))
+            result = self._check()
+            self.assertIsNone(
+                result["passed"],
+                f"a zero-count pass line ({zero_out!r}) must be inconclusive, "
+                "never green (zero tests ran)")
+
     def test_package_json_without_test_script_is_inconclusive(self):
         # package.json but NO scripts.test: nothing declared to run. Must be
         # INCONCLUSIVE (None), NOT a hardcoded-runner guess (that was the fake-RED
