@@ -5,6 +5,26 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.120.0
+
+### Trust / accuracy (#139)
+- **fix(engine): detect + run root-level Python `test_*.py` so validated work reads
+  verified.** A Python CLI with a ROOT-LEVEL `test_invoice_cli.py` (no `tests/` dir, no
+  config) had its genuinely-passing 16-test suite read as "tests not run" ->
+  "VERIFIED WITH GAPS" -- the founder's exact false-negative class (validated work reads
+  unvalidated), hitting every Python build of that shape. Fixed in BOTH mirrors (run.sh
+  `enforce_test_coverage` + verify.sh `verify_gate_tests`):
+  - Detection now sees a shallow root-level `test_*.py`/`*_test.py` (was config-or-tests/
+    -dir only).
+  - When pytest is absent, falls back to `python3 -m unittest discover` (stdlib, zero
+    deps) so a real unittest suite is VERIFIED, mirroring pytest's exact recording path.
+  - ANTI-FAKE-GREEN: a zero-discovery unittest run ("Ran 0 tests"/"NO TESTS RAN") is
+    inconclusive, never a pass (new `unittest` case in both zero-test guards). A failing
+    suite -> failed.
+  - Pinned by `test-python-test-detection.sh` (7/7, non-vacuous), 44/44 proof-generator
+    unchanged, receipt-flip proven end-to-end. Known bounded edge (documented): the
+    fallback's `-p test_*.py` does not match a `*_test.py` naming with pytest absent.
+
 ## v7.119.0
 
 ### Trust / Evidence Receipt honesty (#47)
