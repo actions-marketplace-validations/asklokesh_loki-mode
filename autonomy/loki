@@ -14784,7 +14784,7 @@ HEALING RULES:
 5. INCREMENTAL ONLY: Change ONE component at a time. Verify ALL characterization tests pass after each change.
 
 Phase-specific instructions:
-- archaeology: Map dependencies, catalog friction, extract knowledge, write characterization tests. Do NOT modify source code.
+- archaeology: Map dependencies, catalog friction, extract knowledge, write characterization tests. Do NOT modify source code. ALSO write .loki/healing/boundaries.json: a JSON array of the OBSERVABLE system boundaries (CLI commands, HTTP endpoints, file/DB-producing entrypoints). Each element: {\"id\": string, \"boundary_type\": \"cli\"|\"http\"|\"file\"|\"db\", \"command\": string}. The \"command\" MUST be a deterministic shell invocation that exercises that boundary and prints its observable output to stdout (avoid timestamps/PIDs). These commands are golden-mastered into .loki/healing/behavioral-baseline/ and re-run at the modernize->validate gate to block any undocumented boundary change. If no observable boundary exists, write an empty array [] (do NOT invent one).
 - stabilize: Add logging and observability. Extract config. Add type hints. Do NOT change behavior.
 - isolate: Create adapter interfaces at component boundaries. Add integration tests.
 - modernize: Replace components behind adapters. Verify characterization tests pass.
@@ -14844,6 +14844,16 @@ except Exception: pass
     esac
 
     emit_event healing cli complete "phase=$phase" "exit=$heal_exit" 2>/dev/null || true
+
+    # RANK 4: populate .loki/healing/behavioral-baseline/ during archaeology.
+    # The dir is mkdir'd above but was never populated; the modernize->validate
+    # gate needs a golden-master per detected boundary to compare against.
+    # Deterministic capture (NOT an LLM call): re-runs each boundary's
+    # characterization_test and records observed stdout+exit. Honest degrade when
+    # no boundaries are detected. Byte-identical no-op when the hook is absent.
+    if [ "$phase" = "archaeology" ] && type hook_capture_behavioral_baseline &>/dev/null; then
+        hook_capture_behavioral_baseline "$codebase_path" 2>/dev/null || true
+    fi
 
     if [ "$heal_exit" -eq 0 ]; then
         echo ""
