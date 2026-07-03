@@ -5,6 +5,20 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.117.2
+
+### Build speed + trust (measured; RED/GREEN gated)
+- **fix(engine): skip the architecture-doc suite for simple-tier builds (F52 generator+gate).**
+  A trivial CLI was generating a 9-file architecture suite (~270s of agentic `loki docs
+  generate` burn). `auto_generate_docs_if_needed` and the doc-coverage gate now honor
+  DETECTED_COMPLEXITY: simple -> README + USAGE only; standard/complex keep the full suite.
+  MEASURED on a real build: docs 9 -> 3, ~450s -> 250s (~45% faster), verdict UNCHANGED
+  (VERIFIED WITH GAPS both, zero accuracy cost). test-doc-scope-generator.sh 6/6; parity
+  test still 12/12 (DOC_SCOPE prompt strings unchanged).
+- **chore(hooks): pre-push identity guard.** Aborts a github.com push unless the repo identity
+  is asklokesh <lokeshmure@live.com> (github.disney.com/murel002 exempt). Prevents the Disney
+  identity leaking onto github.com. Skippable with PRE_PUSH_SKIP=1.
+
 ## [Unreleased]
 
 (none)
