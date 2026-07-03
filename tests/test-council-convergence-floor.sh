@@ -61,6 +61,11 @@ if ! type _council_convergence_evidence_green >/dev/null 2>&1; then
     echo "FAIL: _council_convergence_evidence_green not defined after sourcing"
     exit 1
 fi
+if ! type _council_effective_min_iter >/dev/null 2>&1; then
+    echo "FAIL: _council_effective_min_iter not defined after sourcing"
+    echo "      (RED state: the SaaS-#122 tier-aware floor helper is missing)"
+    exit 1
+fi
 
 PASS=0
 FAIL=0
@@ -213,6 +218,133 @@ r=$(check_now false false)
 r=$(check_now true false)
 [ "$r" = "0" ] && ok "CIRCUIT: circuit_triggered -> evaluate NOW (unchanged)" \
                || bad "CIRCUIT: circuit path changed (got $r)"
+
+# === SaaS #122: tier-aware effective MIN_ITERATIONS floor =====================
+# The HARD floor in council_should_stop (ITERATION_COUNT < floor -> not allowed to
+# convene) was previously a flat 3, forcing a genuinely-done SIMPLE app through ~2
+# idle iterations (~15min) before the council could approve. The floor is now a
+# function of DETECTED_COMPLEXITY: simple->1, standard/complex->3, with an explicit
+# LOKI_COUNCIL_MIN_ITERATIONS override always winning. floor=1 means the council is
+# ALLOWED to convene at iter 1 -- it is NOT auto-approved; every gate still runs.
+eff_min() { unset LOKI_COUNCIL_MIN_ITERATIONS; _council_effective_min_iter; }
+
+# Baseline default floor (no override): standard/complex/unset -> COUNCIL_MIN_ITERATIONS.
+COUNCIL_MIN_ITERATIONS=3
+
+DETECTED_COMPLEXITY=simple
+r=$(eff_min)
+[ "$r" = "1" ] && ok "TIER: DETECTED_COMPLEXITY=simple -> effective floor 1 (was forced to 3)" \
+               || bad "TIER: simple expected floor 1, got $r"
+
+DETECTED_COMPLEXITY=standard
+r=$(eff_min)
+[ "$r" = "3" ] && ok "TIER: DETECTED_COMPLEXITY=standard -> effective floor 3 (unchanged)" \
+               || bad "TIER: standard expected floor 3, got $r"
+
+DETECTED_COMPLEXITY=complex
+r=$(eff_min)
+[ "$r" = "3" ] && ok "TIER: DETECTED_COMPLEXITY=complex -> effective floor 3 (unchanged)" \
+               || bad "TIER: complex expected floor 3, got $r"
+
+DETECTED_COMPLEXITY=""
+r=$(eff_min)
+[ "$r" = "3" ] && ok "TIER: DETECTED_COMPLEXITY unset -> effective floor 3 (no-op, standard path preserved)" \
+               || bad "TIER: unset expected floor 3, got $r"
+
+# EXPLICIT OVERRIDE wins even on a simple app -- never silently lowered.
+DETECTED_COMPLEXITY=simple
+LOKI_COUNCIL_MIN_ITERATIONS=3
+COUNCIL_MIN_ITERATIONS=3   # resolved value mirrors the env override (as run.sh:90 does)
+r=$(_council_effective_min_iter)
+[ "$r" = "3" ] && ok "OVERRIDE: simple + explicit LOKI_COUNCIL_MIN_ITERATIONS=3 -> honored (floor 3, not lowered to 1)" \
+               || bad "OVERRIDE: explicit floor silently changed on simple (got $r, expected 3)"
+unset LOKI_COUNCIL_MIN_ITERATIONS
+COUNCIL_MIN_ITERATIONS=3
+
+# END-TO-END through the WHEN gate: on a simple app, a genuinely-done run that
+# CLAIMS done at iteration 1 now passes the floor and evaluates NOW. Old flat-3
+# floor -> would have to grind to iter 3 first. Proven via _council_should_check_now
+# whose min_iter is now tier-derived. NB: check_now's claim path bypasses interval,
+# but the SEPARATE hard floor in council_should_stop is what forced the idle iters;
+# here we prove the no-claim early check (which reads the same effective floor)
+# fires at iter 1 for simple with affirmative green.
+clear_checklist
+write_green_tests
+DETECTED_COMPLEXITY=simple
+COUNCIL_MIN_ITERATIONS=3          # stock default; tier logic overrides to 1 for simple
+ITERATION_COUNT=1
+LOKI_COUNCIL_CONVERGENCE_EARLY=1
+r=$(check_now false false)
+[ "$r" = "0" ] && ok "E2E-SIMPLE: simple + green + iter 1 -> council MAY convene at iter 1 (no forced idle iters)" \
+               || bad "E2E-SIMPLE: simple app still gated below iter 3 (got $r) -- SaaS #122 NOT fixed"
+
+# And the SAME iter 1 on a COMPLEX app stays gated (floor 3 preserved) -> no green.
+DETECTED_COMPLEXITY=complex
+r=$(check_now false false)
+[ "$r" = "1" ] && ok "E2E-COMPLEX: complex + green + iter 1 -> still gated below floor 3 (verification depth preserved)" \
+               || bad "E2E-COMPLEX: complex app fast-pathed at iter 1 (got $r) -- floor weakened"
+# reset shared globals for any later additions
+DETECTED_COMPLEXITY=""
+COUNCIL_MIN_ITERATIONS=3
+
+# === DIRECT council_should_stop FLOOR (SaaS #122 exact bug site) ==============
+# The forced-idle bug is the HARD floor INSIDE council_should_stop: while
+# ITERATION_COUNT < effective_floor it returns 1 (don't stop) BEFORE the council
+# can even evaluate a claimed-done run. We drive council_should_stop directly and
+# assert ONLY the floor decision, by stubbing every downstream so nothing past the
+# floor executes a real vote. If the floor lets us THROUGH, the stubbed
+# should_check=false path returns 1 harmlessly (council convened-but-deferred),
+# but crucially it is NOT the floor's early return -- we detect the difference by
+# instrumenting the floor's own branch via a marker the stub sets only when we get
+# past the floor.
+if type council_should_stop >/dev/null 2>&1; then
+    # Stubs: neutralize everything council_should_stop calls AFTER the floor so the
+    # test isolates the floor branch. council_circuit_breaker_triggered=false and
+    # convergence-green=false mean should_check stays false -> function returns 1
+    # from the post-floor "should_check != true" path, NOT from the floor. We set a
+    # global marker inside the circuit-breaker stub (which runs ONLY if the floor is
+    # passed) to prove whether execution reached past the floor.
+    _PAST_FLOOR=0
+    council_managed_should_stop() { return 1; }
+    council_augment_from_managed_memory() { return 0; }
+    council_circuit_breaker_triggered() { _PAST_FLOOR=1; return 1; }
+    _council_convergence_evidence_green() { return 1; }  # keep should_check=false
+    COUNCIL_ENABLED=true
+    LOKI_EXPERIMENTAL_MANAGED_COUNCIL=false
+
+    # SIMPLE, iter 1: floor is 1, so 1 -lt 1 is false -> execution passes the floor
+    # (marker set). Council is ALLOWED to convene (not auto-approved).
+    DETECTED_COMPLEXITY=simple
+    COUNCIL_MIN_ITERATIONS=3
+    ITERATION_COUNT=1
+    _PAST_FLOOR=0
+    LOKI_COMPLETION_CLAIMED=0
+    council_should_stop >/dev/null 2>&1 || true
+    [ "$_PAST_FLOOR" = "1" ] && ok "FLOOR(should_stop): simple + iter 1 -> PAST the hard floor (council may convene; no forced idle iters)" \
+                            || bad "FLOOR(should_stop): simple + iter 1 blocked by floor (_PAST_FLOOR=$_PAST_FLOOR) -- SaaS #122 bug site NOT fixed"
+
+    # COMPLEX, iter 1: floor is 3, so 1 -lt 3 is true -> early return at the floor,
+    # marker NOT set (verification depth preserved for complex apps).
+    DETECTED_COMPLEXITY=complex
+    ITERATION_COUNT=1
+    _PAST_FLOOR=0
+    council_should_stop >/dev/null 2>&1 || true
+    [ "$_PAST_FLOOR" = "0" ] && ok "FLOOR(should_stop): complex + iter 1 -> BLOCKED at floor 3 (did not reach council; depth preserved)" \
+                            || bad "FLOOR(should_stop): complex + iter 1 passed floor (_PAST_FLOOR=$_PAST_FLOOR) -- floor weakened"
+
+    # COMPLEX, iter 3: floor is 3, 3 -lt 3 is false -> passes floor (unchanged).
+    ITERATION_COUNT=3
+    _PAST_FLOOR=0
+    council_should_stop >/dev/null 2>&1 || true
+    [ "$_PAST_FLOOR" = "1" ] && ok "FLOOR(should_stop): complex + iter 3 -> PAST floor 3 (standard/complex behavior unchanged)" \
+                            || bad "FLOOR(should_stop): complex + iter 3 blocked (_PAST_FLOOR=$_PAST_FLOOR) -- standard path regressed"
+
+    DETECTED_COMPLEXITY=""
+    COUNCIL_MIN_ITERATIONS=3
+    unset LOKI_COMPLETION_CLAIMED
+else
+    echo "SKIP: council_should_stop not defined (cannot drive the direct floor test)"
+fi
 
 echo
 echo "-----------------------------------------------------"

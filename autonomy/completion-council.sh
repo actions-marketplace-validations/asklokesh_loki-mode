@@ -92,6 +92,42 @@ COUNCIL_MIN_ITERATIONS=${LOKI_COUNCIL_MIN_ITERATIONS:-3}
 if [ "$COUNCIL_MIN_ITERATIONS" -lt 1 ] 2>/dev/null; then
     COUNCIL_MIN_ITERATIONS=1
 fi
+
+# _council_effective_min_iter (SaaS #122): resolve the effective MIN_ITERATIONS
+# floor as a function of DETECTED_COMPLEXITY, computed at council-run time (NOT at
+# source time -- DETECTED_COMPLEXITY is populated by run.sh:detect_complexity
+# before the loop, but AFTER this file is sourced). The floor is a HARD gate in
+# council_should_stop: while ITERATION_COUNT < floor the council is not allowed to
+# even evaluate, so a genuinely-complete SIMPLE app (e.g. a small invoice app) that
+# claims done at iteration 1 was still FORCED through ~2 extra idle iterations
+# (~15min) before the council could approve. Lowering the floor to 1 for the
+# `simple` tier removes only those FORCED idle iterations; it does NOT skip any
+# verification. At floor=1, `ITERATION_COUNT=1` makes `1 -lt 1` false, so the
+# council is ALLOWED to convene -- the evidence gate, checklist gate, aggregate
+# vote, provenance, boot smoke and devil's advocate all still run and can still
+# reject. Standard/complex keep floor 3.
+#
+# Precedence (the explicit-override case must win so a user who sets
+# LOKI_COUNCIL_MIN_ITERATIONS=3 on a simple app is honored, not silently lowered):
+#   1. explicit LOKI_COUNCIL_MIN_ITERATIONS env set (non-empty) -> that value
+#      (already clamped into COUNCIL_MIN_ITERATIONS above), verbatim.
+#   2. DETECTED_COMPLEXITY == simple (default floor, no override) -> 1.
+#   3. otherwise -> COUNCIL_MIN_ITERATIONS (the standard/complex default of 3).
+# When DETECTED_COMPLEXITY is empty (unset) this returns COUNCIL_MIN_ITERATIONS --
+# a no-op that preserves the historical standard-path behavior.
+_council_effective_min_iter() {
+    # Explicit user override wins: read the RAW env var (COUNCIL_MIN_ITERATIONS
+    # collapses "user set 3" and "default 3" into one value and can't distinguish).
+    if [ -n "${LOKI_COUNCIL_MIN_ITERATIONS:-}" ]; then
+        printf '%s' "${COUNCIL_MIN_ITERATIONS}"
+        return 0
+    fi
+    if [ "${DETECTED_COMPLEXITY:-}" = "simple" ]; then
+        printf '%s' 1
+        return 0
+    fi
+    printf '%s' "${COUNCIL_MIN_ITERATIONS}"
+}
 COUNCIL_CONVERGENCE_WINDOW=${LOKI_COUNCIL_CONVERGENCE_WINDOW:-3}
 COUNCIL_STAGNATION_LIMIT=${LOKI_COUNCIL_STAGNATION_LIMIT:-5}
 COUNCIL_DONE_SIGNAL_LIMIT=${LOKI_COUNCIL_DONE_SIGNAL_LIMIT:-10}
@@ -3470,7 +3506,10 @@ _council_should_check_now() {
     local completion_claimed="${2:-false}"
     local iter="${ITERATION_COUNT:-0}"
     local interval="${COUNCIL_CHECK_INTERVAL:-5}"
-    local min_iter="${COUNCIL_MIN_ITERATIONS:-3}"
+    # SaaS #122: tier-aware effective floor (simple->1) so the no-claim early
+    # check can also fire at iteration 1 on a genuinely-done simple app.
+    local min_iter
+    min_iter="$(_council_effective_min_iter)"
 
     # Circuit breaker and explicit-claim paths are UNCHANGED (they already bypass
     # the interval); return check-now for them without touching the early logic.
@@ -3505,8 +3544,16 @@ council_should_stop() {
         return 1  # Council disabled, don't stop
     fi
 
-    # Don't check before minimum iterations
-    if [ "$ITERATION_COUNT" -lt "$COUNCIL_MIN_ITERATIONS" ]; then
+    # Don't check before minimum iterations. SaaS #122: the floor is tier-aware
+    # (simple->1) via _council_effective_min_iter so a genuinely-complete simple
+    # app that claims done at iteration 1 is not FORCED through ~2 extra idle
+    # iterations before the council may evaluate. This only changes WHETHER the
+    # council is allowed to convene early; every verification gate inside
+    # council_evaluate still runs and can still reject. Standard/complex keep 3,
+    # and an explicit LOKI_COUNCIL_MIN_ITERATIONS override is always honored.
+    local _min_iter
+    _min_iter="$(_council_effective_min_iter)"
+    if [ "$ITERATION_COUNT" -lt "$_min_iter" ]; then
         return 1
     fi
 
