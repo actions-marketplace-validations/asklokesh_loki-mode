@@ -5,6 +5,38 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.119.0
+
+### Trust / Evidence Receipt honesty (#47)
+- **feat(engine): honest build applicability -- N/A is not a gap.** The Evidence Receipt
+  showed "Build: not run" on EVERY build, dragging the headline to "Working, with gaps" even
+  when tests and security genuinely passed. A sophisticated user read that and concluded
+  nothing was validated. Root cause (systemic, every build, every customer): `build-results.json`
+  had NO writer, so `facts.build` was permanently `not_run` and counted as a gap by
+  `_compute_degraded`.
+  - New `run.sh enforce_build_check()` -- the missing writer, a sibling to
+    enforce_static_analysis/run_secure_scan. Detects the stack's build command (npm/go/cargo);
+    if one exists it RUNS the build (verified/failed -- a real gap stays a gap); if the stack
+    genuinely has no build step it records `applicable:false` (status `not_applicable`), an
+    honest N/A that is NOT a gap.
+  - ANTI-FAKE-GREEN (INVERTED, after 3 council rounds each caught a fake-green hole in a
+    leaky allowlist): `not_run` (honest gap) is the SAFE CATCH-ALL; `not_applicable` (N/A)
+    fires ONLY on a POSITIVE proof-of-no-build -- a package.json present with NO build-ish
+    script and no build-tool devDep (the founder's CLI). ANY project without that positive
+    signal -- a foreign build manifest (Make/Maven/Gradle/.NET/autotools/meson/bazel), a
+    build-ish npm script, OR no package.json at all (Zig, bare C, anything unenumerated) --
+    stays `not_run`. This fixes the whole CLASS: a forgotten stack fails in the HONEST
+    direction (under-claim), never fake-green. Pinned by test-build-check-applicability.sh
+    (23/23, incl. the exact stacks 3 council rounds found). A build that FAILED stays
+    NOT VERIFIED (the mirror-image guard). Known bounded edge (documented, non-blocking): a
+    polyglot repo with a no-build package.json co-present with an unlisted foreign manifest.
+  - COST-SAFE: detection is always cheap; build EXECUTION runs AT MOST ONCE per build run
+    (freshness marker), never every iteration. `LOKI_BUILD_CHECK=0` opts out.
+  - Companion (autonomi-saas SPA): renders `not_applicable` as "N/A - no build step" (neutral
+    tier), not the alarming "not run".
+  - Tests: 4 new proof-generator cases, non-vacuous (the N/A case fails on old code); existing
+    40 stay green (44/44). Writer proven by function-extraction on 3 real scratch repos.
+
 ## v7.118.0
 
 ### Build speed (measured before/after on a real SaaS build)

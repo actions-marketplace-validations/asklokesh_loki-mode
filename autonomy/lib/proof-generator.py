@@ -341,7 +341,20 @@ def _collect_build(loki_dir):
     out["exit_code"] = _to_int(ec, None) if ec is not None else None
     dur = raw.get("duration_sec")
     out["duration_sec"] = _to_float(dur, None) if dur is not None else None
-    if not ran:
+    # HONEST APPLICABILITY (build has no writer historically -> facts.build was
+    # permanently "not_run" for every project, counting a CLI with no build step
+    # as a gap and dragging the headline to WITH GAPS). The writer now records a
+    # POSITIVE applicability signal: applicable:false means "this stack genuinely
+    # has no build phase" (a CLI, a plain script). That is N/A, not a skipped
+    # gap, so it must NOT be a degraded item. CRITICAL anti-fake-green rule:
+    # not_applicable ONLY from an EXPLICIT applicable:false in the file. An absent
+    # file or a missing/true applicable flag stays not_run (an honest gap) -- an
+    # un-built project must never flip green just because nobody wrote the file.
+    applicable = raw.get("applicable", True)
+    out["applicable"] = bool(applicable)
+    if applicable is False:
+        out["status"] = "not_applicable"
+    elif not ran:
         out["status"] = "not_run"
     elif out["exit_code"] == 0:
         out["status"] = "verified"
