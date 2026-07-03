@@ -295,6 +295,7 @@ if [ -n "$PROOF_PY" ]; then
   run_check "tests/test_bench_report.py (R2 report non-rigged)" "$PROOF_PY -m pytest -q tests/test_bench_report.py 2>&1 | tail -5"
   # bench CLI list/verify on the bash route.
   run_check "tests/test_bench_cli.py (R2 bench CLI)" "$PROOF_PY -m pytest -q tests/test_bench_cli.py 2>&1 | tail -5"
+  run_check "tests/test_bench_mergeability.py (Rank 12 mergeability score)" "$PROOF_PY -m pytest -q tests/test_bench_mergeability.py 2>&1 | tail -5"
 else
   skip_check "proof-of-run python gates" "no python3 on PATH"
 fi
