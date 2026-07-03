@@ -5,6 +5,33 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.118.0
+
+### Build speed (measured before/after on a real SaaS build)
+- **fix(council): tier-aware MIN_ITERATIONS floor -- simple builds converge at iteration 1,
+  not a forced 3 (#122).** A small invoice app was FORCED through ~2 idle iterations (~15min)
+  before the council could approve, a top cause of 28-minute timeouts. `_council_effective_min_iter()`
+  resolves the floor from DETECTED_COMPLEXITY (explicit env override wins; simple->1; else 3).
+  Accuracy-preserving: the floor only stops FORCING more iterations after done-is-claimed -- every
+  gate (evidence, council, provenance, boot smoke, devil's advocate) still runs. MEASURED on a real
+  build through the deployed stack: 28m52s+timed_out -> 8m25s+passed (3.4x), gates+council still ran,
+  app 15/15 tests pass. test-council-convergence-floor.sh 24/24.
+
+### Trust / Evidence Receipt honesty
+- **fix(proof): report real quality gates + council from on-disk artifacts (#125).** A real build's
+  proof recorded quality_gates:{0,0} and blank council reviewers EVEN THOUGH the gates ran+passed and
+  the council voted 3-0 -- a receipt understatement reading as "no verification ran." The generator
+  now reads `.loki/quality/*.pass` + test-results.json (gates) and expands the nested
+  `council/votes/round-N.json` {verdict, votes:[...]} shape into per-reviewer rows. NOT a verification
+  change; fixes the PROOF's reporting only. Regression tests fail-on-old/pass-on-new; proof-generator
+  38/38, redaction 28/28 intact.
+
+### Accuracy instruments (Rank 12 / Rank 4)
+- **feat(bench): scored mergeability benchmark instrument (held-out grader, instrument-only).**
+- **feat(heal): golden-master boundary-equivalence gate for healing (per-boundary stdout+exit
+  characterization; blocks undocumented boundary changes after modernization).**
+- **fix(test): boundary-equivalence gate test uses stdlib unittest (portable to CI without pytest).**
+
 ## v7.117.2
 
 ### Build speed + trust (measured; RED/GREEN gated)
