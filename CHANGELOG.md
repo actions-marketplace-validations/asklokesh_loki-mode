@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (none)
 
+## [7.117.1] - 2026-07-02
+
+### Fixed
+
+- **CI: fix ShellCheck RED on completion-council.sh and test-heal-assess-readiness.sh.**
+  `autonomy/completion-council.sh` lines 1768-1774: a `python3 -c "..."` invocation
+  had Python comment lines containing literal double-quotes (`pass:"inconclusive"`,
+  `status:"no_tests_run"`, `runner=="none"`). Those unescaped `"` prematurely closed
+  the shell double-quoted string, causing SC2140 + SC1078 warnings that failed the
+  CI ShellCheck gate. Fixed by converting the invocation to a quoted heredoc
+  (`python3 <<'PYEOF' ... PYEOF`) which makes ALL inner quotes safe. Behavior is
+  identical: zero-test INCONCLUSIVE routing (anti-fake-green, #82) is preserved.
+  `tests/test-heal-assess-readiness.sh` lines 100 and 240: `cd "$FIX"` inside
+  subshells lacked `|| exit 1`, triggering SC2164. Fixed inline.
+  Non-regression verified: 5 test cases (pass:true/PASS, pass:false/FAIL,
+  pass:"inconclusive"+status:"no_tests_run"/INCONCLUSIVE, runner=="none"/PASS,
+  malformed-JSON/INCONCLUSIVE) all produce outputs identical to pre-fix baseline.
+
 ## [7.117.0] - 2026-07-02
 
 ### Trust + adoption batch (zero-test hardening + rank 13; RED/GREEN, council-gated)

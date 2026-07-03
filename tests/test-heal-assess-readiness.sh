@@ -97,7 +97,7 @@ EXPECTED_TODO="$(grep -roE '\b(TODO|FIXME|HACK|XXX)\b' "$FIX/src" "$FIX/tests" |
 
 # Init a git repo and commit the fixture so `git status --porcelain` is clean.
 (
-    cd "$FIX"
+    cd "$FIX" || exit 1
     git init -q
     git config user.email "test@example.com"
     git config user.name "test"
@@ -237,7 +237,7 @@ fi
 # G7: zero required flags beyond a path -- `--assess` alone (default cwd) works
 # and stays read-only. Run inside the fixture with no path argument.
 (
-    cd "$FIX"
+    cd "$FIX" || exit 1
     bash "$LOKI_BIN" heal --assess >/dev/null 2>&1
 )
 nodefault_status="$(cd "$FIX" && git status --porcelain 2>/dev/null)"

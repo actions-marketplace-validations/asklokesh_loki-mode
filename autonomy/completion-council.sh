@@ -1753,7 +1753,7 @@ council_evidence_gate() {
     local test_inconclusive_reason=""
     if [ -f "$tr_file" ]; then
         local test_status
-        test_status=$(_TR_FILE="$tr_file" python3 -c "
+        test_status=$(_TR_FILE="$tr_file" python3 <<'PYEOF' 2>/dev/null || echo "INCONCLUSIVE:none:true"
 import json, os, sys
 tr_file = os.environ['_TR_FILE']
 try:
@@ -1781,7 +1781,8 @@ elif status == 'no_tests_run' or passed is not True:
     print('INCONCLUSIVE:%s:true' % runner)
 else:
     print('PASS:%s:true' % runner)
-" 2>/dev/null || echo "INCONCLUSIVE:none:true")
+PYEOF
+)
         local _verdict="${test_status%%:*}"
         local _rest="${test_status#*:}"
         test_runner="${_rest%%:*}"
