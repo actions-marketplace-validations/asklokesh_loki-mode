@@ -54,13 +54,22 @@ build_fixture() {
 name = "fix"
 version = "0.0.0"
 TOML
-    # unit test asserts EXIT CODE ONLY (the wedge; stays green across a boundary change)
+    # unit test asserts EXIT CODE ONLY (the wedge; stays green across a boundary
+    # change). Written as a stdlib unittest.TestCase so the whole-suite check is
+    # portable to ANY python3 (CI has no pytest); pytest would also collect this
+    # class, but the gate command below uses `python3 -m unittest` to stay
+    # dependency-free. This genuinely RUNS the assertion (not a vacuous 0-test
+    # pass): `unittest discover` finds TestCase subclasses, and the subprocess
+    # exit-code assert executes.
     cat > "$fix/tests/test_calc.py" <<PY
-import subprocess, sys, os
+import subprocess, sys, os, unittest
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-def test_runs_ok():
-    r = subprocess.run([sys.executable, os.path.join(HERE, "calc.py"), "5"])
-    assert r.returncode == 0
+class TestCalc(unittest.TestCase):
+    def test_runs_ok(self):
+        r = subprocess.run([sys.executable, os.path.join(HERE, "calc.py"), "5"])
+        self.assertEqual(r.returncode, 0)
+if __name__ == "__main__":
+    unittest.main()
 PY
     write_calc "$fix" "$variant"
     cat > "$fix/.loki/healing/features.json" <<JSON
@@ -107,7 +116,7 @@ CNT=$(find "$FIX/.loki/healing/behavioral-baseline" -type f -name 'boundary-*.js
 echo "Test 2: boundary change with green unit tests -> gate BLOCKS"
 write_calc "$FIX" change   # baseline (RESULT=15) survives; boundary now RESULT=21
 out=$(LOKI_HEAL_MODE=true LOKI_CODEBASE_PATH="$FIX" \
-    LOKI_TEST_COMMAND="cd '$FIX' && python3 -m pytest tests/ -q" \
+    LOKI_TEST_COMMAND="cd '$FIX' && python3 -m unittest discover -s tests -q" \
     hook_healing_phase_gate modernize validate 2>&1)
 rc=$?
 if [[ "$rc" -ne 0 ]] && echo "$out" | grep -q "GATE_BLOCKED: boundary equivalence violated"; then
@@ -128,7 +137,7 @@ FIX2="$(mktemp -d)/rf"; build_fixture "$FIX2" v1
 LOKI_HEAL_MODE=true LOKI_CODEBASE_PATH="$FIX2" hook_capture_behavioral_baseline "$FIX2" >/dev/null 2>&1
 write_calc "$FIX2" refactor   # same output, different implementation
 out=$(LOKI_HEAL_MODE=true LOKI_CODEBASE_PATH="$FIX2" \
-    LOKI_TEST_COMMAND="cd '$FIX2' && python3 -m pytest tests/ -q" \
+    LOKI_TEST_COMMAND="cd '$FIX2' && python3 -m unittest discover -s tests -q" \
     hook_healing_phase_gate modernize validate 2>&1)
 rc=$?
 if [[ "$rc" -eq 0 ]] && echo "$out" | grep -q "equivalent to golden-master"; then
@@ -148,7 +157,7 @@ cat > "$FIX3/.loki/healing/behavioral-baseline/intentional-changes.json" <<'JSON
 {"changes":[{"boundary":"cli:F01","is_intentional":true,"reason":"approved rule change"}]}
 JSON
 out=$(LOKI_HEAL_MODE=true LOKI_CODEBASE_PATH="$FIX3" \
-    LOKI_TEST_COMMAND="cd '$FIX3' && python3 -m pytest tests/ -q" \
+    LOKI_TEST_COMMAND="cd '$FIX3' && python3 -m unittest discover -s tests -q" \
     hook_healing_phase_gate modernize validate 2>&1)
 rc=$?
 if [[ "$rc" -eq 0 ]] && echo "$out" | grep -q "documented-intentional"; then
@@ -165,7 +174,7 @@ cat > "$FIX3/.loki/healing/behavioral-baseline/intentional-changes.json" <<'JSON
 {"changes":[{"boundary":"cli:F99","is_intentional":true,"reason":"unrelated"}]}
 JSON
 out=$(LOKI_HEAL_MODE=true LOKI_CODEBASE_PATH="$FIX3" \
-    LOKI_TEST_COMMAND="cd '$FIX3' && python3 -m pytest tests/ -q" \
+    LOKI_TEST_COMMAND="cd '$FIX3' && python3 -m unittest discover -s tests -q" \
     hook_healing_phase_gate modernize validate 2>&1)
 rc=$?
 if [[ "$rc" -ne 0 ]] && echo "$out" | grep -q "cli:F01"; then
@@ -180,7 +189,7 @@ fi
 echo "Test 6: no baseline present -> honest degrade fall-through (ALLOWS)"
 FIX4="$(mktemp -d)/nd"; build_fixture "$FIX4" v1   # NO capture -> baseline dir empty
 out=$(LOKI_HEAL_MODE=true LOKI_CODEBASE_PATH="$FIX4" \
-    LOKI_TEST_COMMAND="cd '$FIX4' && python3 -m pytest tests/ -q" \
+    LOKI_TEST_COMMAND="cd '$FIX4' && python3 -m unittest discover -s tests -q" \
     hook_healing_phase_gate modernize validate 2>&1)
 rc=$?
 if [[ "$rc" -eq 0 ]] && echo "$out" | grep -q "no golden-master baseline present"; then
@@ -233,10 +242,13 @@ name = "bj"
 version = "0.0.0"
 TOML
 cat > "$FIX7/tests/test_ok.py" <<PY
-import subprocess, sys, os
+import subprocess, sys, os, unittest
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-def test_ok():
-    assert subprocess.run([sys.executable, os.path.join(HERE, "app.py")]).returncode == 0
+class TestOk(unittest.TestCase):
+    def test_ok(self):
+        self.assertEqual(subprocess.run([sys.executable, os.path.join(HERE, "app.py")]).returncode, 0)
+if __name__ == "__main__":
+    unittest.main()
 PY
 cat > "$FIX7/app.py" <<'PY'
 #!/usr/bin/env python3
@@ -254,7 +266,7 @@ cat > "$FIX7/app.py" <<'PY'
 print("OUTPUT=beta"); import sys; sys.exit(0)
 PY
 out=$(LOKI_HEAL_MODE=true LOKI_CODEBASE_PATH="$FIX7" \
-    LOKI_TEST_COMMAND="cd '$FIX7' && python3 -m pytest tests/ -q" \
+    LOKI_TEST_COMMAND="cd '$FIX7' && python3 -m unittest discover -s tests -q" \
     hook_healing_phase_gate modernize validate 2>&1)
 rc=$?
 if [[ "$CNT" -ge 1 && "$rc" -ne 0 ]] && echo "$out" | grep -q "cli:main"; then
@@ -276,10 +288,13 @@ name = "ct"
 version = "0.0.0"
 TOML
 cat > "$FIX8/tests/test_ok.py" <<PY
-import subprocess, sys, os
+import subprocess, sys, os, unittest
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-def test_ok():
-    assert subprocess.run([sys.executable, os.path.join(HERE, "svc.py")]).returncode == 0
+class TestOk(unittest.TestCase):
+    def test_ok(self):
+        self.assertEqual(subprocess.run([sys.executable, os.path.join(HERE, "svc.py")]).returncode, 0)
+if __name__ == "__main__":
+    unittest.main()
 PY
 cat > "$FIX8/svc.py" <<'PY'
 #!/usr/bin/env python3
@@ -295,7 +310,7 @@ cat > "$FIX8/svc.py" <<'PY'
 print("STATUS=red"); import sys; sys.exit(0)
 PY
 out=$(LOKI_HEAL_MODE=true LOKI_CODEBASE_PATH="$FIX8" \
-    LOKI_TEST_COMMAND="cd '$FIX8' && python3 -m pytest tests/ -q" \
+    LOKI_TEST_COMMAND="cd '$FIX8' && python3 -m unittest discover -s tests -q" \
     hook_healing_phase_gate modernize validate 2>&1)
 rc=$?
 if [[ "$CNT" -ge 1 && "$rc" -ne 0 ]] && echo "$out" | grep -q "cli:svc"; then
@@ -318,10 +333,13 @@ name = "se"
 version = "0.0.0"
 TOML
 cat > "$FIX9/tests/test_ok.py" <<PY
-import subprocess, sys, os
+import subprocess, sys, os, unittest
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-def test_ok():
-    assert subprocess.run([sys.executable, os.path.join(HERE, "w.py")]).returncode == 0
+class TestOk(unittest.TestCase):
+    def test_ok(self):
+        self.assertEqual(subprocess.run([sys.executable, os.path.join(HERE, "w.py")]).returncode, 0)
+if __name__ == "__main__":
+    unittest.main()
 PY
 cat > "$FIX9/w.py" <<'PY'
 #!/usr/bin/env python3
@@ -341,7 +359,7 @@ sys.stderr.write("DeprecationWarning: old-style class at 0xBBBB\n")
 print("VALUE=42"); sys.exit(0)
 PY
 out=$(LOKI_HEAL_MODE=true LOKI_CODEBASE_PATH="$FIX9" \
-    LOKI_TEST_COMMAND="cd '$FIX9' && python3 -m pytest tests/ -q" \
+    LOKI_TEST_COMMAND="cd '$FIX9' && python3 -m unittest discover -s tests -q" \
     hook_healing_phase_gate modernize validate 2>&1)
 rc=$?
 if [[ "$rc" -eq 0 ]] && echo "$out" | grep -q "equivalent to golden-master"; then
