@@ -5,6 +5,68 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.121.0
+
+### Trust / accuracy (#142 -- the real #124 non-convergence driver)
+- **fix(engine): checklist `grep_codebase` now speaks ERE (`grep -E`), so
+  LLM-emitted patterns stop erroring and blocking correct builds.** The checklist
+  verifier ran grep in its BRE default. LLM-emitted patterns are ERE/PCRE-flavored
+  (`app\.get\('/api/tasks'`, `router.get\('/tasks'|router.get\("/tasks"`,
+  `base62|BASE62`), where an escaped `\(` is a BRE group-open and `|` is a literal:
+  grep ERRORED (rc>=2, e.g. macOS ugrep/BSD grep "parentheses not balanced") and the
+  code collapsed BOTH not-found (rc=1) AND error (rc>=2) to `passed=False`. Result:
+  genuinely-present, tested, curl-verified endpoints read checklist `failing` -> the
+  completion-council hard gate `critical_checklist_failures` blocked a CORRECT build
+  for iterations until it TIMED OUT. Observed live on the `web-app-e2e` build
+  (cdbbb5af): 3 endpoints present at src/app.js:38/42/59, gate blocked at iteration 9.
+  A FAKE-RED (validated work reads failing) -- the founder's "no progress" class.
+- **Fix:** primary grep runs `-E` (ERE) so `\(` is a literal paren and `.` `*` `+`
+  `|` keep regex meaning; rc==0 -> True, rc==1 -> honest False (a genuinely-absent
+  endpoint still blocks -- moat intact). If a pattern still errors even under `-E`, a
+  fixed-string (`grep -F`) retry recovers a real match to True; anything else
+  (literal-absent or double-error) is INCONCLUSIVE (`None` -> checklist `pending`,
+  never a hard False), because once `-E` fails to parse, an escape-stripped literal
+  cannot distinguish "present via a quantifier" from "absent". No fake-green: `None`
+  is `pending`, never counted `verified`.
+- **Measured before/after (function-extraction on the real cdbbb5af workspace):**
+  the 3 critical checklist items go grep `Found in 0 file(s)`/failing ->
+  `Found in 1 file(s)`; replaying the exact council gate logic flips BLOCK (3 critical
+  failing) -> PASS (0 failing). The build that timed out clears the gate. Full suite
+  1642 passed; council APPROVE (chain-to-green verified, no fake-green/fake-RED, ERE
+  dialect audit clean).
+- **fix(engine): `tests_pass` is runner-agnostic -- runs the project's OWN declared
+  test command instead of hardcoding `npx jest`.** The verifier ran `npx jest` for any
+  package.json project. cdbbb5af declares `"test":"vitest run"` (vitest installed, jest
+  NOT): `npx jest` either errored on jest's drifted `--testPathPattern` flag or tried to
+  FETCH jest and timed out -> a genuinely-passing 26/26 vitest suite read False/None
+  ("tests not run") -> the item never reached `verified`. Fix: read `package.json`
+  `scripts.test` and run it via `npm test` (the runner the build actually chose --
+  vitest/jest/mocha/node:test/ava), same list-form + shell=False + cwd posture (the
+  engine already ran this exact command to build the workspace). Model-/complexity-
+  agnostic by construction. Anti-fake-green gate preserved and widened: a required
+  `tests_pass` still FAILS on a no-test run (jest "No tests found", vitest "No test files
+  found", pytest exit 5) so a suite that runs zero tests never reads green; couldn't-run
+  (timeout/not-found/no-scripts.test) -> inconclusive None, ran-and-failed -> False,
+  ran-and-passed-with-tests -> True (same None-vs-False moat as grep).
+- **fix(engine): `file_exists`/`file_contains` accept the LLM-emitted path under `path`,
+  `target`, OR `file`.** The checklist is LLM-authored (generated_from a PRD), so the
+  field name is not pinnable. A valid `file_exists` carrying `target:"package.json"` (no
+  `path`) raised "Invalid path characters: ''" -> None -> the item stuck `pending`. Alias
+  the variants so a real check on a present file verifies. (This is the REAL instance of
+  the target-vs-path class; the earlier #141 self-report of it was a hallucination against
+  a checklist that used `path` -- verified here against the actual on-disk `target` schema.)
+- **Measured (function-extraction on real cdbbb5af, all 3 fixes):** the build goes from
+  TIMED OUT (grep-error hard-block, 9 iterations) to CONVERGING -- checklist gate BLOCK
+  (3 critical failing) -> PASS (0 failing), verified items 1/11 -> 4/11. Full suite 1645
+  passed. HONEST scope: this makes the build converge to "Working, with gaps"; it does NOT
+  yet yield a green "Verified" card -- the deterministic headline (proof-generator.py
+  `_compute_headline`) requires the Evidence Receipt axes (tests+build+security captured,
+  no degraded), which remain the separate Evidence Receipt phases 2/3/4 work. The 7
+  still-pending items are prose-only `tests_pass` (no runner signal) and a `manual_curl`
+  check the verifier does not implement -- both correctly stay inconclusive (None), never
+  faked green; implementing behavioral `manual_curl` (run the app, hit the endpoint) is
+  the next rock.
+
 ## v7.120.0
 
 ### Trust / accuracy (#139)

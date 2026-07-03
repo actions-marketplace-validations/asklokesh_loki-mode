@@ -52,7 +52,15 @@ class TestsPassTrustGate(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _make_jest_project(self):
-        # Presence of package.json routes run_check to the jest command.
+        # A package.json WITH a declared scripts.test routes run_check to the
+        # project's own runner via `npm test` (runner-agnostic). The command
+        # string is irrelevant here because subprocess.run is monkeypatched; only
+        # the presence of scripts.test matters for routing.
+        with open(os.path.join(self.tmp, "package.json"), "w") as f:
+            f.write('{"name": "x", "scripts": {"test": "jest"}}')
+
+    def _make_no_test_script_project(self):
+        # package.json but NO scripts.test -> nothing declared to run.
         with open(os.path.join(self.tmp, "package.json"), "w") as f:
             f.write('{"name": "x"}')
 
@@ -126,6 +134,47 @@ class TestsPassTrustGate(unittest.TestCase):
         result = self._check()
         self.assertTrue(result["passed"])
 
+    # ---- runner-agnostic: vitest / no-script / non-jest runners --------------
+
+    def test_vitest_no_test_files_found_fails(self):
+        # vitest prints "No test files found, exiting with code 1". Even though
+        # rc!=0 already fails, the no-tests gate must catch it explicitly so a
+        # runner that exits 0 on an empty run (a mismatched filter) is caught too.
+        self._make_jest_project()  # scripts.test present -> npm test path
+        self._patch_run(_FakeCompleted(
+            returncode=1,
+            stderr="No test files found, exiting with code 1"))
+        result = self._check()
+        self.assertFalse(
+            result["passed"],
+            "vitest 'No test files found' must fail the required check (no fake-green)")
+        self.assertIn("No tests discovered", result["output"])
+
+    def test_vitest_real_pass_passes(self):
+        # A real vitest run: "Test Files 1 passed (1) / Tests 26 passed (26)", rc0.
+        self._make_jest_project()
+        self._patch_run(_FakeCompleted(
+            returncode=0,
+            stdout="Test Files  1 passed (1)\n      Tests  26 passed (26)"))
+        result = self._check()
+        self.assertTrue(result["passed"], "a real passing vitest run must pass")
+
+    def test_package_json_without_test_script_is_inconclusive(self):
+        # package.json but NO scripts.test: nothing declared to run. Must be
+        # INCONCLUSIVE (None), NOT a hardcoded-runner guess (that was the fake-RED
+        # -- guessing `npx jest` on a vitest/mocha project) and NOT False (we did
+        # not run and fail; we had nothing to run).
+        self._make_no_test_script_project()
+        # subprocess.run must NOT even be called; make it explode if it is.
+        def _boom(*a, **k):
+            raise AssertionError("must not invoke a runner when no scripts.test")
+        subprocess.run = _boom
+        result = self._check()
+        self.assertIsNone(
+            result["passed"],
+            "package.json without scripts.test is inconclusive, never a guess")
+        self.assertIn("scripts.test", result["output"])
+
 
 class GrepCodebaseErrorInconclusiveGate(unittest.TestCase):
     """#142 trust gate: a grep_codebase check whose grep ERRORS (returncode >= 2:
@@ -162,16 +211,102 @@ class GrepCodebaseErrorInconclusiveGate(unittest.TestCase):
             timeout=30,
         )
 
-    def test_grep_error_is_inconclusive_not_false(self):
-        # returncode 2 = grep error (e.g. ugrep 'parentheses not balanced').
-        self._patch_run(_FakeCompleted(
-            returncode=2, stdout="", stderr="grep: parentheses not balanced"))
-        result = self._grep()
+    def _patch_run_seq(self, *completeds):
+        # Return completeds[0] for the first grep call (regex), completeds[1] for
+        # the second (fixed-string retry after a regex error).
+        calls = {"n": 0}
+        seq = list(completeds)
+
+        def fake_run(cmd, **kwargs):
+            i = min(calls["n"], len(seq) - 1)
+            calls["n"] += 1
+            return seq[i]
+        subprocess.run = fake_run
+
+    def test_grep_regex_error_but_present_recovers_to_true(self):
+        # rc=2 (ugrep 'parentheses not balanced') on a PRESENT endpoint: the
+        # fixed-string retry finds it -> True. This is the #142 fake-RED fix AND
+        # closes the council's absent-and-error hole by recovering real signal.
+        self._patch_run_seq(
+            _FakeCompleted(returncode=2, stdout="", stderr="grep: parentheses not balanced"),
+            _FakeCompleted(returncode=0, stdout="src/app.js\n"))
+        result = self._grep(pattern=r"app\.get\('/api/tasks'")
+        self.assertTrue(
+            result["passed"],
+            "a regex error on a PRESENT pattern must recover to True via the "
+            "fixed-string retry, not read failing (the #142 fake-RED)")
+        self.assertIn("fixed-string retry", result["output"])
+
+    def test_grep_regex_error_then_literal_absent_is_inconclusive(self):
+        # If the -E PRIMARY errors (rc=2) AND the -F literal retry finds nothing
+        # (rc=1), the result is INCONCLUSIVE (None), NOT False. Rationale: once
+        # -E failed to parse the pattern, an escape-stripped literal-absent cannot
+        # tell "present only via a regex quantifier" (should be green) from
+        # "genuinely absent" -- so False here would be a fake-RED. None -> pending
+        # (never blocks). A genuinely-absent endpoint is instead caught by the -E
+        # primary's honest rc=1 -> False (see the real-grep tests below), so the
+        # moat is preserved WITHOUT risking a false block on this ambiguous path.
+        self._patch_run_seq(
+            _FakeCompleted(returncode=2, stdout="", stderr="grep: parentheses not balanced"),
+            _FakeCompleted(returncode=1, stdout=""))
+        result = self._grep(pattern=r"app\.get\('/api/NONEXISTENT'")
         self.assertIsNone(
             result["passed"],
-            "a grep ERROR must be inconclusive (None), never a hard False "
-            "(fake-RED that blocks a correct build)")
-        self.assertIn("inconclusive", result["output"])
+            "a regex-parse error + literal-absent is ambiguous -> inconclusive, "
+            "never a hard False (that would be a narrowed fake-RED)")
+
+    def test_grep_error_unrecoverable_is_inconclusive(self):
+        # If BOTH the regex and the fixed-string retry error (rc>=2 twice: e.g.
+        # unreadable files, not a pattern problem), it is genuinely inconclusive
+        # (None) -- a grep that could not run has not proven absence.
+        self._patch_run_seq(
+            _FakeCompleted(returncode=2, stderr="grep: permission denied"),
+            _FakeCompleted(returncode=2, stderr="grep: permission denied"))
+        result = self._grep(pattern=r"any\(thing")
+        self.assertIsNone(
+            result["passed"],
+            "an unrecoverable grep error (both attempts fail) is inconclusive")
+        self.assertIn("unrecoverable", result["output"])
+
+    def test_grep_present_as_regex_quantifier_is_true(self):
+        # REAL-GREP (not mocked): a pattern that matches ONLY as a regex, via a
+        # quantifier -- app\.get\(.*tasks -- against a file that contains
+        # app.get('/api/tasks'. Under the BRE default this errored (unbalanced
+        # paren) AND -F would false-negate (literal .* absent) = a fake-RED. The
+        # -E primary must MATCH it (True). This is the case the mocked tests miss.
+        src = os.path.join(self.tmp, "app.js")
+        with open(src, "w") as f:
+            f.write("const app = express();\napp.get('/api/tasks', (req,res)=>res.json([]));\n")
+        result = self.mod.run_check(
+            {"type": "grep_codebase", "pattern": r"app\.get\(.*tasks"},
+            project_dir=self.tmp, timeout=30)
+        self.assertTrue(
+            result["passed"],
+            "a pattern present-as-regex (quantifier) must be True under -E, not "
+            "a fake-RED from BRE-error + literal -F miss")
+
+    def test_grep_escaped_paren_present_is_true(self):
+        # REAL-GREP: the exact #142 live pattern app\.get\('/api/tasks' against a
+        # present endpoint. Under BRE this errored (rc=2 fake-RED); under -E the
+        # \( is a literal paren -> clean match -> True.
+        src = os.path.join(self.tmp, "app.js")
+        with open(src, "w") as f:
+            f.write("app.get('/api/tasks', (req,res)=>res.json([]));\n")
+        result = self.mod.run_check(
+            {"type": "grep_codebase", "pattern": r"app\.get\('/api/tasks'"},
+            project_dir=self.tmp, timeout=30)
+        self.assertTrue(result["passed"], "the exact #142 live pattern must match present code under -E")
+
+    def test_grep_escaped_paren_absent_is_false(self):
+        # REAL-GREP: same escaped-paren pattern but the endpoint is ABSENT -> an
+        # honest False under -E (moat: a genuinely-missing endpoint still blocks).
+        src = os.path.join(self.tmp, "app.js")
+        with open(src, "w") as f:
+            f.write("app.get('/api/other', (req,res)=>res.json([]));\n")
+        result = self.mod.run_check(
+            {"type": "grep_codebase", "pattern": r"app\.get\('/api/NONEXISTENT'"},
+            project_dir=self.tmp, timeout=30)
+        self.assertFalse(result["passed"], "a genuinely-absent endpoint must stay False (block), not recover green")
 
     def test_grep_no_match_stays_false(self):
         # returncode 1 = clean 'not found' -> an honest False (moat: a genuinely
