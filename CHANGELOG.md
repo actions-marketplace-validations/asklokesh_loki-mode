@@ -5,6 +5,11 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.121.3
+
+### Fix (app-runner: static sites get a live preview + health check)
+- **fix(app-runner): serve static sites (index.html) instead of falling to "no live server".** A static site (a web root with index.html and no server-app signal -- no dev/start script, no Flask/Django/etc) fell through the detection cascade to "none" -> no app-runner -> no live preview, no health check, no screenshot. Founder testing: a "hero, three-feature, pricing, waitlist" landing page showed "This app has no live server" and "Live health check: Could not reach the app" even though it built fine. Fix: after the package.json/framework handlers and before the "none" fallback, detect a static web root (index.html at root, or public/dist/build) and serve it with python3 -m http.server (always present, zero deps) on port 8000. Guarded on a REAL index.html so genuine CLIs/libraries (no index.html) still honestly read "none" -- never green-washes a non-web artifact, and a real server (npm start) still wins over static (detection order preserved). New test tests/test-app-runner-static-site.sh: 5 cases pass; all existing app-runner suites remain green. NOTE: future-builds-only -- an already-finished build classified "none" needs a re-run to preview.
+
 ## v7.121.2
 
 ### Docs (non-functional)
