@@ -120,5 +120,23 @@ class FunctionalGateOptIn(unittest.TestCase):
         self.assertEqual(self._hl(f), "VERIFIED")
 
 
+class HealthcheckRecord(unittest.TestCase):
+    """Evidence Receipt record-half: the app-runner liveness fact is recorded but
+    inert to the verdict (gating it is the founder-gated decision)."""
+
+    def test_collect_absent_present(self):
+        d = tempfile.mkdtemp()
+        self.assertEqual(PG._collect_healthcheck(d)["status"], "not_run")
+        os.makedirs(os.path.join(d, "app-runner"))
+        json.dump({"ok": True, "checked_at": "t"},
+                  open(os.path.join(d, "app-runner", "health.json"), "w"))
+        self.assertEqual(PG._collect_healthcheck(d)["status"], "healthy")
+
+    def test_unhealthy_is_inert_to_verdict(self):
+        f = dict(VERIFIED_FACTS, healthcheck={"ran": True, "ok": False, "status": "unhealthy"})
+        hl = PG._compute_headline(f, PG._compute_degraded(f))
+        self.assertEqual(hl, "VERIFIED")  # descriptive only; does not gate
+
+
 if __name__ == "__main__":
     unittest.main()

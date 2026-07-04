@@ -463,6 +463,32 @@ def _collect_functional(loki_dir):
     return out
 
 
+def _collect_healthcheck(loki_dir):
+    """Read .loki/app-runner/health.json (the app-runner liveness probe).
+
+    Deterministic FACT: did the built app actually come up and respond (HTTP/PID
+    health), as written by app-runner. Absent -> not_run. Shape:
+    {ran, ok, status, checked_at}. status: not_run (never checked) | healthy
+    (ran, ok:true) | unhealthy (ran, ok:false).
+
+    DESCRIPTIVE ONLY (Evidence Receipt record half): recorded for transparency,
+    NOT read by _compute_headline / _compute_degraded, so it does not change what
+    "Verified" means. Gating on it is the founder-gated trust decision (mirrors the
+    FV-2 opt-in gate). ponytail: reuses the health.json app-runner already writes.
+    """
+    out = {"ran": False, "ok": False, "status": "not_run", "checked_at": ""}
+    raw = _read_json(
+        os.path.join(loki_dir, "app-runner", "health.json"), default=None
+    )
+    if not isinstance(raw, dict):
+        return out
+    out["ran"] = True
+    out["ok"] = bool(raw.get("ok"))
+    out["checked_at"] = str(raw.get("checked_at") or "")
+    out["status"] = "healthy" if out["ok"] else "unhealthy"
+    return out
+
+
 def _collect_tests(loki_dir):
     """Read .loki/quality/test-results.json.
 
@@ -796,6 +822,7 @@ def _build_proof(args, loki_dir, target_dir, repo_root):
     tests = _collect_tests(loki_dir)
     security = _collect_security(loki_dir)
     functional = _collect_functional(loki_dir)  # FV-2 record-half: descriptive only
+    healthcheck = _collect_healthcheck(loki_dir)  # Evidence Receipt record-half
     evidence_gate = _collect_evidence_gate(loki_dir)
 
     deployed_url = os.environ.get("LOKI_DEPLOYED_URL") or None
@@ -838,6 +865,9 @@ def _build_proof(args, loki_dir, target_dir, repo_root):
         # _compute_degraded, so it does not (yet) change the verdict. Wiring it into
         # the green headline is the founder-gated trust-semantics decision.
         "functional": functional,
+        # Evidence Receipt (record half): did the built app come up + respond?
+        # Descriptive; NOT read by _compute_headline (gating is founder-gated).
+        "healthcheck": healthcheck,
         "cost": cost,
         "meta": {
             "run_id": run_id,
