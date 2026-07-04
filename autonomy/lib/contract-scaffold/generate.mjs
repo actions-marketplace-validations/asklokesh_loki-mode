@@ -68,5 +68,23 @@ for (const [tpl, dest] of [
   writeFileSync(join(outDir, "server", dest), render(src));
 }
 
+// M3: the design-system UI templates (tokens + dark + three states), wired to the
+// M1 contract hooks. Emitted into src/ alongside the generated client so a
+// generated frontend looks DESIGNED (not default) and cannot reference a
+// non-contract endpoint. Optional: skip with --no-ui.
+if (!process.argv.includes("--no-ui")) {
+  const UI = join(__dir, "templates", "ui");
+  mkdirSync(join(outDir, "src"), { recursive: true });
+  for (const [tpl, dest] of [
+    ["theme.css.tmpl", "theme.css"],
+    ["ListView.tsx.tmpl", `${cap}ListView.tsx`],
+  ]) {
+    const src = readFileSync(join(UI, tpl), "utf8");
+    writeFileSync(join(outDir, "src", dest), render(src));
+  }
+}
+
 console.log(`generated real backend floor at ${outDir}/server (Express + SQLite, /${coll})`);
+if (!process.argv.includes("--no-ui"))
+  console.log(`generated design-system UI at ${outDir}/src (tokens + dark + 3 states, wired to the contract)`);
 console.log(`next: (cd ${outDir}/server && npm install && PORT=3000 npm start)`);

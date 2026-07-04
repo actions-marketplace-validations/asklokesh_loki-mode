@@ -57,8 +57,27 @@ functional_status=verified** -- the convergence. A static shell would fail this.
 Architecture: template files + a Node substitutor, NOT bash heredocs emitting JS
 (heredocs collide with JS `${...}`/backticks -- learned the hard way; see the plan).
 
-## Next (M3 + wiring, see the plan)
+## M3 -- design-system pass (DONE, standalone)
 
-- M3: design tokens + dark + skeleton/empty/first-run states.
-- Then wire M1+M2+M3 into the build lane (GATED: touches parity-locked core,
-  council + founder sign-off) and wire FV into the verdict (FV-2).
+`generate.mjs` also emits (into `src/`, from `templates/ui/`) a design system so a
+generated frontend looks DESIGNED, not default:
+- `theme.css` -- ROLE tokens (bg/surface/text/primary/...), a confident modern
+  default palette, and a parallel dark theme honored from the OS (`--no-ui` skips).
+- `<Resource>ListView.tsx` -- a data surface with all THREE UI states: a shimmer
+  skeleton (never a blank flash), an inviting empty state with a CTA, and a
+  first-run "you're viewing sample data" banner (backed by M2's seed row). Wired
+  to the M1 contract hook, so it cannot reference a non-contract endpoint.
+
+Small touches that make users smile: friendly copy, a clear primary action,
+graceful loading/empty/error states, no raw hex (re-theme from one block).
+
+Proven (tests/test-design-system.sh, 8/8): no raw hex in components, all three
+states, dark theme, AND the tokenized ListView TYPECHECKS against the generated
+contract hooks (the contract even caught a wrong response-type assumption in the
+UI -- the spine working as designed).
+
+## Next (wiring, see the plan)
+
+- Wire M1+M2+M3 into the build lane (GATED: touches parity-locked run.sh/
+  build_prompt.ts core -> bash+bun parity + council + founder sign-off).
+- Wire the FV harness into the completion verdict (FV-2, founder-gated).
