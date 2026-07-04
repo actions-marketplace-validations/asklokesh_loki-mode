@@ -16254,6 +16254,21 @@ run_autonomous() {
         esac
     fi
 
+    # Contract-first scaffold seam (opt-in via LOKI_SCAFFOLD_CONTRACT_FIRST=1,
+    # default OFF -> default build path is byte-identical). Mirrors the
+    # LOKI_SENTRUX_GATE pattern: source the helper only when the gate is enabled,
+    # and it self-gates further on greenfield + a derivable REST resource. It can
+    # ONLY add a starting skeleton (contract-first codegen + real backend + design
+    # system, M1-M3); it never overwrites existing code or touches a brownfield
+    # repo. On any doubt it no-ops and the normal build proceeds unchanged.
+    if [ "${LOKI_SCAFFOLD_CONTRACT_FIRST:-0}" = "1" ]; then
+        # shellcheck disable=SC1090,SC1091
+        source "${SCRIPT_DIR}/lib/scaffold-hook.sh" 2>/dev/null || true
+        if type run_contract_scaffold_hook >/dev/null 2>&1; then
+            run_contract_scaffold_hook "${TARGET_DIR:-.}" "$prd_path" || true
+        fi
+    fi
+
     # Auto-detect PRD if not provided
     if [ -z "$prd_path" ]; then
         log_step "No PRD provided, searching for existing PRD files..."
