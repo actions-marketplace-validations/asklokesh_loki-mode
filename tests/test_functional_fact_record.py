@@ -86,5 +86,39 @@ class FunctionalFactIsInertToVerdict(unittest.TestCase):
         self.assertEqual(hl, "VERIFIED")
 
 
+class FunctionalGateOptIn(unittest.TestCase):
+    """FV-2 gate-half: LOKI_FV_GATE=1 makes a failed functional check a hard NOT
+    VERIFIED. Default-off keeps every existing verdict byte-identical."""
+
+    def setUp(self):
+        os.environ.pop("LOKI_FV_GATE", None)
+
+    def tearDown(self):
+        os.environ.pop("LOKI_FV_GATE", None)
+
+    def _hl(self, facts):
+        return PG._compute_headline(facts, PG._compute_degraded(facts))
+
+    def test_gate_off_failed_functional_stays_verified(self):
+        f = dict(VERIFIED_FACTS, functional={"ran": True, "functional_status": "failed"})
+        self.assertEqual(self._hl(f), "VERIFIED")  # default off -> unchanged
+
+    def test_gate_on_failed_functional_is_not_verified(self):
+        os.environ["LOKI_FV_GATE"] = "1"
+        f = dict(VERIFIED_FACTS, functional={"ran": True, "functional_status": "failed"})
+        self.assertEqual(self._hl(f), "NOT VERIFIED")
+
+    def test_gate_on_verified_functional_stays_verified(self):
+        os.environ["LOKI_FV_GATE"] = "1"
+        f = dict(VERIFIED_FACTS, functional={"ran": True, "functional_status": "verified"})
+        self.assertEqual(self._hl(f), "VERIFIED")
+
+    def test_gate_on_but_functional_not_run_stays_verified(self):
+        # A not_run functional check must never flip a passing build (moat).
+        os.environ["LOKI_FV_GATE"] = "1"
+        f = dict(VERIFIED_FACTS, functional={"ran": False, "functional_status": "not_run"})
+        self.assertEqual(self._hl(f), "VERIFIED")
+
+
 if __name__ == "__main__":
     unittest.main()

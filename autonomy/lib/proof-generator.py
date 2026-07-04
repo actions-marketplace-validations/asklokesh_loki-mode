@@ -1002,12 +1002,25 @@ def _compute_headline(facts, degraded):
     # intent). This keeps the receipt honest about security, not just tests.
     sec = facts.get("security") or {}
     sec_high = bool(sec.get("ran") and (sec.get("high_active") or 0) > 0)
+    # FV-2 gate (opt-in via LOKI_FV_GATE=1, default OFF -> headline unchanged). When
+    # enabled, a functional check that RAN and FAILED (the built app does not do what
+    # the spec asked -- a static shell for a backend spec) is a hard failure, same
+    # class as a failed test. Default-off keeps every existing build's verdict
+    # byte-identical; the founder flips it on after reviewing the reclassification.
+    # ponytail: reads the already-recorded functional fact; no new plumbing.
+    fn = facts.get("functional") or {}
+    fn_failed = bool(
+        os.environ.get("LOKI_FV_GATE") == "1"
+        and fn.get("ran")
+        and fn.get("functional_status") == "failed"
+    )
     any_failed = (
         tests.get("status") == "failed"
         or build.get("status") == "failed"
         or any(g.get("status") == "failed"
                for g in (facts.get("quality_gates") or []))
         or sec_high
+        or fn_failed
     )
     if any_failed:
         return "NOT VERIFIED"
