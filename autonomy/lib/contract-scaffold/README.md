@@ -42,8 +42,23 @@ in as a solo/rushed action.
 Gap A (the generated app's own quality). NOT Gap B (Replit's managed cloud:
 hosted DB provisioning, auth, secrets, deploy infra -- multi-quarter, out).
 
-## Next (M2/M3, see the plan)
+## M2 -- real backend floor (DONE, standalone)
 
-- M2: real Express+Drizzle+DB backend as the FLOOR of every full-stack scaffold.
+`generate.mjs <out_dir> <resource> [field:type ...]` produces a REAL Express +
+SQLite backend (via `templates/server/`, substitution NOT heredocs) that persists:
+POST creates a row that survives to a later GET, DELETE removes it, one seed row so
+the first screen is never blank. Every declared field is always bound (a partial
+POST persists cleanly, 201, never 500 -- a bug the FV harness caught).
+
+Proven (tests/test-backend-floor.sh, 6/6) on a throwaway `note` resource: generates,
+starts, POST persists, partial POST persists, and **FV-1 reports
+functional_status=verified** -- the convergence. A static shell would fail this.
+
+Architecture: template files + a Node substitutor, NOT bash heredocs emitting JS
+(heredocs collide with JS `${...}`/backticks -- learned the hard way; see the plan).
+
+## Next (M3 + wiring, see the plan)
+
 - M3: design tokens + dark + skeleton/empty/first-run states.
-- Then wire M1-M3 into the build lane (gated) and wire FV into the verdict (FV-2).
+- Then wire M1+M2+M3 into the build lane (GATED: touches parity-locked core,
+  council + founder sign-off) and wire FV into the verdict (FV-2).
