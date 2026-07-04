@@ -287,9 +287,22 @@ def _collect_quality_gates(loki_dir):
             elif os.path.exists(result_json):
                 rj = _read_json(result_json, default=None)
                 if isinstance(rj, dict):
-                    status = _norm_gate_status(
-                        rj.get("passed", rj.get("status", "not_run"))
-                    )
+                    # Read the marker's outcome key. enforce_static_analysis writes
+                    # `"pass"` (a bool); other markers may write `"passed"` or
+                    # `"status"`. Try all three so a real result is NEVER misread as
+                    # not_run: a failing static-analysis marker ({"pass":false,
+                    # "findings":11}) was collapsing to not_run (the reader looked
+                    # only for "passed"/"status"), understating a real gate FAILURE
+                    # as "did not run" -- the receipt read "gaps" where it should
+                    # read a failed gate. _norm_gate_status maps a bool correctly
+                    # (True->passed, False->failed). A key that is genuinely absent
+                    # still defaults to not_run (honest -- never fabricated passed).
+                    if "pass" in rj:
+                        status = _norm_gate_status(rj.get("pass"))
+                    else:
+                        status = _norm_gate_status(
+                            rj.get("passed", rj.get("status", "not_run"))
+                        )
             if status is not None:
                 gates.append({"name": gate_name, "status": status})
                 seen.add(gate_name)
