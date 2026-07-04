@@ -73,6 +73,14 @@ when the substrate already has a data tier.
   stop re-deriving structure per build.
 - Size: L. Verify: throwaway "task tracker" spec -> real POST persists to DB,
   FV-1 harness reports functional_status=verified (not shell).
+- ARCHITECTURE DECISION (learned 2026-07-04, a first M2 attempt): generate the
+  server from TEMPLATE FILES + placeholder substitution, NOT bash nested heredocs.
+  A heredoc emitting JS hits a collision -- bash expands the JS `${...}` template
+  literals and `` `backticks` `` -- which is fragile and error-prone (bit both the
+  M1 yaml heredoc and the M2 JS heredoc). Ship a `templates/` dir of real files
+  with `__RESOURCE__`/`__COLL__`/`__FIELDS__` tokens and a small substitutor
+  (Node or sed), so the generated code is real code reviewed as code, not escaped
+  strings. This is cleaner + more modular and avoids the whole escaping class.
 
 ### M3 -- Design system pass  [why it looks designed, not default]
 A tokens-first design pass wired into the build: role tokens (`bg-card`,
