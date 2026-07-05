@@ -5,6 +5,17 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.121.5
+
+### Chore: keep non-public scratch out of the CLI repo
+
+Added `.gitignore` rules so internal/local-only material never ships to users or
+npm: the Codex provider scratch (`.codex/`, `AGENTS.md`), harness scratch
+(`.loki-verify/`, `.claude/launch.json`, `tmp/`), generated per-build output docs
+(`HANDOFF.md`), internal strategy / roadmap / MOAT specs, and build/test/e2e
+output plus screenshots under `artifacts/`. Curated artifacts can still be
+force-added when genuinely meant to ship. No runtime, CLI, or API change.
+
 ## v7.121.4
 
 ### Fixed: static_analysis falsely gapped on React/JSX apps (two bugs)
