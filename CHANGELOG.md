@@ -5,6 +5,22 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.121.7
+
+### Fixed: Docker image build (Node 24 LTS + native Claude Code installer)
+
+The v7.121.6 Docker publish failed on two independent ecosystem shifts, not a
+Loki change: (1) `npm install -g npm@latest` now pulls npm@12, which requires
+Node >=22.22.2/24.15.0/26 -- but the base image was on Node 20 (EOL 2026-03),
+giving EBADENGINE. Bumped the NodeSource repo to Node 24.x (current Active LTS) in
+both Dockerfile and Dockerfile.sandbox so latest npm works. (2) `@anthropic-ai/
+claude-code` now ships its runtime via a per-platform OPTIONAL npm dependency +
+postinstall link, which fails in the hardened build ("claude native binary not
+installed"). Switched to the documented recommended native installer
+(`curl https://claude.ai/install.sh | bash -s stable`), which places the same
+binary directly. Verified with a full local multi-stage build (Node 24.18.0,
+Claude Code 2.1.197 installed, image built clean). No runtime/CLI behavior change.
+
 ## v7.121.6
 
 ### Fixed: REST API provider set now matches actual support (claude/codex/cline/aider)
