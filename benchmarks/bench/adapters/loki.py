@@ -32,8 +32,39 @@ def _detect_loki_version(runner=None, cwd=None):
     return text.splitlines()[0].strip() if text else None
 
 
+def _count_iteration_completes(loki_dir):
+    """Canonical iterations = count of 'iteration_complete' events in
+    events.jsonl -- the SAME source speed-benchmark.sh uses (len(completes)),
+    so the two harnesses can never disagree. events.jsonl is the real
+    per-session timeline; session.json can be mid-write. Returns None if the
+    file is absent/unreadable so the caller can fall back."""
+    path = os.path.join(loki_dir, "events.jsonl")
+    try:
+        n = 0
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(ev, dict) and ev.get("type") == "iteration_complete":
+                    n += 1
+        return n
+    except Exception:
+        return None
+
+
 def _read_iteration_count(loki_dir):
-    """Read iteration count from .loki state (magic-ab pattern)."""
+    """Iteration count for the bench schema. CANONICAL source is the
+    events.jsonl 'iteration_complete' count (matches speed-benchmark.sh); the
+    session.json/autonomy-state.json counter is only a FALLBACK for when
+    events.jsonl is absent (older runs)."""
+    canonical = _count_iteration_completes(loki_dir)
+    if canonical is not None:
+        return canonical
     for name in ("session.json", "autonomy-state.json"):
         path = os.path.join(loki_dir, name)
         try:
