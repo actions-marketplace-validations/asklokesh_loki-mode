@@ -5,6 +5,19 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.121.6
+
+### Fixed: REST API provider set now matches actual support (claude/codex/cline/aider)
+
+The HTTP/SSE REST API was the last surface still exposing the removed `gemini`
+provider (runtime deprecated v7.5.18) and omitting the real `cline` (Tier 2) and
+`aider` (Tier 3) providers. The server-side validator actively rejected valid
+`cline`/`aider` build requests and accepted a dead `gemini` one. Fixed across all
+six surfaces (server validator, session validation + preference signal, TS types
++ health object, health probe, client bridge, OpenAPI enums + health schema) so
+the provider set is `claude`, `codex`, `cline`, `aider` everywhere, matching
+`providers/*.sh` and the existing tests. No trust-core / `build_prompt` change.
+
 ## v7.121.5
 
 ### Chore: keep non-public scratch out of the CLI repo
