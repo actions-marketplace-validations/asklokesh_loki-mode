@@ -103,9 +103,21 @@ def run(workdir, spec, *, model="claude", timeout=900, runner=None,
         "--no-dashboard",
         "--yes",
     ]
+    run_env = {"LOKI_AUTO_CONFIRM": "true"}
+    # Model pin: `loki start` has no --model flag; the whole-run tier pin is the
+    # LOKI_SESSION_MODEL env var (run.sh:742, default sonnet). The `model` arg
+    # here doubles as a provider LABEL ("claude") when no real model is chosen,
+    # so only pin when it is an actual model alias / id -- otherwise we would set
+    # LOKI_SESSION_MODEL="claude" (invalid) and silently change nothing. Without
+    # this, `--model haiku` in the bench was dropped (the run stayed on sonnet),
+    # making tier-routing (Rank 2) unmeasurable.
+    _pin = (model or "").strip().lower()
+    _REAL_MODEL_ALIASES = ("haiku", "sonnet", "opus", "fable")
+    if _pin and (_pin in _REAL_MODEL_ALIASES or _pin.startswith("claude-")):
+        run_env["LOKI_SESSION_MODEL"] = _pin
     rc, _out, _err, status, duration = _base.run_cli(
         cmd, cwd=workdir, timeout=timeout, runner=runner,
-        env={"LOKI_AUTO_CONFIRM": "true"},
+        env=run_env,
     )
 
     loki_dir = os.path.join(workdir, ".loki")
