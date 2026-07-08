@@ -5,6 +5,25 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.122.0
+
+### Added: `loki verify --explain` (trust legibility)
+
+New `--explain` flag on `loki verify` renders a "Why you can trust this" panel
+after the run: the exact diff graded (merge-base..head, file/line counts, base
+ref), evidence freshness (this run's start/end, gates re-executed now), and a
+per-gate table (GATE / STATUS / RUNNER / REPRO / EVIDENCE) showing which real
+runner or scanner produced each row. The panel makes explicit that the verdict
+is computed ONLY from those independent gate rows -- a pass is a real runner exit,
+never a self-assessment. This is the top recommendation from the ralph-tui /
+zeroshot competitive analysis: competitors surface a verdict; Loki now shows the
+receipts behind it.
+
+CLI-invariant and additive: `--explain` never changes the verdict or exit code.
+Proven by a byte-identity test (verdict + exit identical to a plain run) plus a
+render assertion in `tests/test-verify.sh`. Default `loki verify` output is
+unchanged.
+
 ## v7.121.7
 
 ### Fixed: Docker image build (Node 24 LTS + native Claude Code installer)

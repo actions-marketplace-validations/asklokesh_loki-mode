@@ -420,6 +420,31 @@ else
 fi
 rm -rf "$FO_FAKEBIN"
 
+# -------------------------------------------------------------------------
+# Scenario 10: --explain is trust-legibility only, never verdict-altering.
+#   10a. --explain renders the "Why you can trust this" table (per-gate
+#        evidence) to stdout.
+#   10b. --explain leaves verdict + exit code byte-identical to a plain run
+#        (additive rendering, CLI-invariant).
+# -------------------------------------------------------------------------
+EXPLAIN_OUT="$( ( cd "$S1" && bash "$VERIFY_SH" main --explain ) 2>/dev/null )"
+EXPLAIN_RC=$?
+EXPLAIN_VERDICT="NO_EVIDENCE"
+if [ -f "$S1/.loki/verify/evidence.json" ]; then
+    EXPLAIN_VERDICT="$(python3 -c "import json; print(json.load(open('$S1/.loki/verify/evidence.json'))['verdict'])" 2>/dev/null || echo "PARSE_ERROR")"
+fi
+if printf '%s' "$EXPLAIN_OUT" | grep -q "Why you can trust this" \
+   && printf '%s' "$EXPLAIN_OUT" | grep -q "GATE"; then
+    _ok "--explain renders the trust table"
+else
+    _no "--explain did not render the trust table"
+fi
+if [ "$EXPLAIN_RC" -eq "$DEF_RC" ] && [ "$EXPLAIN_VERDICT" = "$DEF_VERDICT" ]; then
+    _ok "--explain leaves verdict+exit unchanged ($DEF_VERDICT/$DEF_RC)"
+else
+    _no "--explain changed verdict/exit ($DEF_VERDICT/$DEF_RC -> $EXPLAIN_VERDICT/$EXPLAIN_RC)"
+fi
+
 echo ""
 echo "=== results: $PASS passed, $FAIL failed ==="
 [ "$FAIL" -eq 0 ]

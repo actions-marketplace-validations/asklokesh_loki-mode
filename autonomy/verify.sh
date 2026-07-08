@@ -96,6 +96,44 @@ _verify_add_gate() {
         "$1" "$2" "${3:-}" "${4:-}" "${5:-true}" >>"$_VERIFY_GATES_FILE"
 }
 
+# --explain render: a one-screen, skeptic-legible trust proof over the SAME gate
+# rows the verdict is computed from (no new machinery -- a pure render). Prints
+# each gate, status, the runner/scanner that produced the evidence, whether it is
+# reproducible, plus the freshness (verify-run timestamp) and the diff it graded.
+# Reads $_VERIFY_GATES_FILE (gate\tstatus\trunner\tsummary\treproducible). Called
+# only under --explain; never affects the verdict or exit code.
+_verify_render_explain() {
+    local started_at="$1" completed_at="$2" verdict="$3"
+    printf '\n'
+    printf '=== Why you can trust this (loki verify --explain) ===\n'
+    printf 'Diff graded: %s (%s files, +%s/-%s) vs %s\n' \
+        "${VERIFY_MERGE_BASE:0:12}..${VERIFY_HEAD_SHA:0:12}" \
+        "${VERIFY_DIFF_FILES:-0}" "${VERIFY_DIFF_INS:-0}" "${VERIFY_DIFF_DEL:-0}" \
+        "${VERIFY_BASE_REF:-?}"
+    printf 'Evidence freshness: run %s -> %s (this run; gates re-executed now)\n' \
+        "$started_at" "$completed_at"
+    printf '\n'
+    printf '  %-18s %-12s %-14s %-6s %s\n' "GATE" "STATUS" "RUNNER" "REPRO" "EVIDENCE"
+    printf '  %-18s %-12s %-14s %-6s %s\n' "----" "------" "------" "-----" "--------"
+    if [ -s "$_VERIFY_GATES_FILE" ]; then
+        # TSV: gate\tstatus\trunner\tsummary\treproducible. Rendered with awk
+        # FS="\t" (NOT bash `read`, whose default IFS collapses consecutive tabs
+        # and mis-shifts a row with an empty runner field). awk preserves empty
+        # fields by position, so the columns always align.
+        awk -F'\t' '{
+            g=$1; st=$2; runner=($3==""?"-":$3); su=$4; repro=($5==""?"-":$5);
+            if (length(su) > 60) su = substr(su, 1, 57) "...";
+            printf "  %-18s %-12s %-14s %-6s %s\n", g, st, runner, repro, su;
+        }' "$_VERIFY_GATES_FILE"
+    else
+        printf '  (no gates recorded)\n'
+    fi
+    printf '\n'
+    printf 'Verdict is computed ONLY from these gate rows above -- pass = independent\n'
+    printf 'evidence (a real runner/scanner exit), never a self-assessment.\n'
+    printf '\n'
+}
+
 # ---------------------------------------------------------------------------
 # Entanglement 1: PR-aware diff base.
 #
@@ -1865,6 +1903,11 @@ OPTIONS:
                        Default: critical,high  (one notch looser than the
                        Loki build loop, which also blocks on medium).
     --no-llm           Accepted for forward-compat; LLM is already off in MVP.
+    --explain          Print a one-screen, skeptic-legible trust proof: every
+                       gate that ran, its status, the runner/scanner that
+                       produced the evidence, whether it is reproducible, plus
+                       freshness and the diff graded. Additive render before the
+                       VERDICT banner; never changes the verdict or exit code.
     --hosted           Opt-in. When the embedded Autonomi Verify engine is
                        usable (bun present + bundle present), fold its verdict
                        fields into evidence.json under a "hosted" key. Additive
@@ -2320,6 +2363,8 @@ verify_main() {
     # Opt-in hosted-engine enrichment (--hosted). Default 0 = exactly today.
     VERIFY_HOSTED=0
     VERIFY_HOSTED_SUMMARY=""
+    # Opt-in one-screen trust-proof render (--explain). Default 0 = exactly today.
+    VERIFY_EXPLAIN=0
 
     # Fail-closed defaults. These globals are read at the end of this function
     # (the VERDICT banner and the function return code). verify_compute_verdict()
@@ -2344,6 +2389,15 @@ verify_main() {
                 block_on="$(printf '%s' "${2:-}" | tr '[:upper:]' '[:lower:]')"; shift 2 ;;
             --no-llm)
                 shift ;;
+            --explain)
+                # Render a one-screen, skeptic-legible trust proof: every gate
+                # that ran, its status, the runner/scanner that produced the
+                # evidence, whether it is reproducible, and the freshness (the
+                # verify run's own timestamp). Additive: it only ADDS output
+                # before the existing VERDICT banner; the verdict + exit code are
+                # unchanged. This is the "why you can trust this" surface -- Loki
+                # runs more verification than competitors but proved it worse.
+                VERIFY_EXPLAIN=1; shift ;;
             --hosted)
                 # Opt-in: when the embedded Autonomi Verify engine is usable
                 # (bun present + bundle present), enrich evidence.json with the
@@ -2465,6 +2519,13 @@ verify_main() {
     # exit code. Skipped entirely on the default path (VERIFY_HOSTED=0).
     if [ "${VERIFY_HOSTED:-0}" = "1" ]; then
         verify_hosted_enrich "$out_dir" "$base_ref" || true
+    fi
+
+    # --explain: render the one-screen trust proof BEFORE the verdict banner.
+    # Pure render over the gate rows the verdict was just computed from; never
+    # changes VERIFY_VERDICT/VERIFY_EXIT. Default path (VERIFY_EXPLAIN=0) skips it.
+    if [ "${VERIFY_EXPLAIN:-0}" = "1" ]; then
+        _verify_render_explain "$started_at" "$completed_at" "$VERIFY_VERDICT"
     fi
 
     printf 'VERDICT: %s\n' "$VERIFY_VERDICT"
