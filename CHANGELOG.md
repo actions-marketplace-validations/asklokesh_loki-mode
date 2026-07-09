@@ -5,6 +5,24 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.122.1
+
+### Fixed: doc-vs-code default for the auto-learnings loop (it is default-ON)
+
+Three in-code comments and the `loki internal` help text wrongly described the
+failure-learning loop as "default off, only fires when LOKI_AUTO_LEARNINGS=1".
+The runtime is the opposite: both call sites gate on `LOKI_AUTO_LEARNINGS !== "0"`
+(`quality_gates.ts`, `internal_phase1.ts`), so `.loki/state/relevant-learnings.json`
+is written by default and fed into the next iteration's prompt -- the loop that
+makes Loki avoid repeating past mistakes is ON out of the box. Only the misleading
+docs were wrong; no behavior change. Corrected `learnings_writer.ts`,
+`episode_bridge.ts`, and the CLI help so operators see the true default (set
+`LOKI_AUTO_LEARNINGS=0` to disable). Clarified that the episodic-memory mirror is
+a separate, intentionally opt-in enrichment (`LOKI_AUTO_LEARNINGS_EPISODE=1`) so a
+missing python3/chromadb dep never disrupts a run. Verified default-on with the
+exact runtime predicate; learnings + phase1 tests green (11 pass). dist bundle
+rebuilt.
+
 ## v7.122.0
 
 ### Added: `loki verify --explain` (trust legibility)
