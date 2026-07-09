@@ -43,9 +43,9 @@ function parseArgs(argv: string[]): { protocol: CockpitProtocol | "auto"; noImag
 // Capability probe for `loki doctor`. Emits KEY=VALUE lines describing what
 // `loki cockpit` will actually do in this terminal, using the SAME detection
 // code the renderer uses -- so the doctor report can never drift from behavior.
-function probe(): number {
+async function probe(): Promise<number> {
   const proto = detectProtocol();
-  const resvg = rasterAvailable();
+  const resvg = await rasterAvailable();
   const path = proto !== "none" && resvg ? "image" : "text+dashboard";
   process.stdout.write(`protocol=${proto}\n`);
   process.stdout.write(`resvg=${resvg ? "yes" : "no"}\n`);
@@ -55,7 +55,7 @@ function probe(): number {
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   if (argv.includes("--probe")) {
-    return probe();
+    return await probe();
   }
   const { protocol, noImage, svgOut } = parseArgs(argv);
   let state: CockpitState;
@@ -67,7 +67,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     return 3;
   }
 
-  const outcome = render(state, { protocol, forceText: noImage });
+  const outcome = await render(state, { protocol, forceText: noImage });
 
   if (svgOut) {
     try {

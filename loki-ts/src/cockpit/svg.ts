@@ -148,9 +148,28 @@ function rarvIndex(phase: string): number {
   return 1; // act / implement / build / test / everything else
 }
 
-export function buildSvg(state: CockpitState): string {
+export function buildSvg(raw: CockpitState): string {
   const W = 900;
   const PAD = 32;
+
+  // Normalize the state once with safe defaults so a malformed/partial state
+  // (missing verdict, budget, gates, ...) DEGRADES gracefully and always renders
+  // a frame, rather than crashing the whole render. The real gather path always
+  // supplies these, but a hand-written or truncated state must not take it down.
+  const state: CockpitState = {
+    run: raw?.run || "cockpit",
+    iteration: typeof raw?.iteration === "number" ? raw.iteration : 0,
+    phase: raw?.phase || "idle",
+    tier: raw?.tier || "",
+    provider: raw?.provider || "",
+    verdict: raw?.verdict || "unknown",
+    budgetUsd: typeof raw?.budgetUsd === "number" ? raw.budgetUsd : 0,
+    budgetLimitUsd: raw?.budgetLimitUsd,
+    freshness: raw?.freshness,
+    gates: Array.isArray(raw?.gates) ? raw.gates : [],
+    council: Array.isArray(raw?.council) ? raw.council : [],
+    fleet: Array.isArray(raw?.fleet) ? raw.fleet : [],
+  };
 
   const budgetStr =
     state.budgetLimitUsd && state.budgetLimitUsd > 0

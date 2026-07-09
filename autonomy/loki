@@ -8779,7 +8779,7 @@ cmd_watch() {
 }
 
 #===============================================================================
-# loki cockpit - Multi-repo live status as a terminal inline image (v7.127.0)
+# loki cockpit - Multi-repo live status as a terminal inline image (v7.128.0)
 #
 # Renders the Autonomi cockpit frame directly in supported terminals (iTerm2 /
 # WezTerm / ghostty via the iTerm2 protocol; Kitty via its graphics protocol).
@@ -8836,7 +8836,7 @@ cmd_cockpit() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --help|-h)
-                echo -e "${BOLD}loki cockpit${NC} - Live multi-repo status as a terminal inline image (v7.127.0)"
+                echo -e "${BOLD}loki cockpit${NC} - Live multi-repo status as a terminal inline image (v7.128.0)"
                 echo ""
                 echo "Usage: loki cockpit [options]"
                 echo ""
@@ -10820,9 +10820,9 @@ except Exception:
             echo -e "  ${GREEN}PASS${NC}  Inline-image protocol: ${_ck_proto}"
         fi
         if [ "$_ck_resvg" = "yes" ]; then
-            echo -e "  ${GREEN}PASS${NC}  @resvg/resvg-js: installed (SVG can rasterize to PNG)"
+            echo -e "  ${GREEN}PASS${NC}  SVG rasterizer: ready (bundled wasm; renders the frame to an image)"
         else
-            echo -e "  ${DIM}  --  ${NC}  @resvg/resvg-js: not installed (optional; cockpit uses text+dashboard)"
+            echo -e "  ${DIM}  --  ${NC}  SVG rasterizer: unavailable (cockpit uses text+dashboard)"
         fi
         if [ "$_ck_path" = "image" ]; then
             echo -e "  ${GREEN}PASS${NC}  Render path: inline image ('loki cockpit' draws the frame in-terminal)"

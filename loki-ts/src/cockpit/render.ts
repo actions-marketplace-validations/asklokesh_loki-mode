@@ -24,7 +24,7 @@ export interface RenderOpts {
   forceText?: boolean; // --no-image
 }
 
-export function render(state: CockpitState, opts: RenderOpts = {}): RenderOutcome {
+export async function render(state: CockpitState, opts: RenderOpts = {}): Promise<RenderOutcome> {
   const svg = buildSvg(state);
 
   if (opts.forceText) {
@@ -42,7 +42,7 @@ export function render(state: CockpitState, opts: RenderOpts = {}): RenderOutcom
     return { kind: "fallback", protocol, reason: "no inline-image terminal detected", svg };
   }
 
-  const raster = rasterize(svg);
+  const raster = await rasterize(svg);
   if (!raster.available || !raster.png) {
     return {
       kind: "fallback",

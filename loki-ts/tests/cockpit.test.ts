@@ -220,24 +220,50 @@ describe("cockpit SVG builder", () => {
 });
 
 describe("cockpit render orchestration", () => {
-  it("falls back honestly (no image) when protocol is none", () => {
-    const out = render(SAMPLE, { protocol: "none" });
+  it("falls back honestly (no image) when protocol is none", async () => {
+    const out = await render(SAMPLE, { protocol: "none" });
     expect(out.kind).toBe("fallback");
     expect(out.data).toBeUndefined();
     expect(out.svg.startsWith("<svg")).toBe(true);
   });
 
-  it("--no-image forces fallback even on a graphics terminal", () => {
-    const out = render(SAMPLE, { protocol: "iterm2", forceText: true });
+  it("--no-image forces fallback even on a graphics terminal", async () => {
+    const out = await render(SAMPLE, { protocol: "iterm2", forceText: true });
     expect(out.kind).toBe("fallback");
     expect(out.reason).toContain("no-image");
   });
 
-  it("falls back when raster is unavailable, never claiming an image", () => {
-    // resvg is not installed in this repo's loki-ts; the render must not lie.
-    const out = render(SAMPLE, { protocol: "iterm2" });
-    expect(out.kind).toBe("fallback");
-    expect(out.data).toBeUndefined();
-    expect(out.reason).toBeTruthy();
+  it("renders a real inline image on a graphics terminal via the bundled wasm", async () => {
+    // The bundled @resvg/resvg-wasm makes rasterization available out of the
+    // box, so a graphics-capable protocol produces a genuine image (not a
+    // fallback). The escape carries the encoded PNG bytes.
+    const out = await render(SAMPLE, { protocol: "iterm2" });
+    expect(out.kind).toBe("image");
+    expect(out.protocol).toBe("iterm2");
+    expect(out.data).toBeTruthy();
+    // iTerm2 inline-image escape shape.
+    expect(out.data!.startsWith("]1337;File=inline=1")).toBe(true);
+  });
+
+  it("renders a malformed/partial state without crashing (graceful degrade)", () => {
+    // A truncated/hand-written state (missing verdict, budget, arrays) must
+    // still produce a well-formed SVG, not throw and take down the render.
+    const svg = buildSvg({} as any);
+    expect(svg.startsWith("<svg")).toBe(true);
+    expect(svg.trimEnd().endsWith("</svg>")).toBe(true);
+    expect(svg).toContain("UNKNOWN"); // default verdict
+    expect(svg).toContain("$0.00");   // default budget
+  });
+
+  it("rasterizes text, not just shapes (font fix: fontless wasm renders blank)", async () => {
+    // The wasm rasterizer has no system fonts, so without a loaded font buffer
+    // every <text> renders blank and the PNG is tiny (~15KB). With the font it
+    // is 4-5x larger. Assert the render is font-bearing so a regression that
+    // drops the font buffer fails here.
+    const { rasterize } = await import("../src/cockpit/raster.ts");
+    const r = await rasterize(buildSvg(SAMPLE));
+    expect(r.available).toBe(true);
+    expect(r.png).toBeTruthy();
+    expect(r.png!.length).toBeGreaterThan(30_000);
   });
 });

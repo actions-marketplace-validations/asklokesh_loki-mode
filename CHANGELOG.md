@@ -5,6 +5,35 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.128.0
+
+### Added: `loki cockpit` renders the inline image out of the box (bundled wasm)
+
+The cockpit now draws its full inline image on graphics-capable terminals
+(iTerm2 / Kitty / WezTerm / Ghostty) with NOTHING to install. The SVG-to-PNG
+rasterizer is a bundled, platform-independent WebAssembly build of resvg
+(`@resvg/resvg-wasm`, shipped as `loki-ts/data/resvg.wasm`), so there is no
+native compile step and no per-arch binary. Native `@resvg/resvg-js` is still
+used automatically if a user happens to have it (fastest path); otherwise the
+bundled wasm renders the frame. Only if both are somehow unavailable does the
+cockpit fall back honestly to the text summary + browser dashboard.
+
+Font fix: the wasm rasterizer runs in a fontless sandbox, so it now loads a real
+system font buffer (cross-platform search of common font locations) with a
+sensible default family; without this every text label rendered blank. The SVG's
+Fraunces / Inter / JetBrains Mono families gracefully fall back to it.
+
+Robustness: `buildSvg` normalizes a malformed or partial state (missing verdict,
+budget, or arrays) to safe defaults so a truncated state file degrades gracefully
+and always renders a frame instead of crashing the render.
+
+`loki doctor`'s cockpit section now reports "SVG rasterizer: ready (bundled
+wasm)" and "Render path: inline image" accordingly. Tests: cockpit.test.ts grew
+to 23 (real wasm image render, font-bearing raster >30KB, and malformed-state
+graceful degrade, all fail-when-broken). Full bun suite 1187/0. The honest
+fallback (protocol none / --no-image / rasterizer unavailable) is unchanged, and
+never claims an image it did not produce.
+
 ## v7.127.0
 
 ### Enhanced: the Loki Cockpit (5 enhancement loops)
