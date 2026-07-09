@@ -5,6 +5,26 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.125.0
+
+### Added: unified per-run isolation dial `--isolation none|worktree|docker` (rec #4)
+
+One canonical knob for how a run is isolated, replacing the fragmented flags with
+a single clear dial (zeroshot's none/worktree/docker model, the Loki way):
+
+- `--isolation none` (default) -- in-place, exactly today's behavior.
+- `--isolation worktree` -- git-worktree isolation (same mechanism as `--parallel`).
+- `--isolation docker` -- Docker sandbox (same mechanism as `--sandbox`).
+
+Every existing flag keeps working as an alias (`--parallel` = worktree,
+`--sandbox` = docker), so nothing breaks and there is no forced migration --
+this is CLI consolidation, not replacement. Fail-closed on an unknown level
+(errors with the valid set, exit 2) so a typo never silently downgrades to
+weaker isolation than the operator asked for. Documented in both `loki --help`
+and `loki start --help`. New test `tests/test-isolation-dial.sh` (7 cases incl.
+a real-CLI fail-closed check). Bash-route only (`loki start`); no behavior change
+to any other command.
+
 ## v7.124.0
 
 ### Added: complexity-proportional verification (rec #3)
