@@ -17,11 +17,14 @@ export type CouncilVote = "approve" | "concern" | "reject" | "pending";
 export interface Gate {
   name: string;
   status: GateStatus;
+  runner?: string; // tool that produced the gate (tsc, jest, npm-audit, ...)
+  evidence?: string; // one-line summary from evidence.json
 }
 
 export interface Council {
   reviewer: string;
   vote: CouncilVote;
+  tier?: string; // model tier: opus | sonnet | haiku
 }
 
 export interface RepoRun {
@@ -131,9 +134,22 @@ function statBlock(x: number, y: number, label: string, value: string, valueColo
     <text x="${x}" y="${y + 24}" font-family="${FONT_MONO}" font-size="20" font-weight="600" fill="${valueColor}">${esc(value)}</text>`;
 }
 
+// The RARV loop: Reason -> Act -> Reflect -> Verify. The current step is derived
+// from the free-form phase string; earlier steps read as done, later as pending.
+const RARV_STEPS = ["Reason", "Act", "Reflect", "Verify"] as const;
+
+// Map a free-form phase to a RARV index (0..3). Best-effort keyword match; an
+// unrecognized phase lands on Act (the default working step) rather than lying.
+function rarvIndex(phase: string): number {
+  const p = (phase || "").toLowerCase();
+  if (/verif|complet|done|ship|deploy/.test(p)) return 3;
+  if (/reflect|review|council|critique|assess/.test(p)) return 2;
+  if (/reason|plan|design|architect|spec|analy/.test(p)) return 0;
+  return 1; // act / implement / build / test / everything else
+}
+
 export function buildSvg(state: CockpitState): string {
   const W = 900;
-  const H = 560;
   const PAD = 32;
 
   const budgetStr =
@@ -163,43 +179,79 @@ export function buildSvg(state: CockpitState): string {
   body += statBlock(col(1), row1, "tier", state.tier);
   body += statBlock(col(2), row1, "provider", state.provider);
   body += statBlock(col(3), row1, "budget", budgetStr);
-  body += statBlock(col(4), row1, "phase", state.phase, ACCENT);
+  // phase is shown in the card subtitle + the RARV strip below, so no 5th
+  // stat block here (it collided with budget and duplicated the phase).
 
-  // Gate strip
-  const gateY = cardY + cardH + 40;
+  // RARV loop (Reason -> Act -> Reflect -> Verify), current step from phase.
+  const rarvY = cardY + cardH + 40;
+  body += `<text x="${PAD}" y="${rarvY}" font-family="${FONT_BODY}" font-size="13" font-weight="600" fill="${MUTED}" letter-spacing="0.5">RARV LOOP</text>`;
+  const now = rarvIndex(state.phase);
+  const rsy = rarvY + 14;
+  const stepW = (W - 2 * PAD - 3 * 12) / 4;
+  RARV_STEPS.forEach((label, i) => {
+    const sx = PAD + i * (stepW + 12);
+    const done = i < now;
+    const active = i === now;
+    const c = active ? ACCENT : done ? VERIFIED : MUTED;
+    const fill = active ? ACCENT : CARD;
+    const fillOp = active ? "0.10" : "1";
+    body += `<rect x="${sx}" y="${rsy}" width="${stepW}" height="40" rx="10" fill="${fill}" fill-opacity="${fillOp}" stroke="${c}" stroke-width="${active ? 2 : 1}"/>`;
+    const glyph = done ? "check" : active ? "dot" : "wait";
+    if (glyph === "check") {
+      body += `<path d="M${sx + 16} ${rsy + 20} l6 6 l10 -12" stroke="${VERIFIED}" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`;
+    } else if (glyph === "dot") {
+      body += `<circle cx="${sx + 22}" cy="${rsy + 20}" r="5" fill="${ACCENT}"/>`;
+    } else {
+      body += `<circle cx="${sx + 22}" cy="${rsy + 20}" r="5" fill="none" stroke="${MUTED}" stroke-width="1.5"/>`;
+    }
+    body += `<text x="${sx + 40}" y="${rsy + 25}" font-family="${FONT_BODY}" font-size="14" font-weight="${active ? 600 : 500}" fill="${active ? ACCENT : done ? INK : MUTED}">${label}</text>`;
+  });
+
+  // Gate rows (verify --explain: gate / status / runner / evidence)
+  const gateY = rsy + 40 + 40;
   body += `<text x="${PAD}" y="${gateY}" font-family="${FONT_BODY}" font-size="13" font-weight="600" fill="${MUTED}" letter-spacing="0.5">QUALITY GATES</text>`;
-  let gx = PAD;
-  const gsy = gateY + 16;
   const gates = state.gates.length ? state.gates : [{ name: "no gates yet", status: "pending" as GateStatus }];
-  for (const g of gates) {
-    const label = esc(g.name);
-    const wpx = Math.max(74, 14 + label.length * 7);
+  const rowH = 30;
+  let gsy = gateY + 12;
+  body += `<rect x="${PAD}" y="${gsy}" width="${W - 2 * PAD}" height="${gates.slice(0, 8).length * rowH + 8}" rx="12" fill="${CARD}" stroke="${HAIRLINE}"/>`;
+  gsy += 8;
+  for (const g of gates.slice(0, 8)) {
     const c = gateColor(g.status);
-    body += `<rect x="${gx}" y="${gsy}" width="${wpx}" height="30" rx="8" fill="${CARD}" stroke="${c}"/>`;
-    body += `<circle cx="${gx + 14}" cy="${gsy + 15}" r="4" fill="${c}"/>`;
-    body += `<text x="${gx + 24}" y="${gsy + 19}" font-family="${FONT_MONO}" font-size="12" fill="${INK}">${label}</text>`;
-    gx += wpx + 10;
-    if (gx > W - PAD - 90) break; // don't overflow the frame
+    const cy = gsy + rowH / 2;
+    body += `<circle cx="${PAD + 18}" cy="${cy}" r="4" fill="${c}"/>`;
+    body += `<text x="${PAD + 34}" y="${cy + 4}" font-family="${FONT_MONO}" font-size="12" fill="${INK}">${esc(g.name)}</text>`;
+    if (g.runner) {
+      body += `<text x="${PAD + 210}" y="${cy + 4}" font-family="${FONT_BODY}" font-size="11" fill="${MUTED}">${esc(g.runner)}</text>`;
+    }
+    if (g.evidence) {
+      const ev = g.evidence.length > 52 ? `${g.evidence.slice(0, 49)}...` : g.evidence;
+      body += `<text x="${PAD + 300}" y="${cy + 4}" font-family="${FONT_BODY}" font-size="11" fill="${MUTED}">${esc(ev)}</text>`;
+    }
+    body += `<text x="${W - PAD - 16}" y="${cy + 4}" text-anchor="end" font-family="${FONT_MONO}" font-size="11" font-weight="700" fill="${c}">${esc(g.status.toUpperCase())}</text>`;
+    gsy += rowH;
   }
 
-  // Council strip
-  const councilY = gsy + 62;
-  body += `<text x="${PAD}" y="${councilY}" font-family="${FONT_BODY}" font-size="13" font-weight="600" fill="${MUTED}" letter-spacing="0.5">COUNCIL</text>`;
-  let cx = PAD;
-  const csy = councilY + 16;
+  // Council: one row per reviewer (name + model tier + vote)
+  const councilY = gsy + 40;
+  body += `<text x="${PAD}" y="${councilY}" font-family="${FONT_BODY}" font-size="13" font-weight="600" fill="${MUTED}" letter-spacing="0.5">COMPLETION COUNCIL</text>`;
   const council = state.council.length ? state.council : [{ reviewer: "pending", vote: "pending" as CouncilVote }];
-  for (const cv of council) {
-    const label = `${esc(cv.reviewer)}: ${esc(cv.vote)}`;
-    const wpx = Math.max(90, 14 + label.length * 7);
+  let csy = councilY + 12;
+  body += `<rect x="${PAD}" y="${csy}" width="${W - 2 * PAD}" height="${council.slice(0, 6).length * rowH + 8}" rx="12" fill="${CARD}" stroke="${HAIRLINE}"/>`;
+  csy += 8;
+  for (const cv of council.slice(0, 6)) {
     const c = voteColor(cv.vote);
-    body += `<rect x="${cx}" y="${csy}" width="${wpx}" height="30" rx="8" fill="${c}" fill-opacity="0.12" stroke="${c}"/>`;
-    body += `<text x="${cx + 12}" y="${csy + 19}" font-family="${FONT_MONO}" font-size="12" fill="${INK}">${label}</text>`;
-    cx += wpx + 10;
-    if (cx > W - PAD - 100) break;
+    const cy = csy + rowH / 2;
+    body += `<circle cx="${PAD + 18}" cy="${cy}" r="4" fill="${c}"/>`;
+    body += `<text x="${PAD + 34}" y="${cy + 4}" font-family="${FONT_BODY}" font-size="12.5" font-weight="500" fill="${INK}">${esc(cv.reviewer)}</text>`;
+    if (cv.tier) {
+      body += `<text x="${PAD + 260}" y="${cy + 4}" font-family="${FONT_MONO}" font-size="11" fill="${MUTED}">${esc(cv.tier)}</text>`;
+    }
+    body += `<text x="${W - PAD - 16}" y="${cy + 4}" text-anchor="end" font-family="${FONT_MONO}" font-size="11" font-weight="700" fill="${c}">${esc(cv.vote.toUpperCase())}</text>`;
+    csy += rowH;
   }
 
   // Fleet list
-  const fleetY = csy + 62;
+  const fleetY = csy + 46;
   body += `<text x="${PAD}" y="${fleetY}" font-family="${FONT_BODY}" font-size="13" font-weight="600" fill="${MUTED}" letter-spacing="0.5">FLEET (${state.fleet.length})</text>`;
   let fy = fleetY + 20;
   const shown = state.fleet.slice(0, 4);
@@ -213,7 +265,10 @@ export function buildSvg(state: CockpitState): string {
   }
   if (state.fleet.length > shown.length) {
     body += `<text x="${PAD + 20}" y="${fy}" font-family="${FONT_BODY}" font-size="12" fill="${MUTED}">+ ${state.fleet.length - shown.length} more</text>`;
+    fy += 26;
   }
+
+  const H = Math.round(fy + PAD); // grow to fit content, never clip a section
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
   <rect x="0" y="0" width="${W}" height="${H}" fill="${GROUND}"/>

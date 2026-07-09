@@ -21,13 +21,14 @@ const SAMPLE: CockpitState = {
   budgetLimitUsd: 20,
   freshness: "3s ago",
   gates: [
-    { name: "build", status: "pass" },
-    { name: "tests", status: "fail" },
-    { name: "static", status: "pass" },
+    { name: "build", status: "pass", runner: "vite", evidence: "built in 4.2s" },
+    { name: "tests", status: "fail", runner: "jest", evidence: "tests failed (rc=1)" },
+    { name: "static_analysis", status: "pass", runner: "tsc", evidence: "no errors" },
   ],
   council: [
-    { reviewer: "opus-a", vote: "approve" },
-    { reviewer: "opus-b", vote: "concern" },
+    { reviewer: "architecture-strategist", vote: "approve", tier: "opus" },
+    { reviewer: "security-sentinel", vote: "concern", tier: "opus" },
+    { reviewer: "test-coverage-auditor", vote: "pending", tier: "sonnet" },
   ],
   fleet: [
     { name: "autonomi-saas", phase: "impl", iteration: 7, running: true },
@@ -108,13 +109,113 @@ describe("cockpit SVG builder", () => {
     expect(svg).toContain("ITERATION");
     // fleet + council text present
     expect(svg).toContain("loki-mode");
-    expect(svg).toContain("opus-a");
+    expect(svg).toContain("architecture-strategist");
+  });
+
+  it("renders the RARV loop with the current step from phase", () => {
+    const svg = buildSvg(SAMPLE);
+    expect(svg).toContain("RARV LOOP");
+    for (const step of ["Reason", "Act", "Reflect", "Verify"]) {
+      expect(svg).toContain(`>${step}</text>`);
+    }
+  });
+
+  it("maps the ACTIVE RARV step to the phase (fail-when-broken, not a tautology)", () => {
+    // The active step's label is the ONLY one rendered with the accent fill
+    // (#553de9) at weight 600 -- extract it and assert it tracks the phase.
+    // A mutation that mis-maps the phase moves this label and fails the test.
+    const activeStep = (phase: string): string | null => {
+      const svg = buildSvg({ ...SAMPLE, phase });
+      // <text ... font-weight="600" fill="#553de9" ...>Label</text>
+      const re = /font-weight="600"\s+fill="#553de9"[^>]*>(Reason|Act|Reflect|Verify)<\/text>/g;
+      const hits: string[] = [];
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(svg)) !== null) hits.push(m[1]!);
+      return hits.length === 1 ? hits[0]! : null;
+    };
+    expect(activeStep("reasoning")).toBe("Reason");
+    expect(activeStep("implementation")).toBe("Act");
+    expect(activeStep("reflecting")).toBe("Reflect");
+    expect(activeStep("verifying")).toBe("Verify");
+    // Unknown phase must never lie -- it lands on Act, not a fabricated step.
+    expect(activeStep("totally-unknown-phase")).toBe("Act");
+  });
+
+  it("auto-fits SVG height to content so no section clips (fail-when-broken)", () => {
+    const heightOf = (svg: string): number => {
+      const m = svg.match(/<svg[^>]*\bheight="(\d+)"/);
+      return m ? Number(m[1]) : 0;
+    };
+    // A rich state (many gates + full council + multi-repo fleet) must produce a
+    // TALLER canvas than a sparse one; a fixed height would clip the lower
+    // sections. Reverting the auto-fit to a constant fails this.
+    const rich = heightOf(buildSvg(SAMPLE));
+    const sparse = heightOf(
+      buildSvg({ ...SAMPLE, gates: [], council: [], fleet: [] }),
+    );
+    expect(rich).toBeGreaterThan(560); // old clipping constant
+    expect(rich).toBeGreaterThan(sparse); // grows with content
+  });
+
+  it("renders per-reviewer council votes with real names and model tiers", () => {
+    const svg = buildSvg(SAMPLE);
+    expect(svg).toContain("COMPLETION COUNCIL");
+    expect(svg).toContain("architecture-strategist");
+    expect(svg).toContain("security-sentinel");
+    expect(svg).toContain("test-coverage-auditor");
+    // model tiers rendered
+    expect(svg).toContain(">opus</text>");
+    expect(svg).toContain(">sonnet</text>");
+    // vote labels rendered
+    expect(svg).toContain(">APPROVE</text>");
+    expect(svg).toContain(">CONCERN</text>");
+    expect(svg).toContain(">PENDING</text>");
+  });
+
+  it("renders verify --explain gate rows (gate / status / runner / evidence)", () => {
+    const svg = buildSvg(SAMPLE);
+    expect(svg).toContain("QUALITY GATES");
+    // gate name, runner, evidence, and status all present
+    expect(svg).toContain("static_analysis");
+    expect(svg).toContain(">tsc</text>");
+    expect(svg).toContain("tests failed (rc=1)");
+    expect(svg).toContain(">PASS</text>");
+    expect(svg).toContain(">FAIL</text>");
+  });
+
+  it("stays well-formed SVG with the Autonomi palette after the new sections", () => {
+    const svg = buildSvg(SAMPLE);
+    expect(svg.startsWith("<svg")).toBe(true);
+    expect(svg.trimEnd().endsWith("</svg>")).toBe(true);
+    expect(svg).toContain("#553de9");
+    expect(svg).toContain("#1FC5A8");
+    // balanced tags: every <text opens and closes
+    const opens = (svg.match(/<text\b/g) || []).length;
+    const closes = (svg.match(/<\/text>/g) || []).length;
+    expect(opens).toBe(closes);
   });
 
   it("XML-escapes hostile run/repo names", () => {
     const svg = buildSvg({ ...SAMPLE, run: '<script>&"x' });
     expect(svg).not.toContain("<script>");
     expect(svg).toContain("&lt;script&gt;");
+  });
+
+  it("caps a huge fleet so a 171-run registry never explodes the frame", () => {
+    const bigFleet = Array.from({ length: 171 }, (_, i) => ({
+      name: `run-${i}`,
+      phase: "impl",
+      iteration: i,
+      running: i === 0,
+    }));
+    const svg = buildSvg({ ...SAMPLE, fleet: bigFleet });
+    // The full count is honest in the header ...
+    expect(svg).toContain("FLEET (171)");
+    // ... but only a capped subset of rows is drawn, with an overflow line.
+    // run-0 (first) is shown; a deep run (run-50) must be summarized away.
+    expect(svg).toContain(">run-0<");
+    expect(svg).not.toContain(">run-50<");
+    expect(svg).toMatch(/\+ \d+ more/);
   });
 });
 

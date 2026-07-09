@@ -70,14 +70,33 @@ def project_state(path):
         gs = str(g.get("status", "")).lower()
         status = {"pass": "pass", "fail": "fail", "failed": "fail",
                   "skipped": "skip", "skip": "skip"}.get(gs, "pending")
-        gates.append({"name": g.get("gate", "gate"), "status": status})
+        # runner/scanner names the tool; summary is the one-line evidence.
+        runner = g.get("runner") or g.get("scanner") or ""
+        gates.append({
+            "name": g.get("gate", "gate"),
+            "status": status,
+            "runner": str(runner)[:24],
+            "evidence": str(g.get("summary", ""))[:80],
+        })
 
-    # Council votes: .loki/council/*.json, each with a vote-ish field.
+    # Default model tier per reviewer (matches the standing council roster).
+    REVIEWER_TIER = {
+        "architecture-strategist": "opus",
+        "maintainer-mergeability": "opus",
+        "security-sentinel": "opus",
+        "test-coverage-auditor": "sonnet",
+        "performance-oracle": "opus",
+        "dependency-analyst": "sonnet",
+    }
+
+    # Council votes: .loki/council/*.json, each with a vote-ish field. Skips the
+    # aggregate state.json (no per-reviewer vote) so only real reviewer entries
+    # populate the strip.
     council = []
     cdir = os.path.join(loki, "council")
     try:
         for fn in sorted(os.listdir(cdir)):
-            if not fn.endswith(".json"):
+            if not fn.endswith(".json") or fn == "state.json":
                 continue
             cj = read_json(os.path.join(cdir, fn))
             raw = str(cj.get("vote") or cj.get("verdict") or "").lower()
@@ -89,7 +108,9 @@ def project_state(path):
             elif "concern" in raw:
                 vote = "concern"
             reviewer = cj.get("reviewer") or cj.get("name") or os.path.splitext(fn)[0]
-            council.append({"reviewer": str(reviewer)[:16], "vote": vote})
+            reviewer = str(reviewer)
+            tier = cj.get("tier") or cj.get("model_tier") or REVIEWER_TIER.get(reviewer, "")
+            council.append({"reviewer": reviewer[:24], "vote": vote, "tier": str(tier)[:8]})
     except Exception:
         pass
 
@@ -117,6 +138,7 @@ except Exception:
 for r in runs:
     fleet.append({
         "name": r.get("name") or os.path.basename(r.get("path", "") or "project"),
+        "path": r.get("path", "") or "",
         "phase": r.get("phase", "") or "",
         "iteration": r.get("iteration", 0) or 0,
         "status": r.get("status", "") or "",
@@ -188,4 +210,149 @@ cockpit_render() {
 
     # Gather -> render. Preserve the TS exit code (0 image / 3 fallback).
     cockpit_gather_state "$skill_dir" "$focus_repo" | bun "$entry" "${args[@]}"
+}
+
+#===============================================================================
+# E3: keyboard interactivity for `loki cockpit --follow`.
+# These live here (sourced by cmd_cockpit) so they can be extracted + unit
+# tested without pulling in the whole autonomy/loki CLI.
+#===============================================================================
+
+# Pure key -> action mapping. Takes a normalized key token, echoes one action
+# word. Side-effect-free so it is trivially unit-testable.
+#   TAB / RIGHT / DOWN -> next    (cycle focus forward across the fleet)
+#   LEFT / UP          -> prev    (cycle focus backward)
+#   e                  -> explain (print verify evidence for the focused run)
+#   s                  -> steer   (print how to steer the focused run)
+#   q / ESC / Ctrl-C   -> quit
+#   anything else      -> noop
+cockpit_handle_key() {
+    case "$1" in
+        TAB|RIGHT|DOWN)  echo "next" ;;
+        LEFT|UP)         echo "prev" ;;
+        e|E)             echo "explain" ;;
+        s|S)             echo "steer" ;;
+        q|Q|ESC|$'\x03') echo "quit" ;;
+        *)               echo "noop" ;;
+    esac
+}
+
+# Read one keypress (non-blocking, no redraw stall) and normalize it to a token
+# cockpit_handle_key understands. Echoes the token, or nothing if no key was
+# pressed within the timeout. Arrow keys arrive as ESC [ A/B/C/D; a lone ESC (no
+# following bytes) normalizes to ESC (quit). Only usable on a TTY.
+#   $1 = timeout seconds (fractional ok; feeds `read -t`)
+cockpit_read_key() {
+    local timeout="${1:-2}"
+    local k rest
+    IFS= read -rsn1 -t "$timeout" k 2>/dev/null || return 1
+    case "$k" in
+        $'\t') echo "TAB"; return 0 ;;
+        $'\x03') echo "ESC"; return 0 ;;  # Ctrl-C byte if trapped as data
+        $'\x1b')
+            # Possible escape sequence: grab up to 2 more bytes without blocking.
+            IFS= read -rsn2 -t 0.01 rest 2>/dev/null || rest=""
+            case "$rest" in
+                '[A') echo "UP" ;;
+                '[B') echo "DOWN" ;;
+                '[C') echo "RIGHT" ;;
+                '[D') echo "LEFT" ;;
+                *)    echo "ESC" ;;
+            esac
+            return 0 ;;
+        '') return 1 ;;   # timed out, no key
+        *) echo "$k"; return 0 ;;
+    esac
+}
+
+# Echo the fleet repo paths (one per line) so the follow loop can cycle focus.
+# Empty output = no fleet (cycling is a no-op). Best-effort, never errors.
+cockpit_fleet_paths() {
+    local skill_dir="$1"
+    local state_json
+    state_json="$(cockpit_gather_state "$skill_dir" "" 2>/dev/null || true)"
+    [ -z "$state_json" ] && return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    LOKI_CK_STATE="$state_json" python3 - <<'PYPATHS' 2>/dev/null || true
+import json, os
+s = json.loads(os.environ.get("LOKI_CK_STATE") or "{}")
+for r in s.get("fleet") or []:
+    p = r.get("path") or ""
+    if p:
+        print(p)
+PYPATHS
+}
+
+# Given the current focus path, a direction (next|prev), and a newline list of
+# fleet paths, echo the path to focus after cycling. Wraps around. If focus is
+# not in the list, next -> first entry, prev -> last entry. Empty list echoes the
+# current focus unchanged. Pure, unit-testable.
+#   $1 = current focus path (may be empty)  $2 = next|prev  $3 = newline paths
+cockpit_cycle_focus() {
+    local cur="$1" dir="$2" paths="$3"
+    [ -z "$paths" ] && { echo "$cur"; return 0; }
+    local -a arr=()
+    local line
+    while IFS= read -r line; do
+        [ -n "$line" ] && arr+=("$line")
+    done <<< "$paths"
+    local n="${#arr[@]}"
+    [ "$n" -eq 0 ] && { echo "$cur"; return 0; }
+    # Find current index.
+    local idx=-1 i
+    for i in "${!arr[@]}"; do
+        if [ "${arr[$i]}" = "$cur" ]; then idx="$i"; break; fi
+    done
+    local target
+    if [ "$idx" -lt 0 ]; then
+        # Not in list: next -> first, prev -> last.
+        if [ "$dir" = "prev" ]; then target=$((n - 1)); else target=0; fi
+    elif [ "$dir" = "prev" ]; then
+        target=$(( (idx - 1 + n) % n ))
+    else
+        target=$(( (idx + 1) % n ))
+    fi
+    echo "${arr[$target]}"
+}
+
+# Print the verify evidence ("explain") for the focused run. Reads the run's
+# .loki/verify/evidence.json directly. Never fabricates: says so if absent.
+cockpit_explain_focus() {
+    local focus_repo="$1"
+    local repo="${focus_repo:-$(pwd)}"
+    local ev="$repo/.loki/verify/evidence.json"
+    printf '\n'
+    printf 'verify --explain (%s)\n' "$repo"
+    if [ ! -f "$ev" ] || ! command -v python3 >/dev/null 2>&1; then
+        echo "  (no evidence.json for this run yet)"
+        return 0
+    fi
+    LOKI_CK_EV="$ev" python3 - <<'PYEV' 2>/dev/null || echo "  (could not read evidence)"
+import json, os
+try:
+    ev = json.load(open(os.environ["LOKI_CK_EV"]))
+except Exception:
+    print("  (could not read evidence)"); raise SystemExit(0)
+print(f"  Verdict   {str(ev.get('verdict','?')).upper()}")
+checks = ev.get("deterministic_gates") or ev.get("checks") or ev.get("gates") or []
+for c in checks[:12]:
+    name = c.get("gate") or c.get("name") or c.get("id") or "?"
+    status = c.get("status") or c.get("result") or "?"
+    print(f"    {name:<28} {status}")
+reason = ev.get("reason") or ev.get("summary")
+if reason:
+    print(f"  Reason    {reason}")
+PYEV
+}
+
+# Print a steering hint for the focused run. Steering is opt-in prompt injection;
+# this only tells the operator how, it does not inject anything.
+cockpit_steer_hint() {
+    local focus_repo="$1"
+    local repo="${focus_repo:-$(pwd)}"
+    printf '\n'
+    echo "Steer this run"
+    echo "  Drop a note the next iteration will read:"
+    echo "    echo 'your guidance' > $repo/.loki/steering.md"
+    echo "  Or open the dashboard chat: loki dashboard"
 }

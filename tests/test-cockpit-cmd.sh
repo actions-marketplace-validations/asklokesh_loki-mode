@@ -118,6 +118,118 @@ else
     ok "fallback never claims 'rendered image'"
 fi
 
+# --- 4. E5: huge-fleet text summary caps with a "+N more" line -------------
+# A 171-run registry must never flood the text fallback. We drive the real
+# _cockpit_text_summary with a stubbed cockpit_gather_state that emits a big
+# fleet, and assert it renders a bounded list plus an honest overflow line.
+# _cockpit_text_summary lives in autonomy/loki (not the render lib); extract it.
+_txtfn="$(awk '/^_cockpit_text_summary\(\) \{/{f=1} f{print} f&&/^}$/{exit}' "$LOKI_BIN" 2>/dev/null || true)"
+_run_text_summary_bigfleet() {
+    (
+        set +u
+        _LOKI_SCRIPT_DIR="$REPO_ROOT/autonomy"
+        eval "$_txtfn"
+        # Override the gather step with a synthetic 171-run fleet.
+        cockpit_gather_state() {
+            python3 - <<'PYBIG'
+import json
+fleet = [{"name": f"run-{i}", "phase": "impl", "iteration": i,
+          "running": i == 0} for i in range(171)]
+print(json.dumps({"run": "big", "iteration": 1, "phase": "impl",
+                  "tier": "opus", "provider": "claude", "verdict": "working",
+                  "budgetUsd": 0.0, "gates": [], "council": [], "fleet": fleet}))
+PYBIG
+        }
+        _cockpit_text_summary "$REPO_ROOT" ""
+    )
+}
+if command -v python3 >/dev/null 2>&1; then
+    big_out="$(_run_text_summary_bigfleet 2>/dev/null)"
+    # Header must show the true total ...
+    if printf '%s' "$big_out" | grep -q "Fleet (171)"; then
+        ok "text summary reports the true fleet total (171)"
+    else
+        bad "text summary reports true fleet total" "output: $big_out"
+    fi
+    # ... but the rendered rows are capped, with a "+ N more" overflow line.
+    rows="$(printf '%s\n' "$big_out" | grep -cE '^\s+[* ] run-')"
+    if [ "$rows" -le 8 ] && [ "$rows" -gt 0 ]; then
+        ok "text summary caps rendered fleet rows (<= 8, got $rows)"
+    else
+        bad "text summary caps rendered fleet rows" "rendered $rows rows"
+    fi
+    if printf '%s' "$big_out" | grep -qE '\+ [0-9]+ more'; then
+        ok "text summary prints an honest '+ N more' overflow line"
+    else
+        bad "text summary prints '+ N more' overflow line" "output: $big_out"
+    fi
+else
+    ok "SKIP big-fleet text cap (python3 absent)"
+    ok "SKIP big-fleet row cap (python3 absent)"
+    ok "SKIP big-fleet overflow line (python3 absent)"
+fi
+
+# --- 5. E5: loki doctor prints the Cockpit capability section --------------
+# End-to-end: run the real doctor with a forced protocol and assert the
+# section reports the detected protocol and the render path honestly.
+if [ -x "$LOKI_BIN" ] || bash -n "$LOKI_BIN" 2>/dev/null; then
+    doc_out="$(LOKI_COCKPIT_PROTOCOL=iterm2 bash "$LOKI_BIN" doctor 2>/dev/null || true)"
+    if printf '%s' "$doc_out" | grep -qi "Cockpit:"; then
+        ok "doctor prints a Cockpit: section"
+    else
+        bad "doctor prints a Cockpit: section" "no 'Cockpit:' heading in doctor output"
+    fi
+    # Protocol line present (forced iterm2 should surface).
+    if printf '%s' "$doc_out" | grep -qi "Inline-image protocol"; then
+        ok "doctor cockpit section reports the inline-image protocol"
+    else
+        bad "doctor reports inline-image protocol" "missing protocol line"
+    fi
+    # Render path line present (image vs text+dashboard).
+    if printf '%s' "$doc_out" | grep -qi "Render path"; then
+        ok "doctor cockpit section reports the render path"
+    else
+        bad "doctor reports render path" "missing render path line"
+    fi
+else
+    ok "SKIP doctor cockpit section (loki not runnable)"
+    ok "SKIP doctor protocol line (loki not runnable)"
+    ok "SKIP doctor render path line (loki not runnable)"
+fi
+
+# --- 6. E5: no-bun render path returns the honest fallback -----------------
+# With bun hidden from PATH, cockpit_render must return 2 (bun unavailable) and
+# the command must take the text fallback -- never emit an image escape.
+_run_cockpit_nobun() {
+    (
+        set +u
+        RED=''; GREEN=''; CYAN=''; BOLD=''; DIM=''; NC=''
+        _LOKI_SCRIPT_DIR="$REPO_ROOT/autonomy"
+        SKILL_DIR="$REPO_ROOT"
+        export TERM=dumb
+        unset TERM_PROGRAM KITTY_WINDOW_ID LOKI_COCKPIT_PROTOCOL 2>/dev/null || true
+        # Hide bun: a PATH that cannot resolve it. Keep python3/sed/etc via a
+        # command override so the rest of the fallback still works.
+        command() {
+            if [ "$1" = "-v" ] && [ "$2" = "bun" ]; then return 1; fi
+            builtin command "$@"
+        }
+        eval "$_fn"
+        cmd_cockpit --once
+    )
+}
+nobun_out="$(_run_cockpit_nobun 2>&1)"
+if printf '%s' "$nobun_out" | grep -q $'\x1b]1337' || printf '%s' "$nobun_out" | grep -q $'\x1b_G'; then
+    bad "no-bun path emits no image escape" "an inline-image escape leaked"
+else
+    ok "no-bun path emits no image escape (honest fallback)"
+fi
+if printf '%s' "$nobun_out" | grep -qi "loki dashboard"; then
+    ok "no-bun path points at the browser dashboard"
+else
+    bad "no-bun path points at dashboard" "output: $nobun_out"
+fi
+
 echo ""
 echo "RESULT: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

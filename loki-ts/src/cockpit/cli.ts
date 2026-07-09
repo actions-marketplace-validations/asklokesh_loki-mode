@@ -11,7 +11,8 @@
 
 import { render } from "./render.ts";
 import type { CockpitState } from "./svg.ts";
-import type { CockpitProtocol } from "./capability.ts";
+import { detectProtocol, type CockpitProtocol } from "./capability.ts";
+import { rasterAvailable } from "./raster.ts";
 
 async function readStdin(): Promise<string> {
   const chunks: Uint8Array[] = [];
@@ -39,7 +40,23 @@ function parseArgs(argv: string[]): { protocol: CockpitProtocol | "auto"; noImag
   return { protocol, noImage, svgOut };
 }
 
+// Capability probe for `loki doctor`. Emits KEY=VALUE lines describing what
+// `loki cockpit` will actually do in this terminal, using the SAME detection
+// code the renderer uses -- so the doctor report can never drift from behavior.
+function probe(): number {
+  const proto = detectProtocol();
+  const resvg = rasterAvailable();
+  const path = proto !== "none" && resvg ? "image" : "text+dashboard";
+  process.stdout.write(`protocol=${proto}\n`);
+  process.stdout.write(`resvg=${resvg ? "yes" : "no"}\n`);
+  process.stdout.write(`path=${path}\n`);
+  return 0;
+}
+
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
+  if (argv.includes("--probe")) {
+    return probe();
+  }
   const { protocol, noImage, svgOut } = parseArgs(argv);
   let state: CockpitState;
   try {

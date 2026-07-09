@@ -5,6 +5,38 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.127.0
+
+### Enhanced: the Loki Cockpit (5 enhancement loops)
+
+Five enhancements to the v7.126.0 cockpit, all dependency-free and honest:
+
+- E1 - flicker-free, event-driven `loki cockpit --follow`: enters the alternate
+  screen buffer with cursor save/restore and INT/TERM/EXIT cleanup traps, and
+  redraws only when the focused run's state files change (mtime-driven) instead
+  of blind interval polling.
+- E2 - richer rendered cockpit: the SVG now shows the RARV loop with the current
+  step highlighted from phase, per-reviewer council votes (name + model tier +
+  APPROVE/CONCERN/REJECT/pending), and the verify --explain gate rows
+  (gate / status / runner / evidence). Canvas height auto-fits content so no
+  section clips.
+- E3 - keyboard interactivity in `--follow`: Tab / arrows cycle repo focus across
+  the multi-repo fleet, e prints verify --explain for the focused run, s shows a
+  steering hint, q / Ctrl-C quits and restores the terminal. Skipped on non-TTY.
+- E4 - start-open plan preview + first-run delight: the handoff card shows a
+  3-line "what Loki will do" preview derived from the detected tier + spec (honest
+  "exploring the codebase" when there is no spec), with a warmer first-run touch
+  that teaches `loki cockpit`.
+- E5 - robustness + `loki doctor` cockpit report: graceful degradation for
+  no-bun / no-resvg / tiny terminal / huge fleet (fleet capped with a "+N more"
+  line), and a new doctor section reporting the detected inline-image protocol,
+  truecolor, bun, @resvg, and exactly which render path `loki cockpit` will use.
+
+Tests: test-cockpit-follow.sh (E1), cockpit.test.ts grew to 21 (E2 RARV +
+height now fail-when-broken, mutation-verified), test-cockpit-keys.sh (E3),
+test-start-handoff.sh grew to 33 (E4), test-cockpit-cmd.sh 16 (E5). Full bun
+suite 1185/0. `loki watch` and non-interactive `loki start` unchanged.
+
 ## v7.126.0
 
 ### Added: the Loki Cockpit (rec #6) - stare-worthy start, `loki cockpit`, dashboard identity

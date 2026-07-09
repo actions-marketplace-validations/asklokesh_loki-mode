@@ -39,11 +39,13 @@ extract_fn() {
     # Color/format vars the helpers reference.
     printf 'RED=""; GREEN=""; YELLOW=""; CYAN=""; BOLD=""; DIM=""; NC=""\n'
     extract_fn _loki_start_should_handoff
+    extract_fn _loki_plan_preview
     extract_fn _loki_start_handoff
 } > "$WORK/helpers.sh"
 
-# Sanity: both functions extracted.
+# Sanity: helper functions extracted.
 grep -q '_loki_start_should_handoff()' "$WORK/helpers.sh" || { bad "extract should_handoff"; }
+grep -q '_loki_plan_preview()' "$WORK/helpers.sh" || { bad "extract plan_preview"; }
 grep -q '_loki_start_handoff()' "$WORK/helpers.sh" || { bad "extract handoff"; }
 
 # --- 1. GATE ---------------------------------------------------------------
@@ -145,6 +147,51 @@ rm -rf "$WORK/.loki"
 LOKI_DIR="$WORK/.loki" run_handoff "watch" >/dev/null
 grep -q '"view":"watch"' "$WORK/.loki/config/start-view.json" 2>/dev/null || bad "choice not persisted"
 ok "interactive choice persisted to start-view.json"
+
+# --- 3b. E4 plan preview + first-run delight -------------------------------
+# The plan preview shows exactly 3 lines tied to tier + spec. Line 1 maps the
+# tier to its phase count; line 2 names the spec (or admits no spec); line 3 is
+# the fixed RARV-C loop promise. Test the helper directly for each tier.
+plan_preview() { ( set +u; source "$WORK/helpers.sh"; _loki_plan_preview "$1" "$2" ); }
+
+P=$(plan_preview "prd.md" "simple")
+[ "$(printf '%s\n' "$P" | grep -c .)" -eq 3 ] || bad "plan preview not 3 lines (simple): got $(printf '%s' "$P" | grep -c .)"
+printf '%s' "$P" | grep -q "3 phases" || bad "simple tier missing '3 phases'"
+printf '%s' "$P" | grep -q "prd.md"   || bad "plan preview missing spec label"
+printf '%s' "$P" | grep -qi "Reason - Act - Reflect - Verify" || bad "plan preview missing RARV loop line"
+ok "plan preview shows 3 lines tied to tier (simple=3 phases) + spec"
+
+P=$(plan_preview "prd.md" "standard"); printf '%s' "$P" | grep -q "6 phases" || bad "standard tier missing '6 phases'"
+P=$(plan_preview "prd.md" "complex");  printf '%s' "$P" | grep -q "8 phases" || bad "complex tier missing '8 phases'"
+P=$(plan_preview "prd.md" "auto");     printf '%s' "$P" | grep -qi "auto-detecting" || bad "auto tier not honest ('auto-detecting')"
+ok "plan preview maps standard/complex/auto tiers honestly (6/8/auto-detecting)"
+
+# No spec -> honest "exploring the codebase", never a fabricated file.
+P=$(plan_preview "codebase (no PRD)" "auto")
+printf '%s' "$P" | grep -qi "exploring the codebase" || bad "no-spec preview not honest"
+printf '%s' "$P" | grep -q "codebase (no PRD)" && bad "no-spec preview leaked raw label instead of honest text"
+ok "no-spec preview is honest ('exploring the codebase')"
+
+# Preview appears inside the real card.
+rm -rf "$WORK/.loki"
+LOKI_DIR="$WORK/.loki" run_handoff "both" >/dev/null
+grep -q "3 phases\|phase count auto-detecting" "$WORK/err.txt" || bad "card missing plan preview line"
+ok "handoff card embeds the plan preview"
+
+# First-run delight: no start-view.json yet -> teach line present.
+rm -rf "$WORK/.loki"
+LOKI_DIR="$WORK/.loki" run_handoff "both" >/dev/null
+grep -q "loki cockpit' reopens" "$WORK/err.txt" || bad "first-run teach line missing"
+ok "first run shows the 'loki cockpit' teach line"
+
+# Remembered/subsequent run: config file exists -> NO teach line (stays lean).
+# The saved-view path returns before the card, so also verify a non-first run
+# where the file exists but with an unknown view still skips the teach line.
+rm -rf "$WORK/.loki"; mkdir -p "$WORK/.loki/config"
+printf '{"view":"unknown-xyz"}\n' > "$WORK/.loki/config/start-view.json"
+LOKI_DIR="$WORK/.loki" run_handoff "both" >/dev/null
+grep -q "loki cockpit' reopens" "$WORK/err.txt" && bad "teach line shown on a non-first run (config exists)"
+ok "non-first run (config exists) does not show the teach line"
 
 # --- 4. set -e safety of the --bg pre-scan loop ----------------------------
 # autonomy/loki runs under `set -euo pipefail`. The bg-detection loop in
