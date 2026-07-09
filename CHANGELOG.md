@@ -5,6 +5,33 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.124.0
+
+### Added: complexity-proportional verification (rec #3)
+
+The code-review battery now scales its specialist count to the detected task tier
+(`detect_complexity()` -> simple | standard | complex), with a HARD FLOOR so
+nothing shippable ever gets less scrutiny:
+
+- Battery = 2 always-on mandatory reviewers (architecture-strategist +
+  maintainer-mergeability) + N keyword specialists.
+- simple / standard -> N=2 (total 4 reviewers) -- byte-identical to every prior
+  release. A missing or forced-unknown tier also floors here.
+- complex -> N=4 (total 6 reviewers) -- a deeper battery for hard tasks, ADDITIVE
+  only, never dropping below the floor.
+
+This is the zeroshot-style "scale verification to difficulty" lever done the
+Loki way: only ADD validators for hard work, never subtract below the floor for
+anything shippable -- a cost/speed win on simple tasks with no trust regression.
+The no-keyword-match path also honors the tier count (padding the historical two
+defaults with the next-ranked specialists, de-duplicated).
+
+Wired on BOTH routes with parity: bash SPECIALIST_SELECT (autonomy/run.sh) and
+the Bun `selectReviewers()` (loki-ts/src/runner/quality_gates.ts), each reading
+DETECTED_COMPLEXITY. New tests: tests/test-complexity-proportional-review.sh
+(8 cases, extracts the real selector) and 2 Bun cases in quality_gates.test.ts.
+No change to the block/no-block verdict logic or to any other gate.
+
 ## v7.123.1
 
 ### Added: scope-honesty in completion-council evidence (rec #5)
