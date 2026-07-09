@@ -5,6 +5,43 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.126.0
+
+### Added: the Loki Cockpit (rec #6) - stare-worthy start, `loki cockpit`, dashboard identity
+
+A complete observability layer, built with zero new user-facing tooling (no chafa,
+no headless Chrome, nothing to install):
+
+- `loki start` now DETACHES to the background by default on an interactive TTY,
+  after a stare-worthy handoff: a crafted truecolor Autonomi banner (the real
+  purple squircle + white "A" + teal dot logo, "LOKI" wordmark) and a rich card
+  (spec, path, tier, provider, budget + breaker, log, dashboard URL) with a
+  choice - Both (default) / Dashboard / Watch (cockpit) / Detach / Stop - and an
+  8s auto-Both. The choice is remembered per project. CI / --bg / --yes /
+  non-interactive shells bypass it entirely and keep the exact prior foreground
+  behavior. Both opens the dashboard AND points at the cockpit.
+- `loki cockpit` (new command; `loki watch` is unchanged - it remains the PRD
+  auto-rerun watcher) renders live multi-repo status as an inline terminal image
+  on graphics-capable terminals (Kitty / iTerm2 / WezTerm / Ghostty), via a
+  dependency-free pipeline: state -> self-contained SVG -> PNG (optional
+  @resvg/resvg-js) -> pure-base64 Kitty/iTerm2 protocol, with capability
+  detection. On any other terminal it falls back HONESTLY to a text summary plus
+  the browser dashboard - it never claims an image rendered when it did not. The
+  multi-repo fleet is read from the existing registry (~/.loki/dashboard/
+  projects.json); per-run state from .loki/autonomy-state.json, .loki/verify/
+  evidence.json, and .loki/council/*.json.
+- The web dashboard is redesigned to the Autonomi identity (real logo, accent
+  #553de9, teal #1FC5A8, Fraunces / Inter / JetBrains Mono, light-grey ground
+  default with a dark toggle, multi-repo run switcher) so Both / Dashboard look
+  identical to the cockpit.
+
+The cockpit CLI ships as loki-ts/dist/cockpit.js (bundled) so it works on every
+npm/Docker/brew install, not just from source. Tests: tests/test-start-handoff.sh
+(27, incl. the truecolor banner + degradation), tests/test-cockpit-cmd.sh (8),
+tests/test-dashboard-identity.sh (9), loki-ts/tests/cockpit.test.ts (14, encoder
+byte-shape + capability matrix + honest fallback, all mutation-verified). No
+existing command changed behavior.
+
 ## v7.125.0
 
 ### Added: unified per-run isolation dial `--isolation none|worktree|docker` (rec #4)

@@ -959,6 +959,7 @@ show_help() {
     echo "  loki config set maxTier sonnet   # Cap model cost"
     echo "  loki dashboard start          # Web dashboard at localhost:57374"
     echo "  loki watch                    # Auto-rerun on PRD changes"
+    echo "  loki cockpit                  # Live multi-repo cockpit (terminal image)"
     echo "  loki remote                   # Remote session (phone/browser)"
     echo ""
     echo "Phase A-J features (v7.5.18 - v7.5.28) are default-on. See CHANGELOG."
@@ -1154,6 +1155,170 @@ detect_arg_type() {
 
     # Fallback: unknown. Caller treats as PRD for backward compat.
     echo "unknown"
+}
+
+# --- loki start detach-default handoff (S1) --------------------------------
+# On an interactive TTY, `loki start` now detaches the build to the background
+# by default after a rich, reversible handoff card. A non-interactive shell,
+# --bg, --yes/-y, or CI takes the exact pre-existing foreground path (no card,
+# byte-identical behavior). See tests/test-start-handoff.sh.
+
+# Decide whether the interactive handoff should fire. Returns 0 (fire) only when
+# stdout is a TTY, --bg was not requested, auto-confirm/-y is off, and we are not
+# in CI / a non-interactive shell. Any other case returns 1 (take today's path).
+# $1 = "1" if --bg is present in args, else "".
+_loki_start_should_handoff() {
+    local bg_requested="${1:-}"
+    [ "$bg_requested" = "1" ] && return 1
+    [ -t 1 ] || return 1
+    [ -t 0 ] || return 1
+    [ "${LOKI_AUTO_CONFIRM:-}" = "true" ] && return 1
+    [ "${CI:-}" = "true" ] && return 1
+    [ "${LOKI_NO_HANDOFF:-}" = "1" ] && return 1
+    return 0
+}
+
+# Stare-worthy brand banner (S6). Renders the real Autonomi logo (purple squircle
+# + white "A" + teal dot) as a crafted truecolor block, next to a "LOKI" wordmark,
+# straight to stderr. ZERO new tooling: pure ANSI escapes. Degrades by color depth
+# ($COLORTERM truecolor -> 24-bit; else a clean 256/mono badge). Never required,
+# always the default -- this is the moment the user stares at.
+_loki_brand_banner() {
+    local proj="$1"
+    local nc=$'\033[0m' b=$'\033[1m' dim=$'\033[2m'
+    # Truecolor when the terminal advertises it (nearly all modern terminals).
+    if [ "${COLORTERM:-}" = "truecolor" ] || [ "${COLORTERM:-}" = "24bit" ]; then
+        local pB=$'\033[48;2;85;61;233m'    # squircle purple bg #553DE9
+        local wF=$'\033[38;2;255;254;251m'  # white A
+        local tF=$'\033[38;2;31;197;168m'   # teal dot
+        local pF=$'\033[38;2;123;107;240m'  # light purple wordmark
+        # 6-row squircle badge; each cell two chars. '#'=A stroke, 'o'=teal dot.
+        local rows=(
+            "......"
+            "..##.."
+            ".#..#."
+            ".####."
+            ".#.o#."
+            ".#..#."
+        )
+        printf '\n' >&2
+        local i=0 line r c ch
+        for r in "${rows[@]}"; do
+            line=""
+            for ((c=0; c<${#r}; c++)); do
+                ch="${r:$c:1}"
+                case "$ch" in
+                    '#') line+="${pB}${wF}\xE2\x96\x88\xE2\x96\x88${nc}" ;;
+                    'o') line+="${pB}${tF}\xE2\x97\x8F ${nc}" ;;
+                    *)   line+="${pB}  ${nc}" ;;
+                esac
+            done
+            # Wordmark + tagline riding beside the badge on two of the rows.
+            case $i in
+                2) printf "   %b   %b%bLOKI%b\n" "$line" "$b" "$pF" "$nc" >&2 ;;
+                3) printf "   %b   %bAutonomi cockpit%b\n" "$line" "$dim" "$nc" >&2 ;;
+                *) printf "   %b\n" "$line" >&2 ;;
+            esac
+            i=$((i+1))
+        done
+        printf '\n' >&2
+    else
+        # 256-color / limited: a compact, still-branded badge (no truecolor blocks).
+        local p=$'\033[38;5;99m' t=$'\033[38;5;43m'
+        printf '\n   %s%s\xE2\x97\x86%s %sLOKI%s %s\xE2\x97\x8F%s %sAutonomi cockpit%s\n\n' \
+            "$b" "$p" "$nc" "$b" "$nc" "$t" "$nc" "$dim" "$nc" >&2
+    fi
+}
+
+# Print the rich handoff card and resolve the user's choice. Echoes exactly one
+# decision word on stdout:
+#   launch-bg           detach only
+#   launch-bg-dashboard detach + open the dashboard in a browser
+#   launch-bg-watch     detach + print the `loki cockpit` hint
+#   cancel              do not launch (user chose Stop)
+# All non-cancel decisions detach the build (arm --bg). The choice is remembered
+# per project under .loki/config/start-view.json; a remembered choice skips the
+# prompt and prints only a one-line summary.
+# Args: $1=spec label  $2=tier  $3=provider
+_loki_start_handoff() {
+    local spec="$1" tier="$2" prov="$3"
+    local port="${LOKI_DASHBOARD_PORT:-57374}"
+    local dash_url="http://127.0.0.1:${port}"
+    local budget="${LOKI_BUDGET_LIMIT:-none}"
+    local cfg_dir="${LOKI_DIR:-.loki}/config"
+    local cfg_file="$cfg_dir/start-view.json"
+    local pwd_path; pwd_path="$(pwd)"
+    local proj; proj="$(basename "$pwd_path")"
+
+    # Remembered choice: skip the prompt, print one-line summary, reuse decision.
+    local saved=""
+    if [ -f "$cfg_file" ]; then
+        saved="$(sed -n 's/.*"view"[[:space:]]*:[[:space:]]*"\([a-z-]*\)".*/\1/p' "$cfg_file" 2>/dev/null | head -1)"
+    fi
+    if [ -n "$saved" ]; then
+        case "$saved" in
+            both|dashboard|watch|detach)
+                echo -e "${DIM}Detaching to background (remembered view: ${saved}; change with 'loki cockpit' or delete ${cfg_file}).${NC}" >&2
+                case "$saved" in
+                    dashboard) echo "launch-bg-dashboard" ;;
+                    watch)     echo "launch-bg-watch" ;;
+                    *)         echo "launch-bg" ;;
+                esac
+                return 0
+                ;;
+        esac
+    fi
+
+    # Stare-worthy brand banner (S6) then the rich handoff card. Both to stderr so
+    # stdout carries only the decision word.
+    _loki_brand_banner "$proj"
+    {
+        echo -e "   ${BOLD}Building ${proj}${NC}  \033[38;2;31;197;168m\xE2\x97\x8F${NC} ${DIM}live${NC}"
+        echo ""
+        echo -e "   ${DIM}spec${NC}       ${spec}"
+        echo -e "   ${DIM}path${NC}       ${pwd_path}"
+        echo -e "   ${DIM}tier${NC}       ${tier}"
+        echo -e "   ${DIM}provider${NC}   ${prov}"
+        echo -e "   ${DIM}iteration${NC}  starting"
+        echo -e "   ${DIM}budget${NC}     \$0 / ${budget} (breaker: on)"
+        echo -e "   ${DIM}log${NC}        ${LOKI_DIR:-.loki}/logs/background-*.log"
+        echo -e "   ${DIM}dashboard${NC}  ${dash_url}"
+        echo ""
+        echo -e "   ${BOLD}Both${NC}[default]  ${BOLD}D${NC}ashboard  ${BOLD}W${NC}atch  De${BOLD}t${NC}ach  ${BOLD}S${NC}top"
+        echo -e "   ${DIM}opening your cockpit + dashboard in 8s -- press a key to choose${NC}"
+    } >&2
+
+    local reply=""
+    read -t 8 -r reply 2>/dev/null || reply=""
+
+    local decision="launch-bg" view="both"
+    case "$(printf '%s' "$reply" | tr '[:upper:]' '[:lower:]')" in
+        ""|b|both)          decision="launch-bg"; view="both" ;;
+        d|dash|dashboard)   decision="launch-bg-dashboard"; view="dashboard" ;;
+        w|watch)            decision="launch-bg-watch"; view="watch" ;;
+        t|detach)           decision="launch-bg"; view="detach" ;;
+        s|stop|cancel|q)    decision="cancel"; view="" ;;
+        *)                  decision="launch-bg"; view="both" ;;
+    esac
+
+    if [ "$decision" = "cancel" ]; then
+        echo -e "${YELLOW}run cancelled${NC}" >&2
+        echo "cancel"
+        return 0
+    fi
+
+    # Remember the choice for next time (best-effort; never blocks the launch).
+    mkdir -p "$cfg_dir" 2>/dev/null && \
+        printf '{"view":"%s"}\n' "$view" > "$cfg_file" 2>/dev/null || true
+
+    if [ "$view" = "both" ]; then
+        echo -e "${DIM}Open the dashboard at ${dash_url} or run 'loki cockpit' to watch.${NC}" >&2
+    elif [ "$view" = "watch" ]; then
+        echo -e "${DIM}Run 'loki cockpit' to watch the build.${NC}" >&2
+    fi
+
+    echo "$decision"
+    return 0
 }
 
 # Start Loki Mode
@@ -2314,6 +2479,41 @@ cmd_start() {
         . "$_pg_helper"
         local _pg_target="${LOKI_TARGET_DIR:-$(pwd)}"
         loki_project_graph_discover "$_pg_target" || true
+    fi
+
+    # S1: detach-to-background by default on an interactive TTY. Fires a rich,
+    # reversible handoff card, then arms the existing --bg path so run.sh
+    # backgrounds the runner (it writes the log + PID file and prints its own
+    # "Running in Background" banner). The HARD gate below keeps every
+    # non-interactive / --bg / --yes / CI caller on the exact pre-existing
+    # foreground exec -- byte-identical to before this change.
+    local _bg_already=""
+    for _a in ${args[@]+"${args[@]}"}; do
+        if [ "$_a" = "--bg" ]; then _bg_already=1; break; fi
+    done
+    if _loki_start_should_handoff "$_bg_already"; then
+        local _spec_label="${prd_file:-codebase (no PRD)}"
+        local _tier_label="${LOKI_COMPLEXITY:-auto}"
+        local _decision
+        _decision="$(_loki_start_handoff "$_spec_label" "$_tier_label" "$effective_provider")"
+        case "$_decision" in
+            cancel)
+                exit 0
+                ;;
+            launch-bg-dashboard|launch-bg)
+                # Both (default) AND Dashboard open the browser -- Both = dashboard
+                # + cockpit, honoring the card's "open dashboard" promise. The
+                # cockpit hint is printed by _loki_start_handoff for the Both path.
+                args+=("--bg")
+                local _du="http://127.0.0.1:${LOKI_DASHBOARD_PORT:-57374}"
+                if command -v open >/dev/null 2>&1; then open "$_du" >/dev/null 2>&1 &
+                elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$_du" >/dev/null 2>&1 & fi
+                ;;
+            launch-bg-watch)
+                # Watch (cockpit only) detaches without opening the browser.
+                args+=("--bg")
+                ;;
+        esac
     fi
 
     # v7.7.13 fix (user-reported bug): `"${args[@]}"` triggers "unbound
@@ -8543,6 +8743,173 @@ cmd_watch() {
             done
             ;;
     esac
+}
+
+#===============================================================================
+# loki cockpit - Multi-repo live status as a terminal inline image (v7.126.0)
+#
+# Renders the Autonomi cockpit frame directly in supported terminals (iTerm2 /
+# WezTerm / ghostty via the iTerm2 protocol; Kitty via its graphics protocol).
+# On any unsupported terminal, or when rasterization is unavailable, it falls
+# back HONESTLY to a compact text summary and points at the browser dashboard.
+# This never touches `loki watch` (the PRD-file auto-rerun watcher).
+#===============================================================================
+
+# Compact honest text summary printed on the fallback path. Reads the same
+# CockpitState JSON the renderer would have used, so text and image agree.
+_cockpit_text_summary() {
+    local skill_dir="$1" focus_repo="$2"
+    local state_json
+    state_json="$(cockpit_gather_state "$skill_dir" "$focus_repo" 2>/dev/null || true)"
+    if [ -z "$state_json" ] || ! command -v python3 >/dev/null 2>&1; then
+        echo "  (no cockpit state available)"
+        return 0
+    fi
+    LOKI_CK_STATE="$state_json" python3 - <<'PYTXT' 2>/dev/null || echo "  (could not render text summary)"
+import json, os
+s = json.loads(os.environ.get("LOKI_CK_STATE") or "{}")
+print(f"  Run       {s.get('run','?')}")
+print(f"  Iteration {s.get('iteration',0)}   Phase {s.get('phase','?')}   Verdict {str(s.get('verdict','?')).upper()}")
+tier = s.get('tier') or '-'
+prov = s.get('provider') or '-'
+print(f"  Tier {tier}   Provider {prov}   Budget ${float(s.get('budgetUsd',0)):.2f}")
+gates = s.get('gates') or []
+if gates:
+    line = "  Gates     " + "  ".join(f"{g.get('name','?')}={g.get('status','?')}" for g in gates[:8])
+    print(line)
+council = s.get('council') or []
+if council:
+    print("  Council   " + "  ".join(f"{c.get('reviewer','?')}:{c.get('vote','?')}" for c in council[:6]))
+fleet = s.get('fleet') or []
+if fleet:
+    print(f"  Fleet ({len(fleet)}):")
+    for r in fleet[:8]:
+        mark = "*" if r.get("running") else " "
+        print(f"    {mark} {r.get('name','?'):<28} iter {r.get('iteration',0)}  {r.get('phase') or r.get('status') or ''}")
+PYTXT
+}
+
+cmd_cockpit() {
+    local protocol="auto"
+    local no_image="0"
+    local run_once="0"
+    local follow="1"
+    local interval="2"
+    local focus_repo=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --help|-h)
+                echo -e "${BOLD}loki cockpit${NC} - Live multi-repo status as a terminal inline image (v7.126.0)"
+                echo ""
+                echo "Usage: loki cockpit [options]"
+                echo ""
+                echo "Renders the Autonomi cockpit (iteration, phase, tier, provider, gates,"
+                echo "council votes, verdict, budget, and the multi-repo fleet) as an inline"
+                echo "image in supported terminals. Falls back to a text summary + the browser"
+                echo "dashboard on terminals without inline-image support."
+                echo ""
+                echo "Options:"
+                echo "  --once                 Render one frame then exit"
+                echo "  --follow               Re-render on an interval (default)"
+                echo "  --interval N           Seconds between frames in --follow (default: 2)"
+                echo "  --repo PATH            Focus one repo instead of the running fleet head"
+                echo "  --protocol P           iterm2 | kitty | auto (default: auto-detect)"
+                echo "  --no-image             Force the text/browser fallback"
+                echo "  --help, -h             Show this help"
+                echo ""
+                echo "Supported terminals: iTerm2, WezTerm, ghostty (iTerm2 protocol); Kitty."
+                echo "Override detection with LOKI_COCKPIT_PROTOCOL=iterm2|kitty."
+                echo ""
+                echo "Note: this is distinct from 'loki watch', which auto-reruns on PRD edits."
+                return 0
+                ;;
+            --once) run_once="1"; follow="0"; shift ;;
+            --follow) follow="1"; run_once="0"; shift ;;
+            --interval) interval="${2:-2}"; [ $# -ge 2 ] && shift 2 || shift ;;
+            --interval=*) interval="${1#*=}"; shift ;;
+            --repo) focus_repo="${2:-}"; [ $# -ge 2 ] && shift 2 || shift ;;
+            --repo=*) focus_repo="${1#*=}"; shift ;;
+            --protocol) protocol="${2:-auto}"; [ $# -ge 2 ] && shift 2 || shift ;;
+            --protocol=*) protocol="${1#*=}"; shift ;;
+            --no-image) no_image="1"; shift ;;
+            -*)
+                echo -e "${RED}Unknown option: $1${NC}"
+                echo "Run 'loki cockpit --help' for usage."
+                return 1
+                ;;
+            *)
+                if [ -z "$focus_repo" ]; then
+                    focus_repo="$1"
+                else
+                    echo -e "${RED}Unexpected argument: $1${NC}"
+                    return 1
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    # Load the render/gather helpers (pure logic lives in loki-ts).
+    local ts_dir="${_LOKI_SCRIPT_DIR}/../loki-ts"
+    local render_lib="${_LOKI_SCRIPT_DIR}/lib/cockpit-render.sh"
+    if [ -f "$render_lib" ]; then
+        # shellcheck disable=SC1090
+        source "$render_lib"
+    else
+        echo -e "${RED}cockpit render library not found${NC} ($render_lib)" >&2
+        return 1
+    fi
+
+    _cockpit_frame() {
+        local rc=0
+        # cockpit_render prints the terminal image to stdout on success (rc 0),
+        # or exits 3 (fallback) / 2 (bun unavailable). Capture stderr for the
+        # FALLBACK reason without swallowing the image bytes on stdout.
+        cockpit_render "$SKILL_DIR" "$ts_dir" "$protocol" "$no_image" "$focus_repo" 2>/tmp/loki-cockpit-err.$$ || rc=$?
+        if [ "$rc" = "0" ]; then
+            rm -f "/tmp/loki-cockpit-err.$$" 2>/dev/null
+            return 0
+        fi
+        # Honest fallback: text summary + browser dashboard pointer. NEVER claim
+        # an image was rendered here.
+        local reason=""
+        if [ -f "/tmp/loki-cockpit-err.$$" ]; then
+            reason="$(sed -n 's/^FALLBACK\t//p' "/tmp/loki-cockpit-err.$$" | head -1)"
+            rm -f "/tmp/loki-cockpit-err.$$" 2>/dev/null
+        fi
+        [ -z "$reason" ] && reason="inline image unavailable in this terminal"
+        echo ""
+        echo -e "${BOLD}Loki Cockpit${NC} ${DIM}(text fallback: ${reason})${NC}"
+        _cockpit_text_summary "$SKILL_DIR" "$focus_repo"
+        echo ""
+        echo -e "  Open the full visual dashboard: ${CYAN}loki dashboard${NC}"
+        return 3
+    }
+
+    if [ "$run_once" = "1" ]; then
+        _cockpit_frame
+        return 0
+    fi
+
+    # --follow (default): re-render until interrupted. On a fallback terminal we
+    # print the summary once (looping text is noise) and stop; on an image
+    # terminal we clear and redraw each interval.
+    local frame_rc=0
+    _cockpit_frame || frame_rc=$?
+    if [ "$frame_rc" != "0" ]; then
+        # Fallback path: no live image loop; the text summary + dashboard hint
+        # were already printed once. Point the user at --follow-capable UIs.
+        return 0
+    fi
+    # Image path: loop until Ctrl-C.
+    trap 'printf "\n"; return 0' INT
+    while :; do
+        sleep "$interval" 2>/dev/null || break
+        printf '\033[2J\033[H'   # clear + home before redraw
+        _cockpit_frame || break
+    done
+    return 0
 }
 
 #===============================================================================
@@ -17042,6 +17409,9 @@ main() {
             ;;
         watch)
             cmd_watch "$@"
+            ;;
+        cockpit)
+            cmd_cockpit "$@"
             ;;
         export)
             # CLI consolidation (Phase A): 'export' -> 'report export'.
