@@ -5,6 +5,29 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.123.1
+
+### Added: scope-honesty in completion-council evidence (rec #5)
+
+When the completion council gathers evidence and no PRD checklist exists, the
+"PRD Checklist Verification Results" section was passive ("No PRD checklist has
+been created yet") -- a reviewer could read that silence as a pass. Now it is
+scope-honest and distinguishes two cases:
+
+- A spec/PRD IS present but yielded no derived acceptance criteria -> an explicit
+  SCOPE-HONESTY note that "done" is UNVERIFIED-BY-CHECKLIST on this run, telling
+  the council member to weight the OTHER evidence (tests, diff, build) and never
+  read checklist-absence as a pass.
+- No spec/PRD was provided (e.g. a one-line brief) -> "not applicable"; checklist
+  absence is expected, not a gap.
+
+Never fabricates coverage that does not exist. This completes the trust-legibility
+arc with v7.122.0 `--explain` (what was verified) and v7.123.0 `--check-fresh`
+(is it current): now the council is honest about what it could NOT assess. The
+hard-gate block/no-block decision is unchanged; this only enriches the evidence
+text reviewers read. New extraction-harness test `tests/test-council-scope-honesty.sh`
+(3 cases: spec-present, spec-via-.loki, no-spec).
+
 ## v7.123.0
 
 ### Added: `loki verify --check-fresh` (evidence staleness, fail-closed)
