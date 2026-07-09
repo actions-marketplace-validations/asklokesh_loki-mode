@@ -5,6 +5,32 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.123.0
+
+### Added: `loki verify --check-fresh` (evidence staleness, fail-closed)
+
+Evidence is only trustworthy while it still describes the current code. New
+`--check-fresh` is a consumer-side freshness gate: it does NOT re-run gates, it
+reads a prior `<out>/evidence.json` and decides whether that verdict still
+applies to the live repo. FRESH (exit 0) when the graded `head_sha` matches HEAD
+and the worktree is clean (ignoring `.loki/`, verify's own output); STALE (exit 2)
+when HEAD drifted or the tree changed since grading; ERROR (exit 3) when evidence
+is missing, unparseable, or records no graded head. It is fail-closed by
+construction: a stored VERIFIED that no longer matches its code never reports
+FRESH -- trusting a cached green after the code moved on is exactly the fake-green
+the moat forbids. This is for CI and proof consumers that gate on a stored
+verdict.
+
+evidence.json now records `subject.worktree_clean_at_grade` (additive), and
+`--explain` shows the graded HEAD + tree state and points at `--check-fresh` for
+a later re-check. Together with v7.122.0's `--explain`, this completes the
+competitive-research "prove trust to a skeptic in 60 seconds" pair: `--explain`
+shows what the evidence is; `--check-fresh` proves it is current.
+
+Default `loki verify` behavior and output are unchanged. Six new fail-closed
+tests in `tests/test-verify.sh` (fresh / dirty / drift / missing / corrupt /
+metadata present).
+
 ## v7.122.1
 
 ### Fixed: doc-vs-code default for the auto-learnings loop (it is default-ON)
