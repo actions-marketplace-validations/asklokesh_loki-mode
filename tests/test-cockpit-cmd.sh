@@ -145,8 +145,9 @@ PYBIG
 }
 if command -v python3 >/dev/null 2>&1; then
     big_out="$(_run_text_summary_bigfleet 2>/dev/null)"
-    # Header must show the true total ...
-    if printf '%s' "$big_out" | grep -q "Fleet (171)"; then
+    # Header must show the true total (in either "N active / 171" or
+    # "171 total, none active" honest form) ...
+    if printf '%s' "$big_out" | grep -qE "Fleet \([0-9]+ active / 171 total\)|Fleet \(171 total, none active\)"; then
         ok "text summary reports the true fleet total (171)"
     else
         bad "text summary reports true fleet total" "output: $big_out"

@@ -5,6 +5,31 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.128.2
+
+### Fixed: cockpit fills the terminal + honest fleet (no stale-run zombies)
+
+Three fixes that make `loki cockpit` genuinely useful instead of a tiny,
+noisy-looking frame:
+
+- Image scales to the terminal width. The inline image previously rendered at its
+  native pixel size, so it appeared small in a corner of a large window. The
+  encoder now sets the iTerm2 `width=<cols>` / Kitty `c=<cols>` from the terminal
+  width so the cockpit fills the pane.
+- Stale-run reconciliation. A reaped or crashed `loki start` left its registry
+  entry frozen at status "running"/"building" with a dead pid, so the fleet
+  accumulated 100+ zombie "BUILDING" entries. `get_fleet_runs` now reports a
+  dead-pid in-flight entry as "stale", and the new `registry.reconcile_stale_runs()`
+  (run opportunistically by the cockpit) marks them "stopped". The fleet header
+  now reads "FLEET (N active / M total)" (or "M total, none active") so a long
+  tail of finished runs is not alarming, and the list is ordered live-first.
+- A not-running fleet entry no longer displays a frozen in-flight phase; it shows
+  its reconciled status.
+
+Tests: registry reconcile (3 new, tests/dashboard/test_registry_prune.py),
+encoder width scaling + fleet header (cockpit.test.ts, now 26). Full bun suite
+1190/0.
+
 ## v7.128.1
 
 ### Fixed: duplicate banner on `loki start` (new handoff + legacy ASCII banner)

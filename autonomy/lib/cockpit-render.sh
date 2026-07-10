@@ -131,19 +131,45 @@ fleet = []
 runs = []
 try:
     from dashboard import registry
+    # Self-heal: mark dead-pid "running" zombies as stopped before reading the
+    # fleet, so the cockpit does not show 100+ frozen "BUILDING" entries from
+    # reaped/crashed sessions. Best-effort; a failure here never blocks the render.
+    try:
+        registry.reconcile_stale_runs()
+    except Exception:
+        pass
     runs = registry.get_fleet_runs(include_inactive=True)
 except Exception:
     runs = []
 
 for r in runs:
+    _running = bool(r.get("running"))
+    _status = (r.get("status") or "").lower()
+    # A not-running entry must not display an in-flight phase (BUILDING/etc): the
+    # reconciled registry status is authoritative for dead runs, so a stopped or
+    # stale run shows its status, not a frozen phase left in a stale state file.
+    if _running:
+        _phase = r.get("phase", "") or ""
+    elif _status in ("stale", "stopped", "completed", "failed"):
+        _phase = _status
+    else:
+        _phase = r.get("phase", "") or _status
     fleet.append({
         "name": r.get("name") or os.path.basename(r.get("path", "") or "project"),
         "path": r.get("path", "") or "",
-        "phase": r.get("phase", "") or "",
+        "phase": _phase,
         "iteration": r.get("iteration", 0) or 0,
         "status": r.get("status", "") or "",
-        "running": bool(r.get("running")),
+        "running": _running,
     })
+
+# Live-first ordering: running builds, then everything else by most-recent.
+# Keeps the useful runs at the top when the fleet has many stopped/stale entries.
+def _fleet_sort_key(e):
+    st = (e.get("status") or "").lower()
+    rank = 0 if e.get("running") else (1 if st not in ("stale", "stopped") else 2)
+    return (rank, -(e.get("iteration") or 0))
+fleet.sort(key=_fleet_sort_key)
 
 # Focused run: --repo wins; else first running fleet run; else cwd.
 focus_path = focus or cwd

@@ -269,9 +269,15 @@ export function buildSvg(raw: CockpitState): string {
     csy += rowH;
   }
 
-  // Fleet list
+  // Fleet list. Header shows active vs total so a long tail of finished/stale
+  // runs reads honestly rather than as an alarming bare count.
   const fleetY = csy + 46;
-  body += `<text x="${PAD}" y="${fleetY}" font-family="${FONT_BODY}" font-size="13" font-weight="600" fill="${MUTED}" letter-spacing="0.5">FLEET (${state.fleet.length})</text>`;
+  const fleetActive = state.fleet.filter((r) => r.running).length;
+  const fleetHdr =
+    fleetActive > 0
+      ? `FLEET (${fleetActive} active / ${state.fleet.length})`
+      : `FLEET (${state.fleet.length}, none active)`;
+  body += `<text x="${PAD}" y="${fleetY}" font-family="${FONT_BODY}" font-size="13" font-weight="600" fill="${MUTED}" letter-spacing="0.5">${fleetHdr}</text>`;
   let fy = fleetY + 20;
   const shown = state.fleet.slice(0, 4);
   for (const r of shown) {

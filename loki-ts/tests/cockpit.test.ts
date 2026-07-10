@@ -48,6 +48,19 @@ describe("cockpit encode", () => {
     expect(out).toContain(Buffer.from(TINY_PNG).toString("base64"));
   });
 
+  it("iTerm2 scales to terminal columns when given a width (fills the pane)", () => {
+    const out = encodeIterm2(TINY_PNG, 120);
+    // width in cells, not native size, so the cockpit fills 120 columns.
+    expect(out).toContain("width=120");
+    expect(out).not.toContain("width=auto");
+    expect(out).toContain("height=auto"); // aspect preserved
+  });
+
+  it("Kitty scales via c=<cols> when given a width", () => {
+    const out = encodeKitty(TINY_PNG, 4096, 120);
+    expect(out).toContain("c=120");
+  });
+
   it("Kitty sequence has the right byte shape", () => {
     const out = encodeKitty(TINY_PNG);
     expect(out.startsWith(`${ESC}_G`)).toBe(true);
@@ -209,13 +222,26 @@ describe("cockpit SVG builder", () => {
       running: i === 0,
     }));
     const svg = buildSvg({ ...SAMPLE, fleet: bigFleet });
-    // The full count is honest in the header ...
-    expect(svg).toContain("FLEET (171)");
+    // The header is honest about active vs total (run-0 is the only running one).
+    expect(svg).toContain("FLEET (1 active / 171)");
     // ... but only a capped subset of rows is drawn, with an overflow line.
     // run-0 (first) is shown; a deep run (run-50) must be summarized away.
     expect(svg).toContain(">run-0<");
     expect(svg).not.toContain(">run-50<");
     expect(svg).toMatch(/\+ \d+ more/);
+  });
+
+  it("fleet header shows 'none active' when no run is live", () => {
+    const stopped = Array.from({ length: 5 }, (_, i) => ({
+      name: `run-${i}`,
+      path: `/p/${i}`,
+      phase: "stopped",
+      status: "stopped",
+      iteration: 0,
+      running: false,
+    }));
+    const svg = buildSvg({ ...SAMPLE, fleet: stopped });
+    expect(svg).toContain("FLEET (5, none active)");
   });
 });
 

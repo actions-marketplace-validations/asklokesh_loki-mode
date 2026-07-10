@@ -67,7 +67,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     return 3;
   }
 
-  const outcome = await render(state, { protocol, forceText: noImage });
+  // Scale the image to the terminal width so the cockpit fills the pane instead
+  // of rendering tiny in the corner. Prefer the real tty width; fall back to
+  // COLUMNS; leave a 2-col margin. Undefined -> native size (no scaling).
+  const ttyCols = process.stdout.columns || Number(process.env["COLUMNS"]) || 0;
+  const cols = ttyCols > 4 ? ttyCols - 2 : undefined;
+  const outcome = await render(state, { protocol, forceText: noImage, cols });
 
   if (svgOut) {
     try {

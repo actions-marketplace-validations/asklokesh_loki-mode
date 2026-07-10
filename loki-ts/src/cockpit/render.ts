@@ -22,6 +22,7 @@ export interface RenderOpts {
   protocol?: CockpitProtocol | "auto";
   env?: CapabilityEnv;
   forceText?: boolean; // --no-image
+  cols?: number; // terminal width in columns; scales the image to fill the pane
 }
 
 export async function render(state: CockpitState, opts: RenderOpts = {}): Promise<RenderOutcome> {
@@ -52,6 +53,6 @@ export async function render(state: CockpitState, opts: RenderOpts = {}): Promis
     };
   }
 
-  const data = encodeForProtocol(protocol, raster.png);
+  const data = encodeForProtocol(protocol, raster.png, opts.cols);
   return { kind: "image", protocol, data, svg };
 }

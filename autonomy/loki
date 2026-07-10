@@ -8821,7 +8821,13 @@ if council:
 fleet = s.get('fleet') or []
 if fleet:
     cap = 8  # cap so a huge registry (e.g. 171 runs) never floods the summary
-    print(f"  Fleet ({len(fleet)}):")
+    active = sum(1 for r in fleet if r.get("running"))
+    # Header shows active vs total so a long tail of finished/stale runs reads
+    # honestly (e.g. "0 active / 136 total") instead of an alarming bare count.
+    if active:
+        print(f"  Fleet ({active} active / {len(fleet)} total):")
+    else:
+        print(f"  Fleet ({len(fleet)} total, none active):")
     for r in fleet[:cap]:
         mark = "*" if r.get("running") else " "
         print(f"    {mark} {r.get('name','?'):<28} iter {r.get('iteration',0)}  {r.get('phase') or r.get('status') or ''}")
