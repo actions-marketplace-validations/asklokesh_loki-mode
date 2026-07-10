@@ -2529,6 +2529,11 @@ cmd_start() {
         local _tier_label="${LOKI_COMPLEXITY:-auto}"
         local _decision
         _decision="$(_loki_start_handoff "$_spec_label" "$_tier_label" "$effective_provider")"
+        # The new handoff already rendered the Autonomi brand banner, so tell
+        # run.sh to skip its legacy ASCII "LOKI MODE" banner (avoids a duplicate,
+        # redundant second banner). The legacy banner still shows on the
+        # non-handoff path (CI / --bg / --yes / non-interactive), unchanged.
+        [ "$_decision" != "cancel" ] && export LOKI_BRAND_SHOWN=1
         case "$_decision" in
             cancel)
                 exit 0

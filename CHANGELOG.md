@@ -5,6 +5,17 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.128.1
+
+### Fixed: duplicate banner on `loki start` (new handoff + legacy ASCII banner)
+
+The v7.126.0 `loki start` handoff renders the Autonomi brand banner, but run.sh
+still printed its legacy ASCII "LOKI MODE" banner right after it, so an
+interactive `loki start` showed TWO banners back to back. cmd_start now exports
+`LOKI_BRAND_SHOWN=1` when the handoff runs, and run.sh skips the legacy banner in
+that case. The legacy banner is unchanged on the non-handoff path (CI / --bg /
+--yes / non-interactive / direct run.sh). New test tests/test-start-banner-dedup.sh.
+
 ## v7.128.0
 
 ### Added: `loki cockpit` renders the inline image out of the box (bundled wasm)
