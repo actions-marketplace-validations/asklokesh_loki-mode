@@ -5,6 +5,24 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.129.2
+
+### Fixed: parallel multi-issue follow-ups (detached --pr reliability)
+
+Follow-up fixes found while validating v7.129.1 end to end.
+
+- **Nested-agent guard now propagates to detached runs.** The v7.129.1 guard
+  (auxiliary testing/docs sub-streams OFF when nested in another agent session)
+  never fired for `--detach`: the detached inner script inherits only a curated
+  `LOKI_*` env, so `CLAUDECODE` was invisible to it. It is now forwarded as
+  `LOKI_NESTED_AGENT`, so the sub-streams stay off when nested even after the fork.
+- **Post-completion auto-documentation is now time-bounded.** `loki docs generate`
+  runs after completion and before the detached `--pr` push/PR step and spawned a
+  provider call with no timeout; a hang there silently blocked the PR from ever
+  being created (verified work committed locally but never pushed). It is now
+  wrapped in a timeout (`LOKI_DOCS_TIMEOUT`, default 300s); docs are non-gating,
+  so on timeout the run warns and proceeds to push the PR.
+
 ## v7.129.1
 
 ### Fixed: reliable parallel work across multiple GitHub issues
