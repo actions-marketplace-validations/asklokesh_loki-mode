@@ -79,6 +79,7 @@ HANDOFF.md
 artifacts/ROADMAP-*.md
 artifacts/STRATEGY.md
 artifacts/AUTONOMOUS-SESSION-*.md
+artifacts/FOUNDER-HANDOFF-*.md
 artifacts/v7-e2e-saas/MOAT-*.md
 artifacts/v7-e2e-saas/DESIGN-*.md
 # Internal build/test/e2e output + screenshots under artifacts/ -- scratch, not
