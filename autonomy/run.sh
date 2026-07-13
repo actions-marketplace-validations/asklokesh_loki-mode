@@ -10994,6 +10994,36 @@ _dispatch_reviewer() {
             # then deletes its flag and emits nothing). Set inline, not via
             # the helper, so the carve-out holds even when the helper is
             # out of scope. No-op when caveman is absent.
+            # STRUCTURED VERDICT (v8.x): when the CLI supports --json-schema,
+            # force valid JSON and re-materialize the LEGACY VERDICT/FINDINGS text
+            # so every downstream consumer (_classify_verdict,
+            # _severity_is_blocking, _count_nonblocking_findings, mergeability,
+            # DA arm, aggregate.json) stays byte-identical. Fail-closed: any
+            # failure falls through to the text path below (which itself may leave
+            # an empty file -> NO_VERDICT -> inconclusive block). NEVER a PASS on a
+            # miss. --json-schema takes INLINE content, not a path (CLI 2.1.207
+            # rejects a path). Opt out with LOKI_REVIEW_JSON_SCHEMA=off.
+            local _cr_schema="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/loki-ts/data/code-review-schema.json"
+            local _cr_remat="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/cr-rematerialize.py"
+            if [ "${LOKI_REVIEW_JSON_SCHEMA:-on}" != "off" ] \
+               && [ -f "$_cr_schema" ] && [ -f "$_cr_remat" ] \
+               && type loki_claude_flag_supported >/dev/null 2>&1 \
+               && loki_claude_flag_supported "--json-schema"; then
+                local _cr_schema_content _cr_json _cr_rc=0
+                _cr_schema_content="$(cat "$_cr_schema" 2>/dev/null)" || _cr_schema_content=""
+                if [ -n "$_cr_schema_content" ]; then
+                    _cr_json="$(CAVEMAN_DEFAULT_MODE=off \
+                        claude "${_rv_argv[@]}" -p "$prompt_text" \
+                            --json-schema "$_cr_schema_content" \
+                            --output-format json 2>/dev/null)" || _cr_rc=$?
+                    if [ "$_cr_rc" -eq 0 ] && [ -n "$_cr_json" ] \
+                       && _LOKI_CR_JSON="$_cr_json" _LOKI_CR_OUT="$review_output" \
+                          python3 "$_cr_remat"; then
+                        return 0
+                    fi
+                fi
+                # fall through to the text path below (fail-closed)
+            fi
             CAVEMAN_DEFAULT_MODE=off \
             claude "${_rv_argv[@]}" -p "$prompt_text" \
                 --output-format text > "$review_output" 2>/dev/null
