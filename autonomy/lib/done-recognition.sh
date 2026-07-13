@@ -58,7 +58,9 @@ _loki_done_recog_invoke() {
     # unsupported, empty, no structured_output) fall through to the plain -p call
     # below; parse_object then handles it and defaults to inconclusive (safe).
     # Opt out LOKI_REVIEW_JSON_SCHEMA=off.
-    local _dr_schema="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/loki-ts/data/done-recognition-schema.json"
+    local _dr_schema_dir _dr_schema
+    _dr_schema_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+    _dr_schema="${_dr_schema_dir}/loki-ts/data/done-recognition-schema.json"
     if [ "${LOKI_REVIEW_JSON_SCHEMA:-on}" != "off" ] && [ -f "$_dr_schema" ] \
        && type loki_claude_flag_supported >/dev/null 2>&1 \
        && loki_claude_flag_supported "--json-schema"; then

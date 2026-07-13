@@ -303,7 +303,9 @@ Respond ONLY with a valid JSON object. No markdown fencing."
                 # path (CLI 2.1.207 rejects a path). On any failure fall through to
                 # the plain -p call + sed-carve (unchanged, fail-closed to REJECT).
                 # Opt out LOKI_REVIEW_JSON_SCHEMA=off. claude branch only.
-                local _c2_schema="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/loki-ts/data/council-v2-schema.json"
+                local _c2_schema_dir _c2_schema
+                _c2_schema_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+                _c2_schema="${_c2_schema_dir}/loki-ts/data/council-v2-schema.json"
                 result=""
                 if [ "${LOKI_REVIEW_JSON_SCHEMA:-on}" != "off" ] && [ -f "$_c2_schema" ] \
                    && type loki_claude_flag_supported >/dev/null 2>&1 \
