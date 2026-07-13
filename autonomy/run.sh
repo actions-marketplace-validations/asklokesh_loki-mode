@@ -9658,8 +9658,16 @@ sys.stdout.write(t.strip())
             local output
             # Pass matched files explicitly (node --test globbing is
             # Node-version-sensitive); quote each so paths with spaces survive.
+            # Force --test-reporter=tap: Node 20+ made the human "spec" reporter
+            # the default for a TTY and Node 26 emits it even under capture
+            # ("i pass N" / check+cross marks) instead of the TAP "# pass N" /
+            # "ok N - " lines that BOTH the count parser below AND
+            # _loki_zero_tests_executed rely on. TAP has been stable since Node 18,
+            # so forcing it restores a deterministic, version-independent format
+            # without touching any parser. Older node ignores nothing here (tap is
+            # a valid built-in reporter on every supported version).
             output=$(cd "${TARGET_DIR:-.}" && timeout "${LOKI_GATE_TIMEOUT:-300}" \
-                         node --test "${_nt_files[@]}" 2>&1) || test_passed=false
+                         node --test --test-reporter=tap "${_nt_files[@]}" 2>&1) || test_passed=false
             # tail -14 so node's TAP summary block (# tests / # pass N / # fail N,
             # ~10 lines) survives truncation for the best-effort count parse below.
             details="node --test: $(echo "$output" | tail -14 | tr '\n' ' ')"

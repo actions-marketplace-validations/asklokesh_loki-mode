@@ -550,7 +550,13 @@ verify_gate_tests() {
             runner="node-test"
             # Pass matched files explicitly (node --test globbing is
             # Node-version-sensitive); quote each so paths with spaces survive.
-            out="$(cd "$tree" && timeout "$timeout_s" node --test "${_nt_files[@]}" 2>&1)" || rc=$?
+            # Force --test-reporter=tap: Node 20+ defaults to the human "spec"
+            # reporter (Node 26 emits it even under capture), whose "i pass N" /
+            # check-mark lines the count parser + zero-tests detector below do NOT
+            # match; they expect TAP "# pass N" / "ok N - ". TAP is stable since
+            # Node 18, so forcing it restores a version-independent format with no
+            # parser change. Parity with autonomy/run.sh:9662.
+            out="$(cd "$tree" && timeout "$timeout_s" node --test --test-reporter=tap "${_nt_files[@]}" 2>&1)" || rc=$?
         fi
     fi
 
