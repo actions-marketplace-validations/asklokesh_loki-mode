@@ -106,6 +106,25 @@ else
   bad "council-v2-schema.json missing/invalid or wrong contract"
 fi
 
+# --- v8.x: done-recognition structured verdict (--json-schema, content not path)
+DR="$REPO_ROOT/autonomy/lib/done-recognition.sh"
+DRSCHEMA="$REPO_ROOT/loki-ts/data/done-recognition-schema.json"
+grep -q 'loki_claude_flag_supported "--json-schema"' "$DR" \
+  && grep -q -- '--json-schema "\$_dr_schema_content"' "$DR" \
+  && grep -q 'LOKI_REVIEW_JSON_SCHEMA' "$DR" \
+  && ok "done-recognition.sh adds gated --json-schema with CONTENT (not a path) + opt-out" \
+  || bad "done-recognition.sh missing gated --json-schema content-wiring"
+if grep -Eq -- '--json-schema "\$_dr_schema"( |$)' "$DR"; then
+  bad "done-recognition.sh passes a PATH to --json-schema (CLI rejects it -> structured dead)"
+else
+  ok "done-recognition.sh does not pass a bare schema PATH to --json-schema"
+fi
+if [ -f "$DRSCHEMA" ] && $PY -c "import json,sys; d=json.load(open(sys.argv[1])); assert d['properties']['verdict']['enum']==['done','incomplete','inconclusive']; assert 'requirements' in d['required']" "$DRSCHEMA" 2>/dev/null; then
+  ok "done-recognition-schema.json valid + verdict enum + requirements required"
+else
+  bad "done-recognition-schema.json missing/invalid or wrong contract"
+fi
+
 # --- syntax ------------------------------------------------------------------
 bash -n "$RUN" && ok "autonomy/run.sh passes bash -n" || bad "run.sh syntax error"
 bash -n "$CLAUDE_SH" && ok "providers/claude.sh passes bash -n" || bad "claude.sh syntax error"
