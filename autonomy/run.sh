@@ -817,8 +817,27 @@ fi
 PARALLEL_MODE=${LOKI_PARALLEL_MODE:-false}
 MAX_WORKTREES=${LOKI_MAX_WORKTREES:-5}
 MAX_PARALLEL_SESSIONS=${LOKI_MAX_PARALLEL_SESSIONS:-3}
-PARALLEL_TESTING=${LOKI_PARALLEL_TESTING:-true}
-PARALLEL_DOCS=${LOKI_PARALLEL_DOCS:-true}
+# Nested-agent guard: the fixed testing/docs sub-streams each spawn a FURTHER
+# nested `claude` session in a NON-namespaced worktree (`<project>-testing`,
+# `<project>-docs`). When Loki itself runs inside another agent session (Claude
+# Code sets CLAUDECODE; the Loki Mode skill, or a user driving the CLI as a
+# background process from an agent), those nested spawns fight over the shared
+# checkout/worktree paths and flood the log -- the reported "N issues in one dir"
+# failure. So default the sub-streams OFF when nested; the core issue work still
+# runs. Explicit LOKI_PARALLEL_TESTING/DOCS=true overrides (opt back in). This
+# does NOT disable the user's own --parallel/--pr issue work, only the auxiliary
+# testing/docs fan-out that is unsafe to nest.
+_loki_nested_agent=false
+if [ -n "${CLAUDECODE:-}" ] || [ -n "${LOKI_NESTED_AGENT:-}" ]; then
+    _loki_nested_agent=true
+fi
+if [ "$_loki_nested_agent" = "true" ]; then
+    PARALLEL_TESTING=${LOKI_PARALLEL_TESTING:-false}
+    PARALLEL_DOCS=${LOKI_PARALLEL_DOCS:-false}
+else
+    PARALLEL_TESTING=${LOKI_PARALLEL_TESTING:-true}
+    PARALLEL_DOCS=${LOKI_PARALLEL_DOCS:-true}
+fi
 
 # Dynamic resource-aware session concurrency (Release 3, slice 3).
 # DEFAULT OFF: when LOKI_DYNAMIC_CONCURRENCY is unset, effective_session_cap()
@@ -4423,6 +4442,7 @@ process_pending_merges() {
     local failed=0
 
     for signal_file in "$signals_dir"/MERGE_REQUESTED_*; do
+        case "$signal_file" in *.ack) continue ;; esac
         [ -f "$signal_file" ] || continue
         local stream_name
         stream_name=$(basename "$signal_file" | sed 's/MERGE_REQUESTED_//')
@@ -4465,12 +4485,28 @@ check_merge_queue() {
     fi
 
     for signal in "$signals_dir"/MERGE_REQUESTED_*; do
+        # Skip our own acknowledgement markers (*.ack) so they are not treated
+        # as signals themselves.
+        case "$signal" in *.ack) continue ;; esac
         if [ -f "$signal" ]; then
             local feature=$(basename "$signal" | sed 's/MERGE_REQUESTED_//')
-            log_info "Merge requested: $feature"
 
             if [ "$AUTO_MERGE" = "true" ]; then
+                # Auto-merge consumes the signal (merge_feature rm's it), so the
+                # log line fires exactly once per completed feature.
+                log_info "Merge requested: $feature"
                 merge_feature "$feature"
+            else
+                # Auto-merge is OFF (e.g. `--pr` without `--ship`): the PR is left
+                # for a human to merge, so the signal is INTENTIONALLY not consumed.
+                # Log ONCE (guarded by a sibling .ack marker) instead of re-logging
+                # the same "Merge requested" line every orchestrator pass -- that
+                # re-log was a 90-minute "looks stuck" spam while real work was
+                # already done. The signal itself is preserved untouched.
+                if [ ! -f "${signal}.ack" ]; then
+                    log_info "Merge requested: $feature (PR ready; auto-merge off -- merge the PR, or use --ship to auto-merge)"
+                    : > "${signal}.ack" 2>/dev/null || true
+                fi
             fi
         fi
     done
@@ -4585,8 +4621,9 @@ merge_feature() {
         fi
     fi
 
-    # Remove signal
-    rm -f "$TARGET_DIR/.loki/signals/MERGE_REQUESTED_$feature"
+    # Remove signal (and its log-once .ack marker, if any)
+    rm -f "$TARGET_DIR/.loki/signals/MERGE_REQUESTED_$feature" \
+          "$TARGET_DIR/.loki/signals/MERGE_REQUESTED_$feature.ack"
 
     # Remove worktree
     remove_worktree "feature-$clean_feature"
