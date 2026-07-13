@@ -5,6 +5,74 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.129.0
+
+### Added: structured `--json-schema` output across the review + completion trust paths
+
+Adopted Claude Code's native `--json-schema` structured output (verified against CLI
+v2.1.207) for the verdict paths that previously parsed the model's free text or
+prose-wrapped JSON. Each reviewer now emits schema-forced JSON that an adapter
+re-materializes into the exact legacy text the downstream consumers already parse, so
+every gate decision, mergeability score, and existing test stays byte-identical. This
+removes a class of fragility where a markdown-wrapped or malformed verdict could be
+mis-read.
+
+- **Code-review verdict** (`autonomy/run.sh` `_dispatch_reviewer`, TS
+  `loki-ts/src/runner/quality_gates.ts` `claudeReviewer`): both routes emit
+  `--json-schema` and re-materialize `VERDICT: X\nFINDINGS: ...`. New
+  `loki-ts/data/code-review-schema.json`, `autonomy/lib/cr-rematerialize.py`.
+- **Council-v2 reviewer** (`autonomy/council-v2.sh`): structured verdict with the
+  sed-carve retained as the fail-closed fallback. New
+  `loki-ts/data/council-v2-schema.json`.
+- **Done-recognition gate** (`autonomy/lib/done-recognition.sh`): structured verdict so
+  the requirements array is always valid JSON. New
+  `loki-ts/data/done-recognition-schema.json`.
+
+All adoptions are claude-provider-only (codex/cline/aider keep their text calls),
+flag-gated on `loki_claude_flag_supported "--json-schema"` (old CLIs fall through to the
+prior text path), and opt-out with `LOKI_REVIEW_JSON_SCHEMA=off`. Every failure mode
+(rc!=0, empty, malformed JSON, missing/invalid verdict, wrong stop_reason) falls closed
+to the pre-existing safe direction (blocking / REJECT / inconclusive), never a default
+PASS. A cross-field guard forces a FAIL verdict whenever any finding is Critical/High,
+so a self-contradictory PASS+Critical can never be waved through non-blocking.
+
+Note: `--json-schema` takes the schema as INLINE content, not a file path (a path is
+rejected by the CLI).
+
+### Fixed: council structured dispatch was silently non-functional
+
+The council voter dispatch passed a file PATH to `claude --json-schema` on both routes,
+which the CLI rejects (`Unrecognized token '/'`), so every structured council dispatch
+failed and fell back to the heuristic text path. Now passes the schema content inline on
+both routes, with a regression guard that asserts content-not-path.
+
+### Fixed: `node --test` detection on Node 20+/26
+
+Node 20+ made the human "spec" reporter the default for `node --test` (Node 26 emits it
+even under output capture), whose `i pass N` / check-mark lines the tests-gate count
+parser and zero-tests detector do not match (they expect TAP `# pass N` / `ok N -`).
+Both copies of the config-less fallback (`autonomy/run.sh`, `autonomy/verify.sh`) now
+force `--test-reporter=tap` for a deterministic, version-independent format. TAP has been
+a stable built-in reporter since Node 18; no behavior change on older Node.
+
+### Fixed: verify tests-gate false BLOCKED when `timeout` is absent, and unittest zero-discovery
+
+The `loki verify` tests gate wrapped every test-runner invocation in a bare `timeout`,
+which exits 127 ("command not found") on a system without GNU `timeout`/`gtimeout` (bare
+macOS), and that was misread as a test failure -> spurious BLOCKED verdict. It now
+resolves a `timeout`/`gtimeout` prefix once and degrades to running without a wall-clock
+cap when neither is present. Separately, `python3 -m unittest` on a pytest-style suite of
+bare `def test_*` functions discovers zero `TestCase` tests and exits 5; that is now
+routed through the zero-tests guard as inconclusive (applicable-but-ran-no-tests) rather
+than fail.
+
+### Fixed: PRD-reuse mis-flagged by Loki's own session artifacts
+
+`compute_codebase_signature` counted `HANDOFF.md` / `USAGE.md` (written and committed to
+the repo root by the session-end completion path) as a codebase change, so a subsequent
+PRD-reuse check saw a spurious "codebase changed" and flipped reuse to update, suppressing
+the reuse disclosure. Those self-generated artifacts are now excluded from the signature.
+
 ## v7.128.2
 
 ### Fixed: cockpit fills the terminal + honest fleet (no stale-run zombies)
