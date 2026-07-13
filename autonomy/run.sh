@@ -10340,8 +10340,30 @@ auto_generate_docs_if_needed() {
     # Synchronous so docs exist before the gate scores. Provider-agnostic:
     # 'loki docs generate' picks the run's provider and falls back to
     # template-based docs when no provider CLI is available.
-    "$loki_bin" docs generate "$project_dir" >/dev/null 2>&1 || \
-        log_warn "Auto-documentation: generation did not complete (gate will score on what exists)"
+    #
+    # BOUNDED: 'loki docs generate' spawns a provider (claude) call that can hang
+    # with no cap. This runs AFTER completion, before the detached --pr push/PR
+    # step, so a hang here silently blocks the whole PR from ever being created
+    # (observed: a verified build stuck ~55 min in this step, work committed but
+    # never pushed). Wrap it in a timeout; docs are non-gating, so on timeout we
+    # warn and continue to the gate (which scores whatever docs exist).
+    local _doc_to="${LOKI_DOCS_TIMEOUT:-${LOKI_GATE_TIMEOUT:-300}}"
+    local _doc_cmd=()
+    if command -v gtimeout >/dev/null 2>&1; then
+        _doc_cmd=(gtimeout "${_doc_to}s")
+    elif command -v timeout >/dev/null 2>&1; then
+        _doc_cmd=(timeout "${_doc_to}s")
+    fi
+    if "${_doc_cmd[@]}" "$loki_bin" docs generate "$project_dir" >/dev/null 2>&1; then
+        :
+    else
+        local _doc_rc=$?
+        if [ "$_doc_rc" -eq 124 ]; then
+            log_warn "Auto-documentation: timed out after ${_doc_to}s (gate will score on what exists); continuing"
+        else
+            log_warn "Auto-documentation: generation did not complete (gate will score on what exists)"
+        fi
+    fi
 }
 
 # ============================================================================
