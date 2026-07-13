@@ -87,6 +87,25 @@ grep -q 'hasBlocking) verdict = "FAIL"' "$QG" \
   && ok "quality_gates.ts rematerializeCodeReview has the T1 force-FAIL guard (parity)" \
   || bad "quality_gates.ts missing the T1 force-FAIL guard (route divergence on fake-green)"
 
+# --- v8.x: council-v2 structured verdict (--json-schema, content not path) -----
+C2="$REPO_ROOT/autonomy/council-v2.sh"
+C2SCHEMA="$REPO_ROOT/loki-ts/data/council-v2-schema.json"
+grep -q 'loki_claude_flag_supported "--json-schema"' "$C2" \
+  && grep -q -- '--json-schema "\$_c2_schema_content"' "$C2" \
+  && grep -q 'LOKI_REVIEW_JSON_SCHEMA' "$C2" \
+  && ok "council-v2.sh adds gated --json-schema with CONTENT (not a path) + opt-out" \
+  || bad "council-v2.sh missing gated --json-schema content-wiring"
+if grep -Eq -- '--json-schema "\$_c2_schema"( |$)' "$C2"; then
+  bad "council-v2.sh passes a PATH to --json-schema (CLI rejects it -> structured dead)"
+else
+  ok "council-v2.sh does not pass a bare schema PATH to --json-schema"
+fi
+if [ -f "$C2SCHEMA" ] && $PY -c "import json,sys; d=json.load(open(sys.argv[1])); assert d['properties']['verdict']['enum']==['APPROVE','REJECT']" "$C2SCHEMA" 2>/dev/null; then
+  ok "council-v2-schema.json valid + APPROVE/REJECT verdict enum"
+else
+  bad "council-v2-schema.json missing/invalid or wrong contract"
+fi
+
 # --- syntax ------------------------------------------------------------------
 bash -n "$RUN" && ok "autonomy/run.sh passes bash -n" || bad "run.sh syntax error"
 bash -n "$CLAUDE_SH" && ok "providers/claude.sh passes bash -n" || bad "claude.sh syntax error"
