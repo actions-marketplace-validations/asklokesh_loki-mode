@@ -8057,6 +8057,16 @@ fi
 INNER_SCRIPT_EOF
         chmod +x "$run_script"
 
+        # Propagate the nested-agent signal into the detached run. CLAUDECODE (set
+        # by Claude Code / the Loki Mode skill) is NOT in the curated env list the
+        # inner script inherits, so run.sh's nested guard would never see it once
+        # detached. Forward it as LOKI_NESTED_AGENT (which run.sh honors) so the
+        # testing/docs worktree sub-streams stay OFF when nested even after the
+        # nohup fork. Already-set LOKI_NESTED_AGENT wins.
+        local _loki_nested_pass="${LOKI_NESTED_AGENT:-}"
+        if [ -z "$_loki_nested_pass" ] && [ -n "${CLAUDECODE:-}" ]; then
+            _loki_nested_pass=1
+        fi
         # Pass all variables safely via environment
         LOKI_RUN_DIR="$(pwd)" \
         LOKI_CMD="$loki_cmd" \
@@ -8069,6 +8079,7 @@ INNER_SCRIPT_EOF
         LOKI_AUTO_MERGE="$auto_merge" \
         LOKI_PR_TITLE="${title:-Implementation for issue ${issue_ref}}" \
         LOKI_ISSUE_NUMBER="${number:-}" \
+        LOKI_NESTED_AGENT="$_loki_nested_pass" \
         nohup bash "$run_script" > "$log_file" 2>&1 &
 
         local bg_pid=$!
