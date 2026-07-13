@@ -5,6 +5,32 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.129.1
+
+### Fixed: reliable parallel work across multiple GitHub issues
+
+Addresses a client report of running several issues concurrently from one checkout.
+
+- **Merge-queue log spam:** `check_merge_queue` re-logged unconsumed
+  `MERGE_REQUESTED` signals on every orchestrator pass when auto-merge was off
+  (`--pr` without `--ship`), producing a long "Merge requested: testing/docs"
+  loop that looked stuck while real work completed. It now logs once per feature
+  and preserves the signal (the PR is left for a human to merge).
+- **Nested-agent fan-out:** the fixed `testing`/`docs` worktree sub-streams each
+  spawn a further nested `claude` session; when Loki runs inside another agent
+  session (Claude Code sets `CLAUDECODE`, or the Loki Mode skill) those collide
+  on the shared checkout. They now default OFF when nested (opt back in with
+  `LOKI_PARALLEL_TESTING`/`LOKI_PARALLEL_DOCS=true`). Non-nested behavior unchanged.
+- **Shared-checkout concurrency guard:** running several `loki start` in one
+  checkout with a shared `.loki/` collided on non-namespaced worktrees/branches
+  (issue-mode namespaces pids per session, so the old lock never tripped for
+  different issues). `loki start` now fails fast with the safe per-issue command
+  when a live sibling shares the default `.loki/`; runs that isolate their own
+  `LOKI_DIR` are exempt. Escape hatch: `LOKI_ALLOW_SHARED_CHECKOUT=1`.
+
+Docs: `skills/github-integration.md` documents the reliable N-issues-at-once
+pattern (isolated git worktree + `LOKI_DIR` per issue) and in-session skill usage.
+
 ## v7.129.0
 
 ### Added: structured `--json-schema` output across the review + completion trust paths
