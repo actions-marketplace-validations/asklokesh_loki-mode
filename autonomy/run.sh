@@ -5911,8 +5911,15 @@ compute_codebase_signature() {
           # truncating the output and misaligning the path<->hash pairing. Drop
           # them; their removal from the list is itself the detected change.
           gitc_deleted=$(git ls-files --deleted -z 2>/dev/null | tr '\0' '\n')
+          # Exclude .loki/ AND Loki's own session-end artifacts (HANDOFF.md,
+          # USAGE.md) written+committed to the repo ROOT by the completion path
+          # (LOKI_HANDOFF / commit_session_changes, both default-on). Those are
+          # runtime OUTPUT of the session, not user codebase; counting them would
+          # make the next PRD-reuse check see a spurious "codebase changed" and
+          # flip reuse->update (the signature is persisted per-iteration BEFORE
+          # the after-loop HANDOFF write, so it can never account for them).
           gitc_paths=$( { git ls-files -z 2>/dev/null; git ls-files --others --exclude-standard -z 2>/dev/null; } \
-              | tr '\0' '\n' | grep -vE '(^|/)\.loki(/|$)' | LC_ALL=C sort -u )
+              | tr '\0' '\n' | grep -vE '(^|/)\.loki(/|$)|^HANDOFF\.md$|^USAGE\.md$' | LC_ALL=C sort -u )
           if [ -n "$gitc_deleted" ]; then
               gitc_paths=$(printf '%s\n' "$gitc_paths" | grep -vxF -f <(printf '%s\n' "$gitc_deleted") || true)
           fi
@@ -5933,6 +5940,7 @@ compute_codebase_signature() {
                          -o -name build -o -name .next -o -name target -o -name vendor \
                          -o -name __pycache__ -o -name .venv -o -name venv \) -prune -o \
               -type f -print 2>/dev/null \
+              | grep -vE '^\./(HANDOFF|USAGE)\.md$' \
               | while IFS= read -r f; do
                     local sz
                     sz=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f" 2>/dev/null || echo 0)
@@ -11011,8 +11019,11 @@ _dispatch_reviewer() {
             # an empty file -> NO_VERDICT -> inconclusive block). NEVER a PASS on a
             # miss. --json-schema takes INLINE content, not a path (CLI 2.1.207
             # rejects a path). Opt out with LOKI_REVIEW_JSON_SCHEMA=off.
-            local _cr_schema="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/loki-ts/data/code-review-schema.json"
-            local _cr_remat="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/cr-rematerialize.py"
+            local _cr_root _cr_here _cr_schema _cr_remat
+            _cr_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+            _cr_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+            _cr_schema="${_cr_root}/loki-ts/data/code-review-schema.json"
+            _cr_remat="${_cr_here}/lib/cr-rematerialize.py"
             if [ "${LOKI_REVIEW_JSON_SCHEMA:-on}" != "off" ] \
                && [ -f "$_cr_schema" ] && [ -f "$_cr_remat" ] \
                && type loki_claude_flag_supported >/dev/null 2>&1 \
