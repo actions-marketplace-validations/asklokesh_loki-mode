@@ -647,3 +647,46 @@ bridge. The `cache_control` extension (B.1.2) is written once in `judgeJson` and
 inherits it. This is why "judges before the loop" is not just risk-ordering -- it amortizes one TS change
 (the cached judge) across ~100 call sites before the hard Agent-SDK work begins.
 
+
+## SPIKE RESULTS (2026-07-13, gating Phase 4 / EPIC D+G) - all PASS, decision = GO
+
+Verified live with `@anthropic-ai/claude-agent-sdk@0.3.208` (LATEST) under Bun 1.3.13,
+in an isolated scratch install (no production code touched):
+
+- **Spike A (Bun can spawn the Agent SDK): PASS.** `bun add` resolved the platform-gated
+  optionalDependencies and installed `@anthropic-ai/claude-agent-sdk-darwin-arm64`, which
+  SHIPS the `claude` binary at `node_modules/.../claude-agent-sdk-darwin-arm64/claude`
+  (bundled as an npm dep - no separate CLI install, no interactive login, no version drift;
+  the enterprise/SaaS win holds). `bun run` imports `query()` as a function; full export
+  surface present: query, tool, createSdkMcpServer, forkSession, getSessionMessages,
+  resolveSettings, HOOK_EVENTS, DirectConnectTransport, InMemorySessionStore, etc.
+- **Spike B (raw-SDK structured output): ALREADY PROVEN** by the shipped judge sites
+  (Epics A+B, council-approved). `messages.create` + `output_config.format` works end to end.
+- **Spike C (Agent SDK option fields exist): PASS.** All Phase-4 flag-mapping fields present
+  in sdk.d.ts@0.3.208: maxBudgetUsd (L1644 - the `--max-budget-usd` analog the plan flagged
+  uncertain; CONFIRMED), fallbackModel (L1436), effort, model, systemPrompt, settingSources,
+  includePartialMessages (L1592), permissionMode, sessionId, resume, forkSession, maxTurns.
+  No capability loss vs the bash `claude ... stream-json` invocation.
+
+**API shape confirmed for the build:**
+- `query({ prompt, options }): Query extends AsyncGenerator<SDKMessage>` (L2231/L2528).
+- Message types to consume in `sdk_stream_parser.ts`: SDKAssistantMessage (L2787),
+  SDKPartialAssistantMessage (L399), SDKResultMessage (L407), SDKUserMessage,
+  SDKAssistantMessageError (L2823: authentication_failed | rate_limit | overloaded | ...).
+  This is a TYPED async iterator - far cleaner than parsing raw stream-json TEXT through the
+  ~350-line embedded Python parser. The parser's job becomes: iterate typed events -> write the
+  same `.loki/state/agents.json`, `.loki/events.jsonl` hook events, `.loki/metrics/result-cost-<iter>.json`.
+
+**Build anchors (both routes):**
+- bash main loop: `autonomy/run.sh:17465-17475` (`claude "${_loki_claude_argv[@]}" -p "$prompt"
+  --output-format stream-json --verbose | tee | python3 parser`). argv build ~17298-17430.
+- TS main loop: `loki-ts/src/runner/providers.ts:274-285` (claudeProvider argv, `call.mainLoop`
+  flag; transport `shellRun(argv)` ~L305). RARV outer loop: `loki-ts/src/runner/autonomous.ts`.
+- Phase 4 = replace the mainLoop `shellRun(["claude", ...stream-json...])` with `query()` +
+  `sdk_stream_parser.ts`, gated `LOKI_SDK_LOOP=1`, bash arm intact. KEEP build_prompt (parity-lock),
+  all 8 gates, the council, `.loki/` state machine. RARV-C is NOT an SDK primitive - the grader
+  loop stays. Route `bin/loki start` to Bun when `LOKI_SDK_LOOP=1`.
+
+DECISION: GO. Phase 4 is feasible under Bun with zero capability loss. It remains the highest-risk
+site (agentic tool loop + streaming) and stays LAST, done behind `LOKI_SDK_LOOP=1` with the bash
+`claude` main loop live as the default until E2E-proven on real apps (simple + full-stack).
