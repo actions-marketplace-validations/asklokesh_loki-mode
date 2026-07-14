@@ -59,6 +59,24 @@ else
     bad "SDK branch is gated behind the claude-binary check (defeats the no-binary win)"
 fi
 
+# ---- 2b. council-v2 wiring (Phase 2 first cluster, same pattern) ----
+C2="$REPO_ROOT/autonomy/council-v2.sh"
+grep -q 'LOKI_SDK_COUNCIL_V2' "$C2" \
+    && grep -q 'internal sdk-judge' "$C2" \
+    && ok "council-v2.sh wires LOKI_SDK_COUNCIL_V2 -> sdk-judge" \
+    || bad "council-v2.sh missing the SDK branch wiring"
+grep -q 'LOKI_SDK_COUNCIL_V2:-0' "$C2" \
+    && ok "council-v2 SDK branch is opt-in (default 0)" \
+    || bad "council-v2 SDK branch not default-off"
+c2_sdk=$(grep -n 'LOKI_SDK_COUNCIL_V2:-0' "$C2" | head -1 | cut -d: -f1)
+c2_claude=$(grep -n 'command -v claude' "$C2" | head -1 | cut -d: -f1)
+if [ -n "$c2_sdk" ] && [ -n "$c2_claude" ] && [ "$c2_sdk" -lt "$c2_claude" ]; then
+    ok "council-v2 SDK branch runs BEFORE the claude-binary guard (binary-free)"
+else
+    bad "council-v2 SDK branch gated behind the claude-binary check"
+fi
+bash -n "$C2" && ok "council-v2.sh passes bash -n" || bad "council-v2.sh syntax error"
+
 # ---- 3. syntax ----
 bash -n "$DR" && ok "done-recognition.sh passes bash -n" || bad "done-recognition.sh syntax error"
 
