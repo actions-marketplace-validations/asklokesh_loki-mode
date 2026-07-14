@@ -70,7 +70,18 @@ _loki_done_recog_invoke() {
             if [ -n "$_sdk_prompt_f" ]; then
                 printf '%s' "$prompt" > "$_sdk_prompt_f"
                 _sdk_rc=0
-                _sdk_out="$("$_sdk_loki" internal sdk-judge \
+                # OS-level ceiling around the whole bun subprocess (council review:
+                # --timeout-ms only bounds the in-process HTTP call; a bun cold-start
+                # / DNS stall could hang the command substitution otherwise). Mirror
+                # the claude path's `timeout` wrap, with a small buffer over the
+                # in-process budget. Degrade to no-cap only if neither timeout binary
+                # is present.
+                local _sdk_to_s=$(( ${LOKI_DONE_RECOG_TIMEOUT:-180} + 15 ))
+                local _sdk_wrap
+                if command -v timeout >/dev/null 2>&1; then _sdk_wrap="timeout ${_sdk_to_s}"
+                elif command -v gtimeout >/dev/null 2>&1; then _sdk_wrap="gtimeout ${_sdk_to_s}"
+                else _sdk_wrap=""; fi
+                _sdk_out="$($_sdk_wrap "$_sdk_loki" internal sdk-judge \
                     --prompt-file "$_sdk_prompt_f" --schema-file "$_sdk_schema" \
                     --model "${LOKI_SDK_JUDGE_MODEL:-claude-haiku-4-5}" --effort low \
                     --timeout-ms "$(( ${LOKI_DONE_RECOG_TIMEOUT:-180} * 1000 ))" 2>/dev/null)" || _sdk_rc=$?

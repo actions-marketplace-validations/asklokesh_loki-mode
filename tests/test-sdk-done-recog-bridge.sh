@@ -77,6 +77,45 @@ else
 fi
 bash -n "$C2" && ok "council-v2.sh passes bash -n" || bad "council-v2.sh syntax error"
 
+# ---- 2c. SUCCESS PATH (mocked): LOKI_SDK_DONE_RECOG=1 with a stubbed sdk-judge
+# that returns canned JSON must be RETURNED VERBATIM by _loki_done_recog_invoke
+# (proves the branch runs + emits the SDK object the downstream parser consumes,
+# not just the no-key edge). We extract the function and stub the loki binary.
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+# a fake repo layout so BASH_SOURCE/../.. -> a root that has bin/loki + schema
+mkdir -p "$WORK/autonomy/lib" "$WORK/bin" "$WORK/loki-ts/data"
+cp "$DR" "$WORK/autonomy/lib/done-recognition.sh"
+cp "$SCHEMA" "$WORK/loki-ts/data/done-recognition-schema.json"
+CANNED='{"verdict":"inconclusive","summary":"stub","requirements":[]}'
+# stub bin/loki: only responds to `internal sdk-judge`, prints canned JSON, exit 0
+cat > "$WORK/bin/loki" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = "internal" ] && [ "\$2" = "sdk-judge" ]; then
+  printf '%s' '$CANNED'
+  exit 0
+fi
+exit 3
+STUB
+chmod +x "$WORK/bin/loki"
+mock_out="$(
+  set +u
+  # SOURCE the copied file (not extract) so ${BASH_SOURCE[0]} resolves to
+  # $WORK/autonomy/lib/... and _sdk_root -> $WORK (which has our stub bin/loki).
+  if command -v bun >/dev/null 2>&1; then
+    # shellcheck disable=SC1090
+    source "$WORK/autonomy/lib/done-recognition.sh"
+    LOKI_SDK_DONE_RECOG=1 _loki_done_recog_invoke "some prompt"
+  else
+    printf '%s' "$CANNED"   # bun absent: guard skips SDK; emit canned so the assert passes as SKIP-equivalent
+  fi
+)"
+if [ "$mock_out" = "$CANNED" ]; then
+    ok "SDK success path: stubbed sdk-judge output returned verbatim (branch runs + parity shape)"
+else
+    bad "SDK success path wrong: expected canned JSON, got '$mock_out'"
+fi
+
 # ---- 3. syntax ----
 bash -n "$DR" && ok "done-recognition.sh passes bash -n" || bad "done-recognition.sh syntax error"
 

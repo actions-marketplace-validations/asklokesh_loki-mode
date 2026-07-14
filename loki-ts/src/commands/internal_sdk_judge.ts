@@ -45,8 +45,16 @@ export async function runInternalSdkJudge(args: string[]): Promise<number> {
   const model = argVal(args, "--model") ?? "claude-haiku-4-5";
   const effortRaw = argVal(args, "--effort");
   const effort = effortRaw && VALID_EFFORT.has(effortRaw) ? (effortRaw as Effort) : undefined;
-  const maxTokens = Number(argVal(args, "--max-tokens")) || undefined;
-  const timeoutMs = Number(argVal(args, "--timeout-ms")) || undefined;
+  // Parse numeric args so an EXPLICIT positive value is honored and only an
+  // absent/invalid/non-positive value falls back to the sdk_invoker default
+  // (a bare `|| undefined` treated `--timeout-ms 0` as unset -- council review).
+  const posInt = (v: string | undefined): number | undefined => {
+    if (v === undefined) return undefined;
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  };
+  const maxTokens = posInt(argVal(args, "--max-tokens"));
+  const timeoutMs = posInt(argVal(args, "--timeout-ms"));
 
   const result = await judgeJson({ prompt, schema, model, effort, maxTokens, timeoutMs });
   if (result === null) {

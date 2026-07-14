@@ -40,7 +40,11 @@ function client(): Anthropic | null {
     return null;
   }
   try {
-    _client = new Anthropic({ apiKey: key });
+    // Bound retries (default is 2): a slow judge site must not stack
+    // timeout-retries under the OS-level ceiling the bash caller wraps us in.
+    // One retry tolerates a transient blip without letting worst-case latency
+    // balloon (council review, security-arch lens).
+    _client = new Anthropic({ apiKey: key, maxRetries: 1 });
   } catch {
     _client = null;
   }
