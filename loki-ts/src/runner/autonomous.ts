@@ -49,7 +49,12 @@ type StateMod = {
 };
 
 type PromptMod = {
-  buildPrompt(ctx: RunnerContext): Promise<string>;
+  // buildPromptForRunner is the RunnerContext-shaped entry point: it adapts the
+  // loop context into BuildPromptOpts (setting ctx.env = process.env, which the
+  // raw buildPrompt(opts) requires). Calling the raw buildPrompt with a
+  // RunnerContext instead threw `ctx.env is undefined` and silently fell back to
+  // a stub prompt on EVERY iteration -- the Bun start route was never functional.
+  buildPromptForRunner(ctx: RunnerContext): Promise<string>;
 };
 
 type CouncilMod = {
@@ -462,7 +467,7 @@ async function runAutonomousCore(
     // failure via provider invocation logs.
     let prompt: string;
     try {
-      prompt = await promptModule.buildPrompt(ctx);
+      prompt = await promptModule.buildPromptForRunner(ctx);
     } catch (err) {
       log(`[runner] buildPrompt threw: ${(err as Error).message} -- using stub`);
       prompt = `[stub-prompt-fallback iteration=${ctx.iterationCount} retry=${ctx.retryCount}]`;
