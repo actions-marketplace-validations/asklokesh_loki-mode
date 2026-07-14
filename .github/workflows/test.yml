@@ -185,6 +185,20 @@ jobs:
         working-directory: loki-ts
         run: bun test
 
+      - name: Build loki-ts bundle (for the SDK bridge tests + bin/loki)
+        working-directory: loki-ts
+        run: bun run build
+
+      # v8: the raw-SDK judge/text bridges. With bun + the built bundle present,
+      # these run the wiring / opt-in / binary-free-ordering / mocked-success
+      # assertions FOR REAL (they self-skip only when bun is absent). No API key
+      # is set, so every path is exercised fail-closed -- no billable call.
+      - name: Run v8 SDK bridge tests (fail-closed, no ANTHROPIC_API_KEY)
+        run: |
+          bash tests/test-sdk-done-recog-bridge.sh
+          bash tests/test-sdk-text-bridge.sh
+          bash tests/test-sdk-council-vote.sh
+
       - name: Run CLI tests via bash route (LOKI_LEGACY_BASH=1)
         env:
           LOKI_LEGACY_BASH: "1"
