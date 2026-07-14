@@ -5,6 +5,68 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v8.0.0
+
+### The Anthropic SDK transformation (MAJOR)
+
+v8 replaces Loki's bash `claude -p` wrapper with the Anthropic SDKs. Every model
+call the engine makes can now run through a library call instead of spawning the
+`claude` CLI: the one-shot JUDGE/TEXT sites on the raw `@anthropic-ai/sdk` (pure
+HTTPS, bundled into the shipped bundle, zero extra install), and the agentic RARV
+MAIN LOOP on the `@anthropic-ai/claude-agent-sdk` `query()`. This is the
+enterprise/SaaS deploy win: a container or SaaS worker can run the SDK route with
+just an API key, no interactive `claude` login and no user-managed CLI version
+drift.
+
+Everything below is OPT-IN and DEFAULT-OFF. With no `LOKI_SDK_*` flag set, the
+engine behaves byte-identically to v7: the bash `claude` path runs, and none of
+the SDK code loads. Every SDK path is fail-closed: any miss (flag off, no key,
+transport error, refusal, malformed output, timeout, empty) falls through to the
+existing `claude`/deterministic path. A quality gate or completion council can
+never fake-PASS or fake-APPROVE via an SDK path, and a failed iteration is never
+counted as success.
+
+**Judge / text call-sites on the raw SDK** (each behind its own flag):
+- done-recognition (`LOKI_SDK_DONE_RECOG=1`), council-v2 (`LOKI_SDK_COUNCIL_V2=1`),
+  code-review reviewer (`LOKI_SDK_CODE_REVIEW=1`), completion-council member +
+  contrarian VOTE (`LOKI_SDK_COUNCIL_VOTE=1`), voter-agents council
+  (`LOKI_SDK_VOTER_AGENTS=1`) - all schema-constrained via the shared
+  `internal sdk-judge` bridge.
+- grill and prd-enrich (`LOKI_SDK_GRILL=1`, `LOKI_SDK_PRD_ENRICH=1`) - free-form
+  text via the `internal sdk-text` bridge.
+- Every branch runs BEFORE its `claude`-binary guard (binary-free deploy), keeps
+  the downstream parser/verdict shape byte-compatible, and is mirrored on both
+  the bash and Bun/TypeScript routes.
+
+**RARV main loop on the Agent SDK** (`LOKI_SDK_LOOP=1`):
+- `loki start` on the Bun route drives the agentic loop with `query()` instead of
+  spawning `claude ... --output-format stream-json`. A new stream parser
+  (`sdk_stream_parser`) consumes the typed SDK message stream and writes the SAME
+  `.loki` state the bash Python parser wrote (agents.json, queue/in-progress.json,
+  events.jsonl hook records, per-iteration result-cost) so the dashboard,
+  efficiency writer, event bus, and council are unchanged. `bin/loki` routes
+  `start` to Bun only when the flag is truthy; the bash `claude` main loop stays
+  the default.
+
+**Packaging / distribution:**
+- The raw `@anthropic-ai/sdk` is statically bundled into `loki-ts/dist/loki.js`,
+  so the npm tarball and Docker image ship the judge SDK route self-contained.
+- The Agent SDK (a dynamic import + a per-platform native binary) is declared as
+  an `optionalDependency` so `npm install` resolves it, and the Docker image
+  installs it into `loki-ts/`, making the `LOKI_SDK_LOOP` path work in both
+  shipped channels.
+
+**Env knobs:** `LOKI_SDK_DONE_RECOG`, `LOKI_SDK_COUNCIL_V2`, `LOKI_SDK_CODE_REVIEW`,
+`LOKI_SDK_COUNCIL_VOTE`, `LOKI_SDK_VOTER_AGENTS`, `LOKI_SDK_GRILL`,
+`LOKI_SDK_PRD_ENRICH`, `LOKI_SDK_LOOP` (all default off);
+`LOKI_SDK_COUNCIL_MODEL`, `LOKI_SDK_REVIEW_MODEL`, `LOKI_SDK_JUDGE_MODEL`,
+`LOKI_SDK_REVIEW_TIMEOUT`, `LOKI_SDK_GRILL_MODEL`, `LOKI_SDK_PRD_ENRICH_MODEL`.
+
+**Validation:** every SDK path was council-reviewed to unanimous approval (per
+cluster and a final whole-arc pass), the SDK loop was E2E-verified on the live API
+building real apps (a one-file utility, a multi-file CLI, and a full-stack Flask
+REST API whose 6 tests pass), and the full test suites stay green on both routes.
+
 ## v7.129.3
 
 ### Fixed: code_review gate on oversized / tracked-but-gitignored diffs
