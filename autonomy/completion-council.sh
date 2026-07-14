@@ -2353,6 +2353,18 @@ ISSUES: CRITICAL:description (optional, one per line per issue)"
                         if [ "$_cv_rc" -eq 0 ] && [ -n "$_cv_out" ]; then
                             verdict="$_cv_out"
                             _provider_rc=0
+                        elif [ "$_cv_rc" -eq 124 ] || [ "$_cv_rc" -eq 137 ] || [ "$_cv_rc" -eq 143 ]; then
+                            # TRUST-CORE SAFE DEFAULT (council review, bash-F4 parity):
+                            # an SDK-subprocess TIMEOUT must propagate to _provider_rc
+                            # so the post-case guard forces a conservative REJECT.
+                            # Without this, a no-claude-binary deploy would fall to
+                            # council_heuristic_review (which can APPROVE on benign
+                            # evidence) on a hung/rate-limited endpoint -- correlated
+                            # member timeouts could then fake-APPROVE the council.
+                            # Only set on a genuine timeout kill; a normal SDK miss
+                            # (rc 1: no key / transport / refusal) still falls through
+                            # to the claude arm exactly as before.
+                            _provider_rc=$_cv_rc
                         fi
                     fi
                 fi

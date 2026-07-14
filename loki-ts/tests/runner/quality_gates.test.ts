@@ -1680,6 +1680,46 @@ describe("runCodeReview reviewer-dispatch honesty (B5)", () => {
     }
   });
 
+  it("v8: resolves claudeReviewer (available) when claude is absent but LOKI_SDK_CODE_REVIEW=1 + a key exists", async () => {
+    // The no-binary deploy: claude off PATH, SDK route on, key present -> the
+    // reviewer IS available because claudeReviewer's own SDK branch handles it
+    // (falls closed to a synthetic blocking FAIL on a miss, never a fake PASS).
+    const prevPath = process.env.PATH;
+    const prevFlag = process.env.LOKI_SDK_CODE_REVIEW;
+    const prevKey = process.env.ANTHROPIC_API_KEY;
+    process.env.PATH = ""; // no claude
+    process.env.LOKI_SDK_CODE_REVIEW = "1";
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test-not-called"; // makes sdkJudgeAvailable() true
+    try {
+      const resolved = await resolveDefaultReviewer();
+      expect(resolved.available).toBe(true);
+      expect(resolved.reviewer).toBe(claudeReviewer);
+    } finally {
+      if (prevPath === undefined) delete process.env.PATH;
+      else process.env.PATH = prevPath;
+      if (prevFlag === undefined) delete process.env.LOKI_SDK_CODE_REVIEW;
+      else process.env.LOKI_SDK_CODE_REVIEW = prevFlag;
+      if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = prevKey;
+    }
+  });
+
+  it("v8: SDK flag OFF + claude absent -> still UNAVAILABLE (no fake availability)", async () => {
+    const prevPath = process.env.PATH;
+    const prevFlag = process.env.LOKI_SDK_CODE_REVIEW;
+    process.env.PATH = "";
+    delete process.env.LOKI_SDK_CODE_REVIEW;
+    try {
+      const resolved = await resolveDefaultReviewer();
+      expect(resolved.available).toBe(false);
+    } finally {
+      if (prevPath === undefined) delete process.env.PATH;
+      else process.env.PATH = prevPath;
+      if (prevFlag === undefined) delete process.env.LOKI_SDK_CODE_REVIEW;
+      else process.env.LOKI_SDK_CODE_REVIEW = prevFlag;
+    }
+  });
+
   it("runCodeReview reports honest UNAVAILABLE (not a PASS) when no reviewer CLI exists", async () => {
     const logged: string[] = [];
     const prevPath = process.env.PATH;

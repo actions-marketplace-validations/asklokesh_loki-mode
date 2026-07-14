@@ -36,14 +36,17 @@ export type TextParams = Omit<JudgeParams, "schema">;
 // Lazy singleton: constructing the client reads ANTHROPIC_API_KEY. Absent key ->
 // we return null from judgeJson rather than throwing, so a missing key degrades
 // to the bash/deterministic fallback exactly like an unsupported CLI flag does.
-let _client: Anthropic | null | undefined;
+// Cache ONLY a successfully-constructed client. We deliberately do NOT cache the
+// no-key/failure state: the key may be injected LATE (enterprise container /
+// SaaS that sets ANTHROPIC_API_KEY after this module loads), and a permanently
+// cached null would keep the SDK route disabled for the whole process. Reading
+// the env and constructing the client are both cheap, so re-probing when we do
+// not yet hold a client costs nothing and is correct under late injection.
+let _client: Anthropic | null = null;
 function client(): Anthropic | null {
-  if (_client !== undefined) return _client;
+  if (_client !== null) return _client;
   const key = process.env["ANTHROPIC_API_KEY"];
-  if (!key) {
-    _client = null;
-    return null;
-  }
+  if (!key) return null;
   try {
     // Bound retries (default is 2): a slow judge site must not stack
     // timeout-retries under the OS-level ceiling the bash caller wraps us in.

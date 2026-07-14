@@ -44,7 +44,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, wri
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { claudeFlagSupported, ensureClaudeHelpCache } from "../providers/claude_flags.ts";
-import { judgeJson } from "./sdk_invoker.ts";
+import { judgeJson, sdkJudgeAvailable } from "./sdk_invoker.ts";
 import { atomicWriteText, withFileLockSync } from "../util/atomic.ts";
 import { REPO_ROOT, lokiDir } from "../util/paths.ts";
 import { commandExists, run } from "../util/shell.ts";
@@ -1442,6 +1442,16 @@ export async function resolveDefaultReviewer(): Promise<{
 }> {
   const claudePath = await commandExists("claude");
   if (claudePath !== null) return { reviewer: claudeReviewer, available: true };
+  // v8 (council review): the raw-SDK reviewer path needs no claude binary, so in
+  // a no-binary deploy with LOKI_SDK_CODE_REVIEW=1 and a reachable SDK, the
+  // claudeReviewer IS available -- its own SDK branch runs and falls closed to a
+  // synthetic blocking FAIL on any miss (never a fake PASS). Without this the
+  // primary Bun route would return unavailableReviewer before that branch is
+  // ever reached, defeating the binary-free win. Bash _dispatch_reviewer has no
+  // equivalent upstream gate, so this is the TS-side parity fix.
+  if (process.env["LOKI_SDK_CODE_REVIEW"] === "1" && sdkJudgeAvailable()) {
+    return { reviewer: claudeReviewer, available: true };
+  }
   return { reviewer: unavailableReviewer, available: false };
 }
 

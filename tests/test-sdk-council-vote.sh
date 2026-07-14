@@ -60,71 +60,96 @@ precond_sdk_aware=$(grep -c 'LOKI_SDK_COUNCIL_VOTE:-0' "$CC")
 # ---- 3. syntax ----
 bash -n "$CC" && ok "completion-council.sh passes bash -n" || bad "completion-council.sh syntax error"
 
-# ---- 4. SUCCESS PATH (mocked): a stubbed sdk-text returning a VOTE line must be
-# captured verbatim into $verdict and parsed as APPROVE by the same VOTE regex
-# the council uses. We exercise the SDK branch in isolation (the branch is
-# self-contained: flag on, stub bin/loki, prompt in scope) via a tiny harness
-# that mirrors the exact branch code path.
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
-mkdir -p "$WORK/autonomy" "$WORK/bin"
-CANNED='VOTE:APPROVE
-REASON: all acceptance criteria verified, tests green'
-cat > "$WORK/bin/loki" <<STUB
-#!/usr/bin/env bash
-if [ "\$1" = "internal" ] && [ "\$2" = "sdk-text" ]; then
-  printf '%s' '$CANNED'
-  exit 0
-fi
-exit 3
-STUB
-chmod +x "$WORK/bin/loki"
+# ---- 4/5/6: REAL-FUNCTION integration tests. Extract the ACTUAL
+# council_member_review via awk brace-counting (the established council-test
+# pattern; the whole file does not source standalone), stub its few deps, and
+# drive it with a stubbed bin/loki and NO claude binary -- so we test the true
+# code path (not a hand-copied branch body). The fake repo root makes
+# BASH_SOURCE/../bin/loki resolve to our stub.
+run_member() {
+    # $1 = stub bin/loki body (bash after the shebang). Prints the function's
+    # verdict output. PROVIDER_NAME=claude, LOKI_SDK_COUNCIL_VOTE=1, NO claude on
+    # PATH (so an SDK miss exercises the no-binary deploy path).
+    local stub_body="$1"
+    local root; root="$(mktemp -d)"
+    mkdir -p "$root/autonomy/lib" "$root/bin"
+    # extract council_member_review verbatim (brace-counting, same as
+    # test-council-contrarian-transcript-fields.sh). BASH_SOURCE inside it must
+    # resolve under $root/autonomy so ../bin/loki -> $root/bin/loki; we write the
+    # extracted fn to $root/autonomy/completion-council.sh and source THAT.
+    awk '
+      /^council_member_review\(\)/ { found=1; depth=0 }
+      found {
+        print
+        for (i=1; i<=length($0); i++) {
+          c = substr($0, i, 1)
+          if (c == "{") depth++
+          else if (c == "}") { depth--; if (depth == 0) exit }
+        }
+      }
+    ' "$CC" > "$root/autonomy/completion-council.sh"
+    { printf '#!/usr/bin/env bash\n'; printf '%s\n' "$stub_body"; } > "$root/bin/loki"
+    chmod +x "$root/bin/loki"
+    local evf="$root/evidence.txt"; printf 'PRD: build X. Tests: pass.\n' > "$evf"
+    local vdir="$root/votes"; mkdir -p "$vdir"
+    (
+      set +u
+      # minimal stubbed deps so the extracted function runs standalone
+      log_error() { :; }; log_warn() { :; }; log_info() { :; }
+      # heuristic must be VISIBLE so we can prove we do NOT reach it on timeout;
+      # if reached it would (wrongly) APPROVE -- the exact bug under test.
+      council_heuristic_review() { printf 'VOTE:APPROVE\nREASON: heuristic benign\n'; }
+      # Simulate a no-claude-binary deploy: keep bun (its own dir) on PATH but
+      # exclude claude's dir. bun and claude live in different dirs; we prepend
+      # bun's dir and the stub, then the system dirs, but NOT claude's dir.
+      local _bun_dir; _bun_dir="$(dirname "$(command -v bun)")"
+      PATH="$root/bin:$_bun_dir:/usr/bin:/bin"
+      export PROVIDER_NAME=claude LOKI_SDK_COUNCIL_VOTE=1 LOKI_BLIND_VALIDATION=false
+      export LOKI_COUNCIL_REVIEW_TIMEOUT=1
+      # shellcheck disable=SC1090
+      source "$root/autonomy/completion-council.sh"
+      council_member_review "m1" "engineer" "$evf" "$vdir" 2>/dev/null
+    )
+    rm -rf "$root"
+}
 
 if command -v bun >/dev/null 2>&1; then
-    mock_out="$(
-      set +u
-      prompt="decide completion"
-      verdict=""
-      _provider_rc=0
-      # exact branch body (mirrors council_member_review SDK path)
-      _cv_loki="$WORK/bin/loki"
-      _cv_pf="$(mktemp)"
-      printf '%s' "$prompt" > "$_cv_pf"
-      _cv_rc=0
-      _cv_out="$("$_cv_loki" internal sdk-text --prompt-file "$_cv_pf" --model claude-haiku-4-5 --effort medium --timeout-ms 600000 2>/dev/null)" || _cv_rc=$?
-      rm -f "$_cv_pf"
-      if [ "$_cv_rc" -eq 0 ] && [ -n "$_cv_out" ]; then verdict="$_cv_out"; _provider_rc=0; fi
-      printf '%s' "$verdict"
-    )"
-    # the council's own VOTE regex (word-bounded, markdown-tolerant)
-    vote_token="$(printf '%s' "$mock_out" \
-        | grep -oE "^[[:space:]]*[*#>]*[[:space:]]*VOTE:[[:space:]]*(APPROVE|REJECT|CANNOT_VALIDATE)" \
-        | grep -oE "APPROVE|REJECT|CANNOT_VALIDATE" | head -1)"
-    if [ "$vote_token" = "APPROVE" ]; then
-        ok "SDK success path: stubbed VOTE text captured verbatim + parsed APPROVE"
+    # 4. SUCCESS: stub returns a VOTE:APPROVE -> the real function must emit it.
+    out4="$(run_member 'if [ "$1" = internal ] && [ "$2" = sdk-text ]; then printf "VOTE:APPROVE\nREASON: all AC verified"; exit 0; fi; exit 3')"
+    printf '%s' "$out4" | grep -qE "VOTE:[[:space:]]*APPROVE" \
+        && ok "real council_member_review: SDK success -> VOTE:APPROVE emitted (verbatim)" \
+        || bad "real fn SDK success wrong: got '$out4'"
+
+    # 5. FAIL-CLOSED (normal miss, rc 1): no claude binary -> falls to heuristic.
+    #    (This is the EXISTING no-provider degraded behavior; benign evidence.)
+    out5="$(run_member 'exit 1')"
+    printf '%s' "$out5" | grep -qE "VOTE:" \
+        && ok "real fn: normal SDK miss (rc1) + no claude -> reaches heuristic fallback (unchanged)" \
+        || bad "real fn rc1 miss produced no verdict: '$out5'"
+
+    # 6. THE BLOCKING BUG (council REJECT fix): an SDK subprocess TIMEOUT (rc 124,
+    #    the code `timeout` returns on kill) with NO claude binary must force a
+    #    conservative REJECT via _provider_rc, NOT fall to the heuristic (which
+    #    would APPROVE). This is the trust-core fake-APPROVE the council caught.
+    #    The stub exits 124 directly (deterministic; equivalent to what the OS
+    #    `timeout` wrap produces on a hung reviewer, without a real 16s wait).
+    out6="$(run_member 'exit 124')"
+    vote6="$(printf '%s' "$out6" | grep -oE "VOTE:[[:space:]]*(APPROVE|REJECT|CANNOT_VALIDATE)" | grep -oE "APPROVE|REJECT|CANNOT_VALIDATE" | head -1)"
+    if [ "$vote6" = "REJECT" ]; then
+        ok "TRUST CORE: SDK timeout (rc124) + no claude -> conservative REJECT (never heuristic APPROVE)"
     else
-        bad "SDK success path wrong: expected APPROVE, verdict='$mock_out' token='$vote_token'"
+        bad "TRUST CORE BUG: SDK timeout produced '$vote6' (expected REJECT); fake-APPROVE risk! out='$out6'"
     fi
 
-    # ---- 5. fail-closed: stub returns nothing (exit 1) -> verdict stays empty ----
-    cat > "$WORK/bin/loki" <<'STUB2'
-#!/usr/bin/env bash
-exit 1
-STUB2
-    chmod +x "$WORK/bin/loki"
-    fc_out="$(
-      set +u
-      prompt="decide completion"; verdict=""
-      _cv_loki="$WORK/bin/loki"; _cv_pf="$(mktemp)"; printf '%s' "$prompt" > "$_cv_pf"; _cv_rc=0
-      _cv_out="$("$_cv_loki" internal sdk-text --prompt-file "$_cv_pf" 2>/dev/null)" || _cv_rc=$?
-      rm -f "$_cv_pf"
-      if [ "$_cv_rc" -eq 0 ] && [ -n "$_cv_out" ]; then verdict="$_cv_out"; fi
-      printf '[%s]' "$verdict"
-    )"
-    [ "$fc_out" = "[]" ] && ok "fail-closed: SDK miss leaves verdict empty (falls to claude/conservative REJECT)" \
-        || bad "fail-closed broken: verdict not empty on SDK miss ('$fc_out')"
+    # 6b. also cover SIGKILL (137) and SIGTERM (143) -- same guard must fire.
+    for rc in 137 143; do
+        o="$(run_member "exit $rc")"
+        v="$(printf '%s' "$o" | grep -oE "VOTE:[[:space:]]*(APPROVE|REJECT|CANNOT_VALIDATE)" | grep -oE "APPROVE|REJECT|CANNOT_VALIDATE" | head -1)"
+        [ "$v" = "REJECT" ] && ok "TRUST CORE: SDK kill rc=$rc + no claude -> REJECT" \
+            || bad "TRUST CORE: SDK rc=$rc produced '$v' (expected REJECT)"
+    done
 else
-    ok "SKIP: bun not available for mocked-success + fail-closed checks"
+    ok "SKIP: bun not available for real-function integration checks"
 fi
 
 echo ""
