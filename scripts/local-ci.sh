@@ -900,6 +900,19 @@ fi
 # ---------------------------------------------------------------------------
 run_check "npm pack tarball contents" 'npm pack --dry-run 2>&1 | grep -E "loki-ts/dist/loki.js|bin/loki|dashboard/static/index.html|web-app/dist/index.html|autonomy/provider-offer.sh|autonomy/quickstart.sh" | wc -l | grep -qE "[6-9]|[1-9][0-9]"'
 
+# 10a-v8. The Agent SDK (@anthropic-ai/claude-agent-sdk) is a DYNAMIC import in
+# dist/loki.js (the opt-in LOKI_SDK_LOOP=1 RARV loop) + a per-platform native
+# binary, so it is NOT bundled into dist and MUST be a declared dependency npm
+# can resolve at install time; otherwise npm/Docker users who set LOKI_SDK_LOOP=1
+# hit ERR_MODULE_NOT_FOUND (fail-closed, but dead-on-arrival). This check would
+# have caught the whole-arc council's packaging finding. It must stay pinned to
+# the same version loki-ts/package.json uses.
+run_check "Agent SDK is a resolvable root dependency (LOKI_SDK_LOOP packaging)" '
+  root_ver=$(python3 -c "import json; d=json.load(open(\"package.json\")); print((d.get(\"dependencies\",{}) | d.get(\"optionalDependencies\",{})).get(\"@anthropic-ai/claude-agent-sdk\",\"\"))")
+  src_ver=$(python3 -c "import json; print(json.load(open(\"loki-ts/package.json\"))[\"dependencies\"][\"@anthropic-ai/claude-agent-sdk\"])")
+  [ -n "$root_ver" ] && [ "$root_ver" = "$src_ver" ] &&
+  grep -q "claude-agent-sdk" Dockerfile'
+
 # ---------------------------------------------------------------------------
 # 10b. Phase Merge-3: web-app dist must be built with base: '/lab/'
 # ---------------------------------------------------------------------------
