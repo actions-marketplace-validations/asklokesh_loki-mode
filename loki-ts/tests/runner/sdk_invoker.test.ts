@@ -43,6 +43,6 @@ describe("sdk_invoker judge path (fail-closed)", () => {
       effort: "low",
     });
     expect(r).not.toBeNull();
-    expect(["done", "incomplete", "inconclusive"]).toContain(r!["verdict"]);
+    expect(["done", "incomplete", "inconclusive"]).toContain(String(r!["verdict"]));
   });
 });
