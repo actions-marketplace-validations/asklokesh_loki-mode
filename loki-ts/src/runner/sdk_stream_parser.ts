@@ -270,8 +270,12 @@ export async function consumeSdkStream(
     if (msgType === "rate_limit" || msgType === "rate_limit_event" || data.rate_limit_info) {
       const info = data.rate_limit_info;
       const status = info?.["status"];
-      if (status === undefined || status === "allowed") {
-        continue; // normal heartbeat -> not a rate limit
+      // "allowed" is the every-call heartbeat; "allowed_warning" means still
+      // allowed but approaching the window limit (a warning, NOT a limit yet).
+      // Both are non-limiting -> ignore. Only a genuinely limiting status
+      // (rejected/queued/etc.) signals a rate limit + a wait (council polish).
+      if (status === undefined || status === "allowed" || status === "allowed_warning") {
+        continue; // still allowed -> not a rate limit
       }
       let resetSeconds: number | undefined;
       const resetsAt = info?.["resetsAt"] ?? info?.["retryAfter"];

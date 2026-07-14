@@ -153,6 +153,17 @@ describe("consumeSdkStream (.loki parity with the bash Python parser)", () => {
     expect(r.capturedText).not.toContain("rate_limit"); // no spurious marker
   });
 
+  test("rate_limit_event with status 'allowed_warning' is still ALLOWED, NOT a rate limit", async () => {
+    // approaching-the-limit warning while still allowed -> must not signal a limit
+    const msgs = [
+      { type: "rate_limit_event", rate_limit_info: { status: "allowed_warning", resetsAt: 1784005200 } },
+      { type: "result", is_error: false, total_cost_usd: 0.01, usage: {} },
+    ] as unknown as StreamMsg[];
+    const r = await consumeSdkStream(msgs, ctx(), clock);
+    expect(r.rateLimit).toBeUndefined();
+    expect(r.capturedText).not.toContain("rate_limit");
+  });
+
   test("rate_limit_event with a limiting status IS signalled", async () => {
     const msgs = [
       { type: "rate_limit_event", rate_limit_info: { status: "rejected", retryAfter: 30 } },

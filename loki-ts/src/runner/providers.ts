@@ -402,6 +402,13 @@ export function sdkQueryProvider(): ProviderInvoker {
         exitCode,
         capturedOutputPath: call.iterationOutputPath,
       };
+      // Populate the structured rate-limit hint when the SDK gave a concrete
+      // reset. NOTE (council polish): the current Bun runner reads rate limits
+      // from the captured-text `[rate_limit]` marker (budget.ts::isRateLimited),
+      // not this field, so it is presently a no-op consumer-side. We still emit
+      // it because it is part of the ProviderResult contract (types.ts) and the
+      // bash route's structured signal; a future runner that prefers the
+      // structured value over the text scan gets it for free. Harmless when unread.
       if (rateLimit?.resetSeconds && rateLimit.resetSeconds > 0) {
         out.rateLimitWaitSeconds = rateLimit.resetSeconds;
       }
