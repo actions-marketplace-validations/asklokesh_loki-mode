@@ -79,6 +79,10 @@ run_test "Healing Friction Gate Tests" "$SCRIPT_DIR/test-healing-friction-gate.s
 run_test "Worktree Auto-Flags Tests" "$SCRIPT_DIR/test-worktree-auto-flags.sh"
 run_test "Merge-queue log-once + nested-agent parallel guard (client parallel-issue fix)" "$SCRIPT_DIR/test-merge-queue-log-once.sh"
 
+# v8: raw-SDK judge/text bridges (fail-closed, opt-in, binary-free ordering)
+run_test "v8 SDK judge bridge (done-recognition + council-v2)" "$SCRIPT_DIR/test-sdk-done-recog-bridge.sh"
+run_test "v8 SDK text bridge (grill + prd-enrich)" "$SCRIPT_DIR/test-sdk-text-bridge.sh"
+
 # Completion-council effective threshold (operator tighten-only floor + size guard)
 run_test "Council Threshold Tests" "$SCRIPT_DIR/test-council-threshold.sh"
 run_test "Healing Test Gate Tests" "$SCRIPT_DIR/test-healing-test-gate.sh"

@@ -28,6 +28,11 @@ export interface JudgeParams {
   system?: string;
 }
 
+// Same shape as JudgeParams but with no schema: a free-form text turn (grill
+// questions, prd enrichment). The output is prose, not a schema-constrained
+// object, so there is nothing to parse.
+export type TextParams = Omit<JudgeParams, "schema">;
+
 // Lazy singleton: constructing the client reads ANTHROPIC_API_KEY. Absent key ->
 // we return null from judgeJson rather than throwing, so a missing key degrades
 // to the bash/deterministic fallback exactly like an unsupported CLI flag does.
@@ -106,6 +111,41 @@ export async function judgeJson(params: JudgeParams): Promise<Record<string, unk
     return obj as Record<string, unknown>;
   } catch {
     // Transport / auth / rate-limit / refusal -> single null failure signal.
+    return null;
+  }
+}
+
+/**
+ * Run a one-shot FREE-FORM text call via the raw Anthropic SDK (no schema).
+ * The sibling of judgeJson for prose sites (grill, prd-enrich) whose callers
+ * parse the text themselves. Returns the concatenated text, or null on any
+ * failure (missing key, transport, refusal, empty) -- same single failure
+ * signal, so callers fail closed to their existing claude/deterministic path.
+ */
+export async function judgeText(params: TextParams): Promise<string | null> {
+  const c = client();
+  if (!c) return null;
+
+  const { prompt, model, effort, maxTokens = 4096, timeoutMs = 120_000, system } = params;
+
+  try {
+    const msg = await c.messages.create(
+      {
+        model,
+        max_tokens: maxTokens,
+        ...(system ? { system } : {}),
+        messages: [{ role: "user", content: prompt }],
+        // No output_config.format: a plain text turn. effort still applies.
+        ...(effort ? { output_config: { effort } } : {}),
+      },
+      { timeout: timeoutMs },
+    );
+    const text = (msg.content ?? [])
+      .filter((b): b is Anthropic.TextBlock => b.type === "text")
+      .map((b) => b.text)
+      .join("");
+    return text.trim() ? text : null;
+  } catch {
     return null;
   }
 }

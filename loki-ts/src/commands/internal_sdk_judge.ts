@@ -15,7 +15,7 @@
 // null (no key / transport / malformed / refusal). Only 0 prints stdout.
 
 import { readFileSync } from "node:fs";
-import { type Effort, judgeJson } from "../runner/sdk_invoker.ts";
+import { type Effort, judgeJson, judgeText } from "../runner/sdk_invoker.ts";
 
 function argVal(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
@@ -64,5 +64,41 @@ export async function runInternalSdkJudge(args: string[]): Promise<number> {
     return 1;
   }
   process.stdout.write(JSON.stringify(result));
+  return 0;
+}
+
+// v8: `loki internal sdk-text` -- the free-form (no-schema) sibling of sdk-judge.
+// For prose sites (grill, prd-enrich) whose callers parse the text themselves.
+// Same fail-closed contract: 0 + text on success; non-zero + no stdout on any
+// failure so the bash caller falls back to its existing claude path.
+//   loki internal sdk-text --prompt-file P [--model M] [--effort ...] [--max-tokens N] [--timeout-ms N]
+// Exit codes: 0 ok (+ text on stdout); 2 bad args; 3 read error; 1 null (no key /
+// transport / refusal / empty). Only 0 prints stdout.
+export async function runInternalSdkText(args: string[]): Promise<number> {
+  const promptFile = argVal(args, "--prompt-file");
+  if (!promptFile) {
+    process.stderr.write("sdk-text: --prompt-file is required\n");
+    return 2;
+  }
+
+  let prompt: string;
+  try {
+    prompt = readFileSync(promptFile, "utf8");
+  } catch (e) {
+    process.stderr.write(`sdk-text: cannot read prompt: ${(e as Error).message}\n`);
+    return 3;
+  }
+
+  const model = argVal(args, "--model") ?? "claude-haiku-4-5";
+  const effortRaw = argVal(args, "--effort");
+  const effort = effortRaw && VALID_EFFORT.has(effortRaw) ? (effortRaw as Effort) : undefined;
+  const maxTokens = parsePosInt(argVal(args, "--max-tokens"));
+  const timeoutMs = parsePosInt(argVal(args, "--timeout-ms"));
+
+  const result = await judgeText({ prompt, model, effort, maxTokens, timeoutMs });
+  if (result === null) {
+    return 1;
+  }
+  process.stdout.write(result);
   return 0;
 }

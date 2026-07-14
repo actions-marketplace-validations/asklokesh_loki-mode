@@ -229,6 +229,9 @@ async function dispatch(argv: readonly string[]): Promise<number> {
           "                  the parsed JSON. Fail-closed: non-zero + no stdout ->",
           "                  the bash caller falls back to claude/text. Driven by",
           "                  the SDK judge sites (LOKI_SDK_* flags).",
+          "  sdk-text        (v8) The free-form (no-schema) sibling of sdk-judge for",
+          "                  prose sites (grill, prd-enrich). Prints raw text; same",
+          "                  fail-closed contract.",
           "",
           "Phase 1 (RARV-C closure) env vars:",
           "  LOKI_INJECT_FINDINGS=1   Persist structured reviewer findings to",
@@ -267,6 +270,12 @@ async function dispatch(argv: readonly string[]): Promise<number> {
         // (non-zero + no stdout) so the bash caller falls back to claude/text.
         const { runInternalSdkJudge } = await import("./commands/internal_sdk_judge.ts");
         return runInternalSdkJudge(rest.slice(1));
+      }
+      if (subcmd === "sdk-text") {
+        // v8: free-form (no-schema) sibling for prose sites (grill, prd-enrich).
+        // Prints raw text; same fail-closed contract (non-zero + no stdout).
+        const { runInternalSdkText } = await import("./commands/internal_sdk_judge.ts");
+        return runInternalSdkText(rest.slice(1));
       }
       process.stderr.write(`Unknown internal subcommand: ${subcmd}\n`);
       process.stderr.write(`Run 'loki internal --help' for the supported list.\n`);
