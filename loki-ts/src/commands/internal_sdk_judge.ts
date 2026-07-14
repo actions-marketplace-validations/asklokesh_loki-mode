@@ -1,0 +1,58 @@
+// v8: `loki internal sdk-judge` -- the bash->raw-SDK judge bridge.
+//
+// A bash judge site (done-recognition, council-v2, code-review, ...) invokes this
+// instead of `claude -p --json-schema` when its SDK flag is on. It reads a prompt
+// file and a JSON-schema file, runs the pure-HTTPS raw-SDK judge (sdk_invoker
+// judgeJson), and prints the parsed JSON object to stdout. Exit 0 + JSON on
+// success; non-zero + no stdout on ANY failure so the bash caller falls back to
+// its existing claude/deterministic path (fail-closed, identical to today).
+//
+// Usage (driven by run.sh; not user-facing):
+//   loki internal sdk-judge --prompt-file P --schema-file S \
+//     [--model M] [--effort low|medium|high|xhigh|max] [--max-tokens N] [--timeout-ms N]
+//
+// Exit codes: 0 ok (+ JSON on stdout); 2 bad args; 3 read error; 1 judge returned
+// null (no key / transport / malformed / refusal). Only 0 prints stdout.
+
+import { readFileSync } from "node:fs";
+import { type Effort, judgeJson } from "../runner/sdk_invoker.ts";
+
+function argVal(args: string[], flag: string): string | undefined {
+  const i = args.indexOf(flag);
+  return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
+}
+
+const VALID_EFFORT = new Set(["low", "medium", "high", "xhigh", "max"]);
+
+export async function runInternalSdkJudge(args: string[]): Promise<number> {
+  const promptFile = argVal(args, "--prompt-file");
+  const schemaFile = argVal(args, "--schema-file");
+  if (!promptFile || !schemaFile) {
+    process.stderr.write("sdk-judge: --prompt-file and --schema-file are required\n");
+    return 2;
+  }
+
+  let prompt: string;
+  let schema: Record<string, unknown>;
+  try {
+    prompt = readFileSync(promptFile, "utf8");
+    schema = JSON.parse(readFileSync(schemaFile, "utf8")) as Record<string, unknown>;
+  } catch (e) {
+    process.stderr.write(`sdk-judge: cannot read inputs: ${(e as Error).message}\n`);
+    return 3;
+  }
+
+  const model = argVal(args, "--model") ?? "claude-haiku-4-5";
+  const effortRaw = argVal(args, "--effort");
+  const effort = effortRaw && VALID_EFFORT.has(effortRaw) ? (effortRaw as Effort) : undefined;
+  const maxTokens = Number(argVal(args, "--max-tokens")) || undefined;
+  const timeoutMs = Number(argVal(args, "--timeout-ms")) || undefined;
+
+  const result = await judgeJson({ prompt, schema, model, effort, maxTokens, timeoutMs });
+  if (result === null) {
+    // fail-closed: no stdout, non-zero -> bash caller uses its fallback.
+    return 1;
+  }
+  process.stdout.write(JSON.stringify(result));
+  return 0;
+}

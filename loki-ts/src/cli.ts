@@ -224,6 +224,11 @@ async function dispatch(argv: readonly string[]): Promise<number> {
           "                  append learnings, and write the escalation handoff",
           "                  doc once per iteration. Driven by run.sh; not",
           "                  intended for direct invocation.",
+          "  sdk-judge       (v8) Run a one-shot schema-constrained judge via the",
+          "                  raw @anthropic-ai/sdk (pure HTTPS, no binary) and print",
+          "                  the parsed JSON. Fail-closed: non-zero + no stdout ->",
+          "                  the bash caller falls back to claude/text. Driven by",
+          "                  the SDK judge sites (LOKI_SDK_* flags).",
           "",
           "Phase 1 (RARV-C closure) env vars:",
           "  LOKI_INJECT_FINDINGS=1   Persist structured reviewer findings to",
@@ -255,6 +260,13 @@ async function dispatch(argv: readonly string[]): Promise<number> {
       if (subcmd === "phase1-hooks") {
         const { runInternalPhase1Hooks } = await import("./commands/internal_phase1.ts");
         return runInternalPhase1Hooks(rest.slice(1));
+      }
+      if (subcmd === "sdk-judge") {
+        // v8: bash->raw-SDK judge bridge. Reads a prompt + JSON schema, runs the
+        // pure-HTTPS @anthropic-ai/sdk judge, prints the parsed JSON. Fail-closed
+        // (non-zero + no stdout) so the bash caller falls back to claude/text.
+        const { runInternalSdkJudge } = await import("./commands/internal_sdk_judge.ts");
+        return runInternalSdkJudge(rest.slice(1));
       }
       process.stderr.write(`Unknown internal subcommand: ${subcmd}\n`);
       process.stderr.write(`Run 'loki internal --help' for the supported list.\n`);
