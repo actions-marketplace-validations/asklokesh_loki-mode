@@ -191,6 +191,17 @@ if ! command -v bun &>/dev/null; then
     exec "$BASH_CLI" "$@"
 fi
 
+# v8 Phase 4: route `start` to the Bun RARV loop ONLY when LOKI_SDK_LOOP is on.
+# Default (unset) keeps `loki start` on the bash cmd_start, byte-identical. This
+# guard is AFTER the legacy check (LOKI_LEGACY_BASH=1 still force-overrides to
+# bash above) and AFTER the bun-presence check (a bun-less host already fell to
+# bash). Accepts 1|true to match the flag's documented =1 usage; bash cannot
+# cheaply reproduce truthy()'s yes/on spellings, so those are not honored here
+# (documented divergence, same as other bin/loki bool guards).
+if [ "${1:-}" = "start" ] && { [ "${LOKI_SDK_LOOP:-}" = "1" ] || [ "${LOKI_SDK_LOOP:-}" = "true" ]; }; then
+    exec bun "$BUN_CLI" "$@"
+fi
+
 # CLI consolidation (Phase A): `trust detail` is the grouped form of the
 # trust-metrics breakdown. The Bun `trust` handler only knows the trajectory
 # view (it rejects unknown args), and Phase A moves no handler logic, so the

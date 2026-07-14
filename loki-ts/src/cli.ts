@@ -282,6 +282,14 @@ async function dispatch(argv: readonly string[]): Promise<number> {
       return 2;
     }
 
+    case "start": {
+      // v8 Phase 4: the RARV autonomous loop on the Bun route. Reached from
+      // bin/loki only when LOKI_SDK_LOOP is truthy (the default route still runs
+      // the bash cmd_start). Parses the supported flag subset -> runAutonomous.
+      const { runStart } = await import("./commands/start.ts");
+      return runStart(rest);
+    }
+
     default:
       // Unknown to Bun -- shim falls through to bash. If invoked directly
       // via `bun src/cli.ts <unknown>`, print help and exit 2.

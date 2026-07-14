@@ -83,6 +83,7 @@ run_test "Merge-queue log-once + nested-agent parallel guard (client parallel-is
 run_test "v8 SDK judge bridge (done-recognition + council-v2)" "$SCRIPT_DIR/test-sdk-done-recog-bridge.sh"
 run_test "v8 SDK text bridge (grill + prd-enrich)" "$SCRIPT_DIR/test-sdk-text-bridge.sh"
 run_test "v8 SDK council VOTE (member + contrarian, trust core)" "$SCRIPT_DIR/test-sdk-council-vote.sh"
+run_test "v8 SDK-loop start routing (LOKI_SDK_LOOP gate, default-off)" "$SCRIPT_DIR/test-sdk-loop-routing.sh"
 
 # Completion-council effective threshold (operator tighten-only floor + size guard)
 run_test "Council Threshold Tests" "$SCRIPT_DIR/test-council-threshold.sh"
