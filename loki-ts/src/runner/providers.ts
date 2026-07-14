@@ -31,6 +31,7 @@ import {
   cavemanActivateEnv,
   cavemanSuppressEnv,
 } from "../providers/claude_flags.ts";
+import { consumeSdkStream, type StreamMsg } from "./sdk_stream_parser.ts";
 import type {
   ProviderInvocation,
   ProviderInvoker,
@@ -51,7 +52,13 @@ export async function resolveProvider(
 ): Promise<ProviderInvoker> {
   switch (name) {
     case "claude":
-      return claudeProvider();
+      // v8 Phase 4: when LOKI_SDK_LOOP is on, the main RARV loop runs on the
+      // Agent SDK's query() instead of spawning `claude -p ... stream-json`.
+      // Default-off: the bash/shellRun claude path is byte-identical until opted
+      // in. sdkQueryProvider delegates non-mainLoop calls back to claudeProvider,
+      // so judge subcalls never touch query(). Uses the established truthy()
+      // helper so the spelling matches the rest of the codebase.
+      return truthy(process.env["LOKI_SDK_LOOP"]) ? sdkQueryProvider() : claudeProvider();
     case "codex":
       return codexProvider();
     case "cline":
@@ -309,6 +316,96 @@ export function claudeProvider(): ProviderInvoker {
         exitCode: r.exitCode,
         capturedOutputPath: call.iterationOutputPath,
       };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// SDK query() provider (v8 Phase 4) -- the RARV main loop on @anthropic-ai/
+// claude-agent-sdk instead of spawning the claude binary. Reached only when
+// LOKI_SDK_LOOP is truthy (see resolveProvider). No binary spawn: query() drives
+// the agentic loop in-process; sdk_stream_parser writes the SAME .loki state the
+// bash stream-json parser writes, so downstream consumers are unchanged.
+// ---------------------------------------------------------------------------
+
+export function sdkQueryProvider(): ProviderInvoker {
+  return {
+    async invoke(call: ProviderInvocation): Promise<ProviderResult> {
+      // Subcalls (council judge, etc.) NEVER run through query(): only the main
+      // RARV loop. resolveProvider already scopes this to the main provider, but
+      // guard here too so a future subcall reuse can't leak into the agentic path.
+      if (!call.mainLoop) return claudeProvider().invoke(call);
+
+      // Model resolution is shared with claudeProvider (do NOT fork it).
+      const baseModel = claudeTierToModel(call.tier);
+      let model = applyMaxTierCeiling(call.tier, baseModel);
+      if (process.env["ANTHROPIC_BASE_URL"] && process.env["LOKI_MODEL_OVERRIDE"]) {
+        model = process.env["LOKI_MODEL_OVERRIDE"];
+      }
+
+      // caveman (main loop -> activate at the tier-inferred level, if warranted).
+      const cavemanLvl = cavemanActivateEnv(call.tier);
+
+      // Lazy dynamic import so the default-off path never loads the SDK.
+      // A load failure (SDK missing / platform binary absent) is fail-closed:
+      // write whatever we captured (empty) and return exitCode 1.
+      let captured = "";
+      let exitCode = 1;
+      let rateLimit: { resetSeconds?: number } | undefined;
+      try {
+        const { query } = await import("@anthropic-ai/claude-agent-sdk");
+        // options.env REPLACES the whole subprocess env -- MUST spread
+        // process.env or PATH/HOME/ANTHROPIC_API_KEY vanish and query() fails.
+        const env: Record<string, string> = { ...(process.env as Record<string, string>) };
+        if (cavemanLvl) env["CAVEMAN_DEFAULT_MODE"] = cavemanLvl;
+
+        const q = query({
+          prompt: call.prompt,
+          options: {
+            model,
+            cwd: call.cwd,
+            // fully autonomous, like --dangerously-skip-permissions. bypassPermissions
+            // REQUIRES the allowDangerouslySkipPermissions companion or it throws.
+            permissionMode: "bypassPermissions",
+            allowDangerouslySkipPermissions: true,
+            includePartialMessages: true, // live delta streaming
+            includeHookEvents: true, // hooks arrive as system messages (parser)
+            // build_prompt owns ALL injection; use the claude_code preset with no
+            // append so system-prompt behavior matches `claude -p`.
+            systemPrompt: { type: "preset", preset: "claude_code" },
+            env,
+          },
+          // biome-ignore lint/suspicious/noExplicitAny: SDK Options type is broader than our subset
+        } as any);
+
+        const res = await consumeSdkStream(q as AsyncIterable<StreamMsg>, {
+          cwd: call.cwd,
+          iteration: process.env["LOKI_ITERATION"] ?? "0",
+          hookEventsEnabled: process.env["LOKI_HOOK_EVENTS"] !== "off",
+          write: (s) => process.stdout.write(s),
+        });
+        captured = res.capturedText;
+        // Fail-closed: a stream that never produced a terminal result is a
+        // failed iteration, never counted as success.
+        exitCode = res.sawResult ? res.exitCode : 1;
+        rateLimit = res.rateLimit;
+      } catch (e) {
+        captured += `\n[sdk-loop error: ${(e as Error).message}]\n`;
+        exitCode = 1;
+      }
+
+      // Always write the captured text (even on a thrown query()) so the
+      // completion-promise / rate-limit / council scanners have their file.
+      await writeCaptured(call.iterationOutputPath, captured, "");
+
+      const out: ProviderResult = {
+        exitCode,
+        capturedOutputPath: call.iterationOutputPath,
+      };
+      if (rateLimit?.resetSeconds && rateLimit.resetSeconds > 0) {
+        out.rateLimitWaitSeconds = rateLimit.resetSeconds;
+      }
+      return out;
     },
   };
 }
