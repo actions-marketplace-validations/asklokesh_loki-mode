@@ -132,10 +132,49 @@ function hasRequiredFunctions<K extends string>(
 //      path AND the offending key. This is a contract violation (the file
 //      exists, so it MUST conform) and silently null-returning would mask
 //      the bug behind a stub fallback for the rest of the run.
+// v8 (bundle fix): Bun's bundler cannot follow the variable `import(spec)` inside
+// tryImport, so in the shipped dist/loki.js those runtime imports resolved
+// relative to dist/ (where the .ts files do not exist) and every runner module
+// failed to load -- the Bun `start` route worked from source but crashed from the
+// bundle. This maps each KNOWN spec to a STATIC-literal import() that the bundler
+// DOES inline, so the modules ship inside the bundle. An unknown spec (or source
+// mode) still falls through to the dynamic import below. Keep this list in sync
+// with the tryImport call sites.
+async function staticImport(spec: string): Promise<Record<string, unknown> | undefined> {
+  switch (spec) {
+    case "./state.ts":
+      return (await import("./state.ts")) as Record<string, unknown>;
+    case "./build_prompt.ts":
+      return (await import("./build_prompt.ts")) as Record<string, unknown>;
+    case "./council.ts":
+      return (await import("./council.ts")) as Record<string, unknown>;
+    case "./providers.ts":
+      return (await import("./providers.ts")) as Record<string, unknown>;
+    case "./queues.ts":
+      return (await import("./queues.ts")) as Record<string, unknown>;
+    case "./budget.ts":
+      return (await import("./budget.ts")) as Record<string, unknown>;
+    case "./completion.ts":
+      return (await import("./completion.ts")) as Record<string, unknown>;
+    case "./quality_gates.ts":
+      return (await import("./quality_gates.ts")) as Record<string, unknown>;
+    case "./intervention.ts":
+      return (await import("./intervention.ts")) as Record<string, unknown>;
+    case "./rarv.ts":
+      return (await import("./rarv.ts")) as Record<string, unknown>;
+    case "./checkpoint.ts":
+      return (await import("./checkpoint.ts")) as Record<string, unknown>;
+    default:
+      return undefined;
+  }
+}
+
 export async function tryImport<T>(spec: string, requiredKeys: readonly string[] = []): Promise<T | null> {
   let mod: Record<string, unknown>;
   try {
-    mod = (await import(spec)) as Record<string, unknown>;
+    // Prefer the static-literal map (bundler-inlinable); fall back to the dynamic
+    // import for any unknown spec or when running from source.
+    mod = (await staticImport(spec)) ?? ((await import(spec)) as Record<string, unknown>);
   } catch {
     return null;
   }
