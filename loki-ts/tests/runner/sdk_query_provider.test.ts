@@ -37,12 +37,20 @@ function call(overrides: Partial<ProviderInvocation> = {}): ProviderInvocation {
   };
 }
 
+let prevClaudeCli: string | undefined;
 beforeEach(() => {
   scratch = mkdtempSync(join(tmpdir(), "loki-sdkprov-"));
+  // Never spawn the real claude CLI in these hermetic tests: any path that
+  // delegates to claudeProvider (mainLoop:false, or the default-off gate) would
+  // otherwise hang on a live CLI. `true` exits 0 immediately for any argv.
+  prevClaudeCli = process.env["LOKI_CLAUDE_CLI"];
+  process.env["LOKI_CLAUDE_CLI"] = "true";
 });
 afterEach(() => {
   mock.restore(); // undo the module mock so it never leaks to other files
   rmSync(scratch, { recursive: true, force: true });
+  if (prevClaudeCli === undefined) delete process.env["LOKI_CLAUDE_CLI"];
+  else process.env["LOKI_CLAUDE_CLI"] = prevClaudeCli;
 });
 
 describe("sdkQueryProvider (hermetic, stubbed query)", () => {
@@ -132,13 +140,29 @@ describe("resolveProvider LOKI_SDK_LOOP gate", () => {
     else process.env["LOKI_SDK_LOOP"] = prev;
   });
 
-  it("default-off: resolveProvider('claude') is NOT the SDK provider", async () => {
+  // Positive behavioral proof (not a tautology, council CONCERN): stub query()
+  // and invoke the RESOLVED provider on a mainLoop call. If the gate returned the
+  // SDK provider, query() runs; if it returned claudeProvider (the bash path),
+  // query() is NEVER touched. We assert which one fired via lastQueryArgs.
+  it("default-off: resolveProvider('claude') does NOT run query() (bash path)", async () => {
     delete process.env["LOKI_SDK_LOOP"];
-    const { resolveProvider, sdkQueryProvider } = await import("../../src/runner/providers.ts");
+    stubQuery([{ type: "result", is_error: false, total_cost_usd: 0.01, usage: {} }]);
+    // LOKI_CLAUDE_CLI=true (beforeEach) makes the bash claudeProvider return
+    // instantly. The SDK path would NOT consult it, so if query() ran,
+    // lastQueryArgs would be set. Asserting it is undefined proves the gate
+    // returned the bash path, not the SDK provider (positive, non-tautological).
+    const { resolveProvider } = await import("../../src/runner/providers.ts");
     const p = await resolveProvider("claude");
-    // The default provider must not be the SDK one. We compare invoke identity by
-    // checking the SDK provider is a distinct object (can't deep-compare closures,
-    // but the gate returning claudeProvider() means query() is never the path).
-    expect(p).not.toBe(sdkQueryProvider());
+    await p.invoke(call()); // mainLoop:true
+    expect(lastQueryArgs).toBeUndefined(); // query() never reached -> NOT the SDK path
+  });
+
+  it("LOKI_SDK_LOOP=1: resolveProvider('claude') DOES run query() (SDK path)", async () => {
+    process.env["LOKI_SDK_LOOP"] = "1";
+    stubQuery([{ type: "result", is_error: false, total_cost_usd: 0.01, usage: {} }]);
+    const { resolveProvider } = await import("../../src/runner/providers.ts");
+    const p = await resolveProvider("claude");
+    await p.invoke(call()); // mainLoop:true
+    expect(lastQueryArgs).toBeTruthy(); // query() WAS reached -> the SDK path
   });
 });

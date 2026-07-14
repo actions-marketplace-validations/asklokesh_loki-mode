@@ -142,6 +142,26 @@ describe("consumeSdkStream (.loki parity with the bash Python parser)", () => {
     expect(r.capturedText).toContain("rate_limit");
   });
 
+  test("rate_limit_event with status 'allowed' is a HEARTBEAT, NOT a rate limit (ignored)", async () => {
+    // The SDK emits this on every call; treating it as a rate limit was a bug.
+    const msgs = [
+      { type: "rate_limit_event", rate_limit_info: { status: "allowed", resetsAt: 1784005200 } },
+      { type: "result", is_error: false, total_cost_usd: 0.01, usage: {} },
+    ] as unknown as StreamMsg[];
+    const r = await consumeSdkStream(msgs, ctx(), clock);
+    expect(r.rateLimit).toBeUndefined(); // NOT flagged
+    expect(r.capturedText).not.toContain("rate_limit"); // no spurious marker
+  });
+
+  test("rate_limit_event with a limiting status IS signalled", async () => {
+    const msgs = [
+      { type: "rate_limit_event", rate_limit_info: { status: "rejected", retryAfter: 30 } },
+    ] as unknown as StreamMsg[];
+    const r = await consumeSdkStream(msgs, ctx(), clock);
+    expect(r.rateLimit).toBeTruthy();
+    expect(r.rateLimit?.resetSeconds).toBe(30);
+  });
+
   test("TodoWrite tool_use -> .loki/queue/in-progress.json (in_progress items enriched)", async () => {
     const msgs: StreamMsg[] = [
       {

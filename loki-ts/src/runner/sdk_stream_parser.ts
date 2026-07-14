@@ -262,14 +262,28 @@ export async function consumeSdkStream(
       continue;
     }
 
-    // --- rate_limit event (SDKRateLimitEvent) carries a reset time
-    if (msgType === "rate_limit" || data.rate_limit_info) {
+    // --- rate_limit event (SDKRateLimitEvent). The SDK emits one on EVERY call
+    // as a status heartbeat with rate_limit_info.status === "allowed" -- that is
+    // NOT a rate limit and must be IGNORED (verified live: status:"allowed",
+    // resetsAt = the window reset epoch, not a wait). Only signal when the status
+    // is actually limiting (anything other than "allowed", e.g. rejected/queued).
+    if (msgType === "rate_limit" || msgType === "rate_limit_event" || data.rate_limit_info) {
       const info = data.rate_limit_info;
+      const status = info?.["status"];
+      if (status === undefined || status === "allowed") {
+        continue; // normal heartbeat -> not a rate limit
+      }
       let resetSeconds: number | undefined;
       const resetsAt = info?.["resetsAt"] ?? info?.["retryAfter"];
       if (typeof resetsAt === "number") {
-        // resetsAt may be an epoch-ms or a seconds-from-now; treat >1e6 as epoch.
-        resetSeconds = resetsAt > 1_000_000 ? undefined : resetsAt;
+        // retryAfter is seconds-from-now; resetsAt is a future epoch (seconds).
+        // Convert an epoch to a wait; treat a small value as already seconds.
+        if (resetsAt > 1_000_000) {
+          const nowS = clock ? 0 : Math.floor(Date.now() / 1000);
+          resetSeconds = nowS > 0 ? Math.max(0, resetsAt - nowS) : undefined;
+        } else {
+          resetSeconds = resetsAt;
+        }
       }
       rateLimit = { resetSeconds };
       captured += "\n[rate_limit]\n";
