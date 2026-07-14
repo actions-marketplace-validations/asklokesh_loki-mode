@@ -11083,6 +11083,50 @@ _dispatch_reviewer() {
             _cr_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
             _cr_schema="${_cr_root}/loki-ts/data/code-review-schema.json"
             _cr_remat="${_cr_here}/lib/cr-rematerialize.py"
+            # v8 RAW-SDK REVIEWER PATH (opt-in LOKI_SDK_CODE_REVIEW=1). Run the
+            # reviewer via the pure-HTTPS @anthropic-ai/sdk bridge (no claude
+            # binary) and re-materialize the SAME legacy VERDICT/FINDINGS text
+            # through cr-rematerialize.py, so every downstream consumer stays
+            # byte-identical. Runs BEFORE the claude --json-schema block so the
+            # no-binary deploy win holds. Fail-closed: on ANY miss (flag off, no
+            # key, bun/entrypoint absent, non-zero, empty, or rematerialize
+            # reject) fall through to the claude paths below -- never a PASS on a
+            # miss (rematerialize is itself fail-closed + forces FAIL on
+            # Critical/High). Same schema the claude --json-schema path uses, so
+            # verdict parity holds by construction.
+            if [ "${LOKI_SDK_CODE_REVIEW:-0}" = "1" ] \
+               && [ -f "$_cr_schema" ] && [ -f "$_cr_remat" ]; then
+                local _crs_loki _crs_pf _crs_out _crs_rc
+                _crs_loki="${_cr_root}/bin/loki"
+                if [ -x "$_crs_loki" ] && command -v bun >/dev/null 2>&1; then
+                    _crs_pf="$(mktemp 2>/dev/null)" || _crs_pf=""
+                    if [ -n "$_crs_pf" ]; then
+                        printf '%s' "$prompt_text" > "$_crs_pf"
+                        _crs_rc=0
+                        # OS-level ceiling around the bun subprocess (same
+                        # rationale as done-recognition/council-v2): --timeout-ms
+                        # only bounds the HTTP call; a bun cold-start could hang
+                        # the substitution. Degrade to no-cap only if neither
+                        # timeout binary exists.
+                        local _crs_to_s="${LOKI_SDK_REVIEW_TIMEOUT:-180}"
+                        local _crs_wrap
+                        if command -v timeout >/dev/null 2>&1; then _crs_wrap="timeout $(( _crs_to_s + 15 ))"
+                        elif command -v gtimeout >/dev/null 2>&1; then _crs_wrap="gtimeout $(( _crs_to_s + 15 ))"
+                        else _crs_wrap=""; fi
+                        _crs_out="$($_crs_wrap "$_crs_loki" internal sdk-judge \
+                            --prompt-file "$_crs_pf" --schema-file "$_cr_schema" \
+                            --model "${LOKI_SDK_REVIEW_MODEL:-claude-sonnet-5}" --effort high \
+                            --timeout-ms "$(( _crs_to_s * 1000 ))" 2>/dev/null)" || _crs_rc=$?
+                        rm -f "$_crs_pf" 2>/dev/null || true
+                        if [ "$_crs_rc" -eq 0 ] && [ -n "$_crs_out" ] \
+                           && _LOKI_CR_JSON="$_crs_out" _LOKI_CR_OUT="$review_output" \
+                              python3 "$_cr_remat"; then
+                            return 0
+                        fi
+                    fi
+                fi
+                # fall through to the claude paths below (fail-closed)
+            fi
             if [ "${LOKI_REVIEW_JSON_SCHEMA:-on}" != "off" ] \
                && [ -f "$_cr_schema" ] && [ -f "$_cr_remat" ] \
                && type loki_claude_flag_supported >/dev/null 2>&1 \

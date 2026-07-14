@@ -54,6 +54,13 @@ def rematerialize(raw):
                 payload = json.loads(res)
             except Exception:
                 payload = None
+    # v8 raw-SDK path: `loki internal sdk-judge` emits the BARE payload object
+    # (no CLI envelope), so there is no 'structured_output'/'result' wrapper. If
+    # the top-level dict itself carries the payload's 'verdict' key, it IS the
+    # payload. The stop_reason guard above already passes for a bare object
+    # (no 'stop_reason' key -> None -> allowed).
+    if not isinstance(payload, dict) and "verdict" in env:
+        payload = env
     if not isinstance(payload, dict):
         raise ValueError(5)
 

@@ -44,6 +44,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, wri
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { claudeFlagSupported, ensureClaudeHelpCache } from "../providers/claude_flags.ts";
+import { judgeJson } from "./sdk_invoker.ts";
 import { atomicWriteText, withFileLockSync } from "../util/atomic.ts";
 import { REPO_ROOT, lokiDir } from "../util/paths.ts";
 import { commandExists, run } from "../util/shell.ts";
@@ -1312,6 +1313,14 @@ export function rematerializeCodeReview(rawJson: string): string | null {
       }
     }
   }
+  // v8 raw-SDK path: `loki internal sdk-judge` emits the BARE payload object (no
+  // CLI envelope), so there is no structured_output/result wrapper. If the
+  // top-level dict itself carries 'verdict', it IS the payload. Mirrors
+  // autonomy/lib/cr-rematerialize.py. (stop_reason guard above already passes
+  // for a bare object -- no stop_reason -> undefined -> allowed.)
+  if ((typeof payload !== "object" || payload === null) && "verdict" in e) {
+    payload = e;
+  }
   if (typeof payload !== "object" || payload === null) return null;
   const p = payload as Record<string, unknown>;
   let verdict = String(p["verdict"] ?? "").trim().toUpperCase();
@@ -1345,6 +1354,35 @@ export const claudeReviewer: ReviewerFn = async ({ prompt }) => {
   }
   if (process.env["LOKI_REVIEW_TOOL_GUARD"] !== "0") {
     argv.push("--disallowedTools", REVIEW_GUARD_DENYLIST);
+  }
+
+  // v8 RAW-SDK REVIEWER PATH (opt-in LOKI_SDK_CODE_REVIEW=1). Run the reviewer
+  // in-process via the pure-HTTPS @anthropic-ai/sdk judge (no claude binary) and
+  // re-materialize the SAME legacy VERDICT/FINDINGS text so parseVerdict et al are
+  // untouched. Mirrors the bash _dispatch_reviewer SDK branch, which runs BEFORE
+  // the claude --json-schema block. Fail-closed: judgeJson returns null on any
+  // miss (no key/transport/refusal/malformed) and a bad rematerialize returns
+  // null -> fall through to the claude paths below (never a PASS on a miss;
+  // rematerialize forces FAIL on Critical/High). Calls judgeJson directly rather
+  // than spawning bin/loki -- we are already inside the loki-ts process.
+  if (process.env["LOKI_SDK_CODE_REVIEW"] === "1" && existsSync(CODE_REVIEW_SCHEMA_PATH)) {
+    try {
+      const schema = JSON.parse(readFileSync(CODE_REVIEW_SCHEMA_PATH, "utf8")) as Record<string, unknown>;
+      const timeoutMs = (Number(process.env["LOKI_SDK_REVIEW_TIMEOUT"]) || 180) * 1000;
+      const obj = await judgeJson({
+        prompt,
+        schema,
+        model: process.env["LOKI_SDK_REVIEW_MODEL"] || "claude-sonnet-5",
+        effort: "high",
+        timeoutMs,
+      });
+      if (obj !== null) {
+        const legacy = rematerializeCodeReview(JSON.stringify(obj));
+        if (legacy !== null) return legacy;
+      }
+    } catch {
+      // fall through to the claude paths below (fail-closed)
+    }
   }
 
   // STRUCTURED VERDICT (v8.x): when the CLI supports --json-schema, force valid

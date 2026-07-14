@@ -22,6 +22,16 @@ function argVal(args: string[], flag: string): string | undefined {
   return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
 }
 
+// Parse a numeric CLI arg so an EXPLICIT positive value is honored and only an
+// absent/invalid/non-positive value falls back to the sdk_invoker default. A
+// bare `Number(v) || undefined` treated `--timeout-ms 0` as unset (council
+// review C3). Exported for a direct unit test.
+export function parsePosInt(v: string | undefined): number | undefined {
+  if (v === undefined) return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
 const VALID_EFFORT = new Set(["low", "medium", "high", "xhigh", "max"]);
 
 export async function runInternalSdkJudge(args: string[]): Promise<number> {
@@ -45,16 +55,8 @@ export async function runInternalSdkJudge(args: string[]): Promise<number> {
   const model = argVal(args, "--model") ?? "claude-haiku-4-5";
   const effortRaw = argVal(args, "--effort");
   const effort = effortRaw && VALID_EFFORT.has(effortRaw) ? (effortRaw as Effort) : undefined;
-  // Parse numeric args so an EXPLICIT positive value is honored and only an
-  // absent/invalid/non-positive value falls back to the sdk_invoker default
-  // (a bare `|| undefined` treated `--timeout-ms 0` as unset -- council review).
-  const posInt = (v: string | undefined): number | undefined => {
-    if (v === undefined) return undefined;
-    const n = Number(v);
-    return Number.isFinite(n) && n > 0 ? n : undefined;
-  };
-  const maxTokens = posInt(argVal(args, "--max-tokens"));
-  const timeoutMs = posInt(argVal(args, "--timeout-ms"));
+  const maxTokens = parsePosInt(argVal(args, "--max-tokens"));
+  const timeoutMs = parsePosInt(argVal(args, "--timeout-ms"));
 
   const result = await judgeJson({ prompt, schema, model, effort, maxTokens, timeoutMs });
   if (result === null) {

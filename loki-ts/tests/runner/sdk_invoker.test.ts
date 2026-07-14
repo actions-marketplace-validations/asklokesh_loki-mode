@@ -2,6 +2,7 @@
 // these assert the fail-closed behavior (the load-bearing safety property) and
 // the availability probe. A live smoke test (real API) lives behind an env gate.
 import { afterEach, describe, expect, test } from "bun:test";
+import { parsePosInt } from "../../src/commands/internal_sdk_judge.ts";
 import { judgeJson, sdkJudgeAvailable } from "../../src/runner/sdk_invoker.ts";
 
 const SCHEMA = {
@@ -44,5 +45,24 @@ describe("sdk_invoker judge path (fail-closed)", () => {
     });
     expect(r).not.toBeNull();
     expect(["done", "incomplete", "inconclusive"]).toContain(String(r!["verdict"]));
+  });
+});
+
+// parsePosInt is the C3 fix (council review): a bare `Number(v) || undefined`
+// treated `--timeout-ms 0` as unset. This locks the intended semantics -- honor
+// an explicit positive, fall back only on absent/invalid/non-positive.
+describe("parsePosInt (CLI numeric-arg fallback, council C3)", () => {
+  test.each([
+    ["absent -> undefined", undefined, undefined],
+    ["explicit positive -> value", "180000", 180000],
+    ["zero -> undefined (the bug that was fixed)", "0", undefined],
+    ["negative -> undefined", "-5", undefined],
+    ["non-numeric -> undefined", "abc", undefined],
+    ["empty string -> undefined (Number('')===0)", "", undefined],
+    ["float positive -> value (Number keeps it)", "1.5", 1.5],
+    ["whitespace-wrapped positive -> value (Number trims)", " 42 ", 42],
+    ["Infinity token -> undefined (not finite)", "Infinity", undefined],
+  ])("%s", (_label, input, expected) => {
+    expect(parsePosInt(input as string | undefined)).toBe(expected as number | undefined);
   });
 });
