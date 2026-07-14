@@ -5,6 +5,36 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.129.3
+
+### Fixed: code_review gate on oversized / tracked-but-gitignored diffs
+
+A client hit the code_review quality gate returning NO_OUTPUT from all reviewers.
+Root cause: a directory (916 files / 11MB) was git-TRACKED before being added to
+`.gitignore`. Git keeps tracking files committed before the ignore rule, so the
+gate's throwaway-index `git add -A` staged the dir and it bloated every reviewer
+prompt past the model's limit, forcing empty output. The gate correctly BLOCKED
+(all-NO_OUTPUT is treated as INCONCLUSIVE, never a fake PASS), but the block was
+opaque -- no size, no cause. Three fixes (all in `run_code_review`):
+
+- **Filter tracked-but-gitignored paths from the review diff.** The gate now
+  computes the tracked files the target repo's `.gitignore` would ignore
+  (`git ls-files | git check-ignore --no-index --stdin`), reduces them to
+  top-level prefixes, and excludes each from the review diff -- even though they
+  are tracked. Byte-identical diff when nothing is tracked-but-ignored. Capped by
+  `LOKI_REVIEW_GITIGNORE_MAX_EXCLUDES` (default 200); opt out
+  `LOKI_REVIEW_GITIGNORE_FILTER=0`.
+- **Fail loud on an oversized diff.** When the review diff exceeds
+  `LOKI_REVIEW_MAX_DIFF_BYTES` (default 400000), the gate emits an explicit warning
+  naming the size, limit, biggest contributing dirs, and remedy, plus a
+  `code_review_diff_oversized` event. The all-NO_OUTPUT INCONCLUSIVE block now
+  references the oversize cause + fix, so a block is self-explanatory.
+- **Log per-reviewer prompt/diff size.** Each reviewer's prompt byte size is
+  logged and recorded to a per-review `sizes.tsv`, so a post-mortem is a one-line
+  read instead of repo archaeology.
+
+Immediate unblock on older versions: `git rm -r --cached <stale-tracked-dir>`.
+
 ## v7.129.2
 
 ### Fixed: parallel multi-issue follow-ups (detached --pr reliability)

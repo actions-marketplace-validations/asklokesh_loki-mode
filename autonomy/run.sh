@@ -11238,6 +11238,69 @@ run_code_review() {
         ':(exclude)__pycache__/' ':(exclude)**/__pycache__/**' \
         ':(exclude)vendor/' ':(exclude)**/vendor/**')
 
+    # Client fix (code_review NO_OUTPUT on oversized diffs): the hardcoded excludes
+    # above miss dirs that are git-TRACKED but listed in the target repo's
+    # .gitignore -- e.g. a dir committed before the ignore rule was added. The
+    # `git add -A` temp index below stages those tracked files, so an 11MB
+    # tracked-but-ignored dir bloats the review diff, overflows the reviewer
+    # prompt, and every reviewer returns NO_OUTPUT. Filter them out DYNAMICALLY:
+    # list the tracked files the repo's own .gitignore would ignore (check-ignore
+    # --no-index evaluates the rules even for already-tracked paths) and exclude
+    # each at the EXACT depth of its containing directory -- NOT a collapsed
+    # top-level prefix. Excluding the top-level prefix would drop sibling REAL
+    # changes (e.g. ignoring loki-ts/dist/ must NOT exclude all of loki-ts/), and
+    # because the empty-diff guard below reuses this same pathspec, that
+    # over-exclusion could blind the guard and let a real change PASS unreviewed
+    # (council-caught fail-closed hole). Nested paths are pruned to the shallowest
+    # ignored dir so a/b and a/b/c collapse to a/b (one exclude, still precise).
+    # Capped so a pathological repo cannot build a giant argv. Opt out
+    # LOKI_REVIEW_GITIGNORE_FILTER=0. No-op (byte-identical diff) when nothing is
+    # tracked-but-ignored.
+    if [ "${LOKI_REVIEW_GITIGNORE_FILTER:-1}" != "0" ]; then
+        local _gi_cap="${LOKI_REVIEW_GITIGNORE_MAX_EXCLUDES:-200}"
+        local _gi_dirs _gi_count=0 _gi_d _gi_prev=""
+        # tracked-and-ignored files -> the DIRNAME of each (exact depth), sorted so
+        # a parent dir sorts before its children for the nested-prune below. A file
+        # ignored at repo root (dirname ".") is excluded by its own exact path, not
+        # a directory.
+        _gi_dirs="$( (cd "${TARGET_DIR:-.}" && \
+            git ls-files -z 2>/dev/null | git check-ignore --no-index --stdin -z 2>/dev/null) \
+            | tr '\0' '\n' | grep -v '^$' \
+            | while IFS= read -r _f; do d="$(dirname "$_f")"; [ "$d" = "." ] && printf '%s\n' "$_f" || printf '%s\n' "$d"; done \
+            | sort -u || true )"
+        if [ -n "$_gi_dirs" ]; then
+            while IFS= read -r _gi_d; do
+                [ -n "$_gi_d" ] || continue
+                # nested-prune: if this path is under the previously-kept dir, skip
+                # it (the parent exclude already covers it). Relies on the sort so a
+                # parent precedes its children.
+                if [ -n "$_gi_prev" ] && case "$_gi_d/" in "$_gi_prev"/*) true ;; *) false ;; esac; then
+                    continue
+                fi
+                if [ "$_gi_count" -ge "$_gi_cap" ]; then
+                    log_warn "Code review: gitignore-exclude cap ($_gi_cap) reached; some tracked-but-ignored paths remain in the diff. Raise LOKI_REVIEW_GITIGNORE_MAX_EXCLUDES or 'git rm --cached' them."
+                    break
+                fi
+                # Exact-path exclude (a leading-path pathspec matches that path and
+                # everything under it; it does NOT match siblings). No '**/' variant
+                # -- that would re-introduce the over-broad match this fix removes.
+                # A trailing '/' anchors a DIRECTORY; a root-level ignored FILE
+                # (dirname was ".", so _gi_d is the file itself) must be excluded by
+                # its EXACT path with no '/', else the pathspec matches nothing and
+                # the ignored file leaks back into the diff (council note: safe
+                # direction, but this makes it exact). Decide by what is on disk.
+                if [ -d "${TARGET_DIR:-.}/${_gi_d}" ]; then
+                    _review_pathspec+=(":(exclude)${_gi_d}/")
+                else
+                    _review_pathspec+=(":(exclude)${_gi_d}")
+                fi
+                _gi_prev="$_gi_d"
+                _gi_count=$((_gi_count + 1))
+            done <<< "$_gi_dirs"
+            [ "$_gi_count" -gt 0 ] && log_info "Code review: excluded $_gi_count tracked-but-gitignored dir(s) from the review diff (e.g. $(printf '%s' "$_gi_dirs" | head -3 | tr '\n' ' '))"
+        fi
+    fi
+
     # Plan #16 (A-2): make the review diff base robust to shallow/fresh history,
     # and surface NEW (untracked) files -- the whole greenfield build is new
     # files, which `git diff <base>` (tracked-only) never shows.
@@ -11279,6 +11342,28 @@ run_code_review() {
         diff_content=$(GIT_INDEX_FILE="$_rev_idx" git -C "${TARGET_DIR:-.}" diff --cached "$_review_base" "${_review_pathspec[@]}" 2>/dev/null || echo "")
         changed_files=$(GIT_INDEX_FILE="$_rev_idx" git -C "${TARGET_DIR:-.}" diff --cached --name-only "$_review_base" "${_review_pathspec[@]}" 2>/dev/null || echo "")
         rm -f "$_rev_idx" 2>/dev/null || true
+    fi
+
+    # Client fix (fail LOUD on oversized diff): measure the review diff and, if it
+    # exceeds LOKI_REVIEW_MAX_DIFF_BYTES (default 400KB ~ the reviewer prompt
+    # ceiling), emit an EXPLICIT, actionable warning + a telemetry event instead
+    # of letting the reviewers silently overflow to NO_OUTPUT. We still RUN the
+    # review (a large-but-parseable diff may work); the all-NO_OUTPUT block below
+    # references this so the block is self-explanatory. Names the biggest tracked
+    # dirs so the operator sees the culprit without repo archaeology.
+    local _review_diff_bytes=0
+    _review_diff_bytes=$(printf '%s' "$diff_content" | wc -c | tr -d ' ')
+    local _review_max_bytes="${LOKI_REVIEW_MAX_DIFF_BYTES:-400000}"
+    if [ "${_review_diff_bytes:-0}" -gt "$_review_max_bytes" ] 2>/dev/null; then
+        # biggest contributors: top changed dirs by line count in the diff
+        local _big_dirs
+        _big_dirs=$(printf '%s\n' "$changed_files" | sed 's#/.*##' | grep -v '^$' | sort | uniq -c | sort -rn | head -3 | awk '{print $2" ("$1" files)"}' | tr '\n' ' ')
+        log_warn "Code review: review diff is ${_review_diff_bytes} bytes (limit ${_review_max_bytes}). This can overflow reviewer prompts and force NO_OUTPUT. Biggest dirs: ${_big_dirs:-unknown}. Remedy: 'git rm -r --cached <stale-tracked-dir>' if it is gitignored, or raise LOKI_REVIEW_MAX_DIFF_BYTES."
+        emit_event_json "code_review_diff_oversized" \
+            "review_id=$review_id" \
+            "diff_bytes=$_review_diff_bytes" \
+            "limit_bytes=$_review_max_bytes" \
+            "iteration=${ITERATION_COUNT:-0}" 2>/dev/null || true
     fi
 
     if [ -z "$diff_content" ]; then
@@ -11623,6 +11708,15 @@ BUILD_PROMPT
         unset LOKI_REVIEW_PROMPT_NAME LOKI_REVIEW_PROMPT_FOCUS LOKI_REVIEW_PROMPT_CHECKS
         unset LOKI_REVIEW_PROMPT_DIFF_FILE LOKI_REVIEW_PROMPT_FILES_FILE LOKI_REVIEW_PROMPT_OUT
 
+        # Client fix (log the actual prompt/diff size per reviewer): so a
+        # NO_OUTPUT post-mortem is a one-line log read, not repo archaeology.
+        # Record the prompt byte size (and the shared diff size) both to the log
+        # and to a per-review sizes.json for the dashboard/telemetry.
+        local _prompt_bytes=0
+        [ -f "$review_prompt_file" ] && _prompt_bytes=$(wc -c < "$review_prompt_file" 2>/dev/null | tr -d ' ')
+        log_info "Reviewer $reviewer_name: prompt ${_prompt_bytes:-0} bytes (review diff ${_review_diff_bytes:-0} bytes)"
+        printf '%s\t%s\n' "$reviewer_name" "${_prompt_bytes:-0}" >> "$review_dir/$review_id/sizes.tsv" 2>/dev/null || true
+
         log_step "Dispatching reviewer: $reviewer_name"
 
         # Launch blind review in background (shared dispatch helper).
@@ -11746,6 +11840,12 @@ BUILD_PROMPT
         review_inconclusive=true
         log_error "CODE REVIEW INCONCLUSIVE: only $real_verdict_count of $reviewer_count reviewers returned a usable verdict (no_output=$no_output_count)"
         log_error "  A partial review drops dissent; refusing to pass the gate without every reviewer's verdict."
+        # Client fix: make the block self-explanatory. When the diff was oversized,
+        # NO_OUTPUT is almost certainly a prompt overflow -- say so + the remedy,
+        # instead of leaving the operator to guess (the reported failure mode).
+        if [ "${_review_diff_bytes:-0}" -gt "${_review_max_bytes:-400000}" ] 2>/dev/null; then
+            log_error "  LIKELY CAUSE: the review diff is ${_review_diff_bytes} bytes (> ${_review_max_bytes} limit), which overflows reviewer prompts -> empty output. Check for a large tracked-but-gitignored dir: 'git ls-files | git check-ignore --no-index --stdin' then 'git rm -r --cached <dir>'. Per-reviewer prompt sizes: $review_dir/$review_id/sizes.tsv"
+        fi
         if [ "${LOKI_REVIEW_RETRY:-1}" = "1" ] && [ "${_LOKI_REVIEW_RETRYING:-0}" != "1" ]; then
             log_warn "  Retrying code review once (LOKI_REVIEW_RETRY=1)..."
             _LOKI_REVIEW_RETRYING=1 run_code_review
