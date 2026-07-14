@@ -2223,7 +2223,19 @@ council_member_review() {
 
     # Validate provider CLI is available
     case "${PROVIDER_NAME:-claude}" in
-        claude) command -v claude >/dev/null 2>&1 || { log_error "Claude CLI not found"; return 1; } ;;
+        claude)
+            # v8: the raw-SDK vote path (LOKI_SDK_COUNCIL_VOTE=1) needs no claude
+            # binary, so the precondition passes when that path is viable (bridge
+            # + bun). The vote body still falls closed to claude on an SDK miss.
+            if [ "${LOKI_SDK_COUNCIL_VOTE:-0}" = "1" ] \
+               && { [ -x "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bin/loki" ] \
+                 || [ -x "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../bin/loki" ]; } \
+               && command -v bun >/dev/null 2>&1; then
+                :
+            else
+                command -v claude >/dev/null 2>&1 || { log_error "Claude CLI not found"; return 1; }
+            fi
+            ;;
         codex) command -v codex >/dev/null 2>&1 || { log_error "Codex CLI not found"; return 1; } ;;
         gemini) command -v gemini >/dev/null 2>&1 || { log_error "Gemini CLI not found"; return 1; } ;;
         cline) command -v cline >/dev/null 2>&1 || { log_error "Cline CLI not found"; return 1; } ;;
@@ -2306,7 +2318,47 @@ ISSUES: CRITICAL:description (optional, one per line per issue)"
     # Use the configured provider for review
     case "${PROVIDER_NAME:-claude}" in
         claude)
-            if command -v claude &>/dev/null; then
+            # v8 RAW-SDK VOTE PATH (opt-in LOKI_SDK_COUNCIL_VOTE=1). Run the member
+            # completion vote via the pure-HTTPS @anthropic-ai/sdk text bridge (no
+            # claude binary) through `internal sdk-text`. The reviewer emits the
+            # SAME free-form VOTE/REASON/ISSUES text the claude path does, so the
+            # elaborate downstream parser (grep VOTE:/REASON:/ISSUES:) is UNCHANGED
+            # -- text bridge, not a schema change, to keep the trust-core parse
+            # byte-identical. Runs BEFORE the claude-binary guard so the no-binary
+            # deploy win holds. Fail-closed: on ANY miss (flag off, no key, bun/
+            # entrypoint absent, non-zero, empty) fall through to the claude path;
+            # a truly empty verdict then hits the conservative REJECT default. The
+            # captured text is written to $verdict (same var the claude arm sets)
+            # and _provider_rc is set so a timeout still routes conservatively.
+            if [ "${LOKI_SDK_COUNCIL_VOTE:-0}" = "1" ]; then
+                local _cv_root _cv_loki _cv_pf _cv_out _cv_rc
+                _cv_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                _cv_loki="${_cv_root}/bin/loki"
+                [ -x "$_cv_loki" ] || _cv_loki="${_cv_root}/../bin/loki"
+                if [ -x "$_cv_loki" ] && command -v bun >/dev/null 2>&1; then
+                    _cv_pf="$(mktemp 2>/dev/null)" || _cv_pf=""
+                    if [ -n "$_cv_pf" ]; then
+                        printf '%s' "$prompt" > "$_cv_pf"
+                        _cv_rc=0
+                        local _cv_to_s="${LOKI_COUNCIL_REVIEW_TIMEOUT:-600}"
+                        local _cv_wrap
+                        if command -v timeout >/dev/null 2>&1; then _cv_wrap="timeout $(( _cv_to_s + 15 ))"
+                        elif command -v gtimeout >/dev/null 2>&1; then _cv_wrap="gtimeout $(( _cv_to_s + 15 ))"
+                        else _cv_wrap=""; fi
+                        _cv_out="$($_cv_wrap "$_cv_loki" internal sdk-text \
+                            --prompt-file "$_cv_pf" \
+                            --model "${LOKI_SDK_COUNCIL_MODEL:-claude-haiku-4-5}" --effort medium \
+                            --timeout-ms "$(( _cv_to_s * 1000 ))" 2>/dev/null)" || _cv_rc=$?
+                        rm -f "$_cv_pf" 2>/dev/null || true
+                        if [ "$_cv_rc" -eq 0 ] && [ -n "$_cv_out" ]; then
+                            verdict="$_cv_out"
+                            _provider_rc=0
+                        fi
+                    fi
+                fi
+                # if verdict is still unset, fall through to the claude arm below
+            fi
+            if [ -z "${verdict:-}" ] && command -v claude &>/dev/null; then
                 local council_model="${PROVIDER_MODEL_FAST:-haiku}"
                 # EMBED 2 + 3 (v7.33.0). Council member completion vote. The
                 # $prompt is fully self-contained (evidence + instructions +
@@ -2415,7 +2467,19 @@ council_devils_advocate() {
 
     # Validate provider CLI is available
     case "${PROVIDER_NAME:-claude}" in
-        claude) command -v claude >/dev/null 2>&1 || { log_error "Claude CLI not found"; return 1; } ;;
+        claude)
+            # v8: the raw-SDK vote path (LOKI_SDK_COUNCIL_VOTE=1) needs no claude
+            # binary, so the precondition passes when that path is viable (bridge
+            # + bun). The vote body still falls closed to claude on an SDK miss.
+            if [ "${LOKI_SDK_COUNCIL_VOTE:-0}" = "1" ] \
+               && { [ -x "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bin/loki" ] \
+                 || [ -x "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../bin/loki" ]; } \
+               && command -v bun >/dev/null 2>&1; then
+                :
+            else
+                command -v claude >/dev/null 2>&1 || { log_error "Claude CLI not found"; return 1; }
+            fi
+            ;;
         codex) command -v codex >/dev/null 2>&1 || { log_error "Codex CLI not found"; return 1; } ;;
         gemini) command -v gemini >/dev/null 2>&1 || { log_error "Gemini CLI not found"; return 1; } ;;
         cline) command -v cline >/dev/null 2>&1 || { log_error "Cline CLI not found"; return 1; } ;;
@@ -2452,7 +2516,42 @@ REASON: your reasoning"
     local verdict=""
     case "${PROVIDER_NAME:-claude}" in
         claude)
-            if command -v claude &>/dev/null; then
+            # v8 RAW-SDK CONTRARIAN VOTE (opt-in LOKI_SDK_COUNCIL_VOTE=1). Same
+            # text-bridge pattern as the member vote: emit the SAME free-form
+            # VOTE/REASON text via the pure-HTTPS SDK (no claude binary), leaving
+            # the downstream VOTE: parser untouched. Runs BEFORE the claude guard.
+            # Fail-closed: on ANY miss fall through to the claude arm; a truly
+            # empty verdict then hits the conservative REJECT default. (The
+            # contrarian path tracks no _provider_rc -- an empty verdict already
+            # routes conservatively -- so we only set $verdict on success.)
+            if [ "${LOKI_SDK_COUNCIL_VOTE:-0}" = "1" ]; then
+                local _dv_root _dv_loki _dv_pf _dv_out _dv_rc
+                _dv_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                _dv_loki="${_dv_root}/bin/loki"
+                [ -x "$_dv_loki" ] || _dv_loki="${_dv_root}/../bin/loki"
+                if [ -x "$_dv_loki" ] && command -v bun >/dev/null 2>&1; then
+                    _dv_pf="$(mktemp 2>/dev/null)" || _dv_pf=""
+                    if [ -n "$_dv_pf" ]; then
+                        printf '%s' "$prompt" > "$_dv_pf"
+                        _dv_rc=0
+                        local _dv_to_s="${LOKI_COUNCIL_REVIEW_TIMEOUT:-600}"
+                        local _dv_wrap
+                        if command -v timeout >/dev/null 2>&1; then _dv_wrap="timeout $(( _dv_to_s + 15 ))"
+                        elif command -v gtimeout >/dev/null 2>&1; then _dv_wrap="gtimeout $(( _dv_to_s + 15 ))"
+                        else _dv_wrap=""; fi
+                        _dv_out="$($_dv_wrap "$_dv_loki" internal sdk-text \
+                            --prompt-file "$_dv_pf" \
+                            --model "${LOKI_SDK_COUNCIL_MODEL:-claude-haiku-4-5}" --effort medium \
+                            --timeout-ms "$(( _dv_to_s * 1000 ))" 2>/dev/null)" || _dv_rc=$?
+                        rm -f "$_dv_pf" 2>/dev/null || true
+                        if [ "$_dv_rc" -eq 0 ] && [ -n "$_dv_out" ]; then
+                            verdict="$_dv_out"
+                        fi
+                    fi
+                fi
+                # if verdict is still unset, fall through to the claude arm below
+            fi
+            if [ -z "${verdict:-}" ] && command -v claude &>/dev/null; then
                 local council_model="${PROVIDER_MODEL_FAST:-haiku}"
                 # EMBED 2 + 3 (v7.33.0). Contrarian (devil's-advocate) vote --
                 # an adversarial reviewer. Self-contained $prompt via stdin,
