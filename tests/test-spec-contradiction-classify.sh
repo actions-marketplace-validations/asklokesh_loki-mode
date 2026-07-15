@@ -52,8 +52,33 @@ r="$(classify "Ambiguities" "acceptance criteria are unclear")"
 [ "$r" != "contradictory" ] && ok || fail "plain ambiguity must never be contradictory (got $r)"
 
 # 6. opt back in: LOKI_SPEC_SECTION_CONTRADICTION_FORCE=1 restores the old broad force
-r="$(classify "Contradictions" "just a vague ambiguity" "LOKI_SPEC_SECTION_CONTRADICTION_FORCE=1")"
+r="$(classify "Contradictions" "these are mutually exclusive but also required" "LOKI_SPEC_SECTION_CONTRADICTION_FORCE=1")"
 [ "$r" = "contradictory" ] && ok || fail "opt-in force must restore old section-force (got $r)"
+
+# --- interrogative/hypothetical keyword guard (the real showcase bug) ---
+# A finding that merely QUESTIONS a possible contradiction is an ambiguity, not
+# an asserted "X and not-X". Naive substring matching on "contradict"/"conflict"
+# force-tagged such questions and killed valid specs.
+
+# 7. THE REAL BUG: a question using the word "contradicting" -> NOT contradictory
+r="$(classify "Ambiguities and missing acceptance criteria" "what stops them from contradicting the line chart, e.g. KPI says up 12% while chart shows a decline")"
+[ "$r" != "contradictory" ] && ok || fail "interrogative 'contradicting' must not be a contradiction (got $r)"
+
+# 8. hypothetical "could conflict" -> NOT contradictory
+r="$(classify "Findings" "these two settings could conflict at runtime")"
+[ "$r" != "contradictory" ] && ok || fail "hypothetical 'could conflict' must not be a contradiction (got $r)"
+
+# 9. an ASSERTED contradiction is STILL detected (guard did not over-demote)
+r="$(classify "Findings" "section 2 mandates immutable records but section 5 says records are editable, which is inconsistent")"
+[ "$r" = "contradictory" ] && ok || fail "an asserted contradiction must still classify contradictory (got $r)"
+
+# 10. a plain asserted "directly contradicts" -> contradictory
+r="$(classify "Findings" "requirement A directly contradicts requirement B")"
+[ "$r" = "contradictory" ] && ok || fail "asserted 'directly contradicts' must be contradictory (got $r)"
+
+# 11. keyword-strict opt-out restores the old broad substring match
+r="$(classify "Findings" "what stops them from contradicting the chart" "LOKI_SPEC_CONTRADICTION_KEYWORD_STRICT=0")"
+[ "$r" = "contradictory" ] && ok || fail "keyword-strict=0 must restore old broad match (got $r)"
 
 echo ""
 echo "test-spec-contradiction-classify: $PASS passed, $FAIL failed"

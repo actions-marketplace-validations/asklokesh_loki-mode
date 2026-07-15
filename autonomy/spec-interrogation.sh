@@ -142,9 +142,37 @@ spec_interrogation_class_for() {
     lc_section="$(printf '%s' "$section" | tr '[:upper:]' '[:lower:]')"
     lc_line="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
 
+    # A contradiction keyword classifies the finding as contradictory ONLY when
+    # the finding ASSERTS a contradiction ("section 2 says X, section 5 says
+    # not-X"), NOT when it merely QUESTIONS a hypothetical one ("what stops the
+    # KPIs from contradicting the chart?", "these could conflict"). A grill that
+    # ASKS about a possible inconsistency is raising an AMBIGUITY (assumable-away
+    # with a default: "make them consistent"), not reporting an unresolvable
+    # spec-internal "X and not-X". Naive substring matching force-tagged such
+    # questions as no-retry-terminal contradictions and killed valid specs.
+    # Interrogative / hypothetical / risk framings demote the keyword to a normal
+    # (assumable) finding; the section-based classification below then applies.
+    # Opt back into the old broad substring match with
+    # LOKI_SPEC_CONTRADICTION_KEYWORD_STRICT=0.
     case "$lc_line" in
-        *contradict*|*conflict*|*inconsistent*|*mutually\ exclusive*)
-            printf 'contradictory'; return 0 ;;
+        *contradict*|*conflict*|*inconsistent*|*incompatible*|*mutually\ exclusive*)
+            if [ "${LOKI_SPEC_CONTRADICTION_KEYWORD_STRICT:-1}" = "1" ]; then
+                case "$lc_line" in
+                    # Interrogative or hypothetical -> ambiguity, not a contradiction.
+                    what\ stops*|what\ if*|what\ prevents*|how\ do\ we\ ensure*|\
+                    *could\ contradict*|*could\ conflict*|*might\ contradict*|*might\ conflict*|\
+                    *may\ contradict*|*may\ conflict*|*risk\ of\ *|*potential*|\
+                    *would\ contradict*|*if\ they\ contradict*|*from\ contradicting*|\
+                    *stops\ them\ from*|*prevents\ them\ from*|*avoid*|\
+                    *unclear\ whether*|*not\ specified*|*no\ guarantee*|*to\ ensure*)
+                        : ;;  # demote: fall through to section-based classification
+                    *)
+                        printf 'contradictory'; return 0 ;;
+                esac
+            else
+                printf 'contradictory'; return 0
+            fi
+            ;;
     esac
 
     # P2-4 REFINED (false-positive fix): a contradiction is "X and not-X" -- it
