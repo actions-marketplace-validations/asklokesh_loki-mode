@@ -313,6 +313,16 @@ if [ -f "$_TELEMETRY_SCRIPT" ]; then
     source "$_TELEMETRY_SCRIPT"
 fi
 
+# Activation-funnel instrumentation (honest top-of-funnel visibility): fires the
+# install/first-run/blocked/complete events through the SAME opt-out-respecting
+# telemetry path, so we can SEE where users drop off (e.g. no-API-key at first
+# start) instead of inferring it. Sourced best-effort; never blocks the CLI.
+_FUNNEL_SCRIPT="$SKILL_DIR/autonomy/lib/funnel.sh"
+if [ -f "$_FUNNEL_SCRIPT" ]; then
+    # shellcheck source=lib/funnel.sh
+    source "$_FUNNEL_SCRIPT" 2>/dev/null || true
+fi
+
 # Get version from VERSION file
 get_version() {
     if [ -f "$SKILL_DIR/VERSION" ]; then
@@ -1373,6 +1383,8 @@ cmd_start() {
     # first start. Writes ~/.loki/.welcomed and never repeats; non-blocking,
     # and never auto-opens a browser in CI or non-interactive shells.
     cmd_welcome_maybe_firstrun 2>/dev/null || true
+    # Funnel: first `loki start` (the activation attempt). Fires once per machine.
+    declare -f _loki_funnel_start_attempted >/dev/null 2>&1 && _loki_funnel_start_attempted 2>/dev/null || true
     local args=()
     local prd_file=""
     local provider=""
@@ -17572,12 +17584,26 @@ main() {
     if [ $# -eq 0 ]; then
         # v7.28.x UX: bare `loki` shows a tight newcomer landing, not the full
         # command wall. `loki help`/`--help` still print show_help unchanged.
+        # Funnel: first-ever invoke (installed) + a "looked but did not build"
+        # curiosity signal.
+        declare -f _loki_funnel_installed >/dev/null 2>&1 && _loki_funnel_installed "bare" 2>/dev/null || true
+        declare -f _loki_funnel_help_seen >/dev/null 2>&1 && _loki_funnel_help_seen "landing" 2>/dev/null || true
         show_landing
         exit 0
     fi
 
     local command="$1"
     shift
+
+    # Funnel: first-ever invocation of ANY command (top of the activation funnel;
+    # previously unmeasured). Fires once per machine through the opt-out-respecting
+    # telemetry path. Best-effort, never blocks.
+    declare -f _loki_funnel_installed >/dev/null 2>&1 && _loki_funnel_installed "$command" 2>/dev/null || true
+    case "$command" in
+        help|--help|-h|welcome)
+            declare -f _loki_funnel_help_seen >/dev/null 2>&1 && _loki_funnel_help_seen "$command" 2>/dev/null || true
+            ;;
+    esac
 
     # v7.4.13: first-run telemetry moved to bin/loki shim so it fires for
     # both Bun-routed and bash-routed commands (autonomy/loki main() never
