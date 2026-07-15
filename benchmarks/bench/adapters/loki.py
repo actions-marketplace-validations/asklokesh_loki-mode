@@ -83,6 +83,27 @@ def _read_iteration_count(loki_dir):
     return None
 
 
+def _read_failure_reason(loki_dir):
+    """The classified reason a terminal failure occurred, from the durable record
+    loki itself writes (.loki/state/LAST_ERROR.json: {error_class, brief, ...}).
+    A failure whose reason is not captured cannot be learned from -- so surface
+    it. Returns a dict {error_class, brief} or None when there is no record
+    (a clean run). Best-effort: any read/parse problem returns None."""
+    path = os.path.join(loki_dir, "state", "LAST_ERROR.json")
+    try:
+        with open(path) as fh:
+            rec = json.load(fh)
+    except Exception:
+        return None
+    if not isinstance(rec, dict):
+        return None
+    cls = rec.get("error_class")
+    brief = rec.get("brief")
+    if cls is None and brief is None:
+        return None
+    return {"error_class": cls, "brief": brief}
+
+
 def run(workdir, spec, *, model="claude", timeout=900, runner=None,
         provider="claude"):
     """Run Loki on `spec` inside `workdir` and return the adapter-output dict.
@@ -122,6 +143,7 @@ def run(workdir, spec, *, model="claude", timeout=900, runner=None,
 
     loki_dir = os.path.join(workdir, ".loki")
     iterations = _read_iteration_count(loki_dir)
+    failure_reason = _read_failure_reason(loki_dir)
 
     # Cost: shared with the proof generator. None usd == not recorded.
     cost = {"usd": None, "input_tokens": None, "output_tokens": None}
@@ -150,5 +172,9 @@ def run(workdir, spec, *, model="claude", timeout=900, runner=None,
             "verified": True,
             "harness": "loki.start",
             "command": " ".join(cmd),
+            # Why a terminal failure happened (from loki's own LAST_ERROR.json);
+            # None on a clean run. Lets a failed trial be diagnosed and learned
+            # from instead of showing only an opaque exit code.
+            "failure_reason": failure_reason,
         },
     )

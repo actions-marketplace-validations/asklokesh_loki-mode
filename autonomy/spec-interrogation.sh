@@ -823,6 +823,71 @@ for t in titles:
 }
 
 # Total ledger entries + high count, "total high" on one line. For summaries.
+# ---------------------------------------------------------------------------
+# spec_contradiction_confident: confirm a contradiction verdict is NOT a flaky
+# single-LLM-sample false positive before it is allowed to trip a no-retry
+# terminal exit.
+#
+# WHY: the contradiction verdict comes from ONE Devil's-Advocate grill sample
+# (grill_main is invoked once per run). An LLM judge is non-deterministic, so the
+# SAME spec is judged "contradictory" only some fraction of runs -- measured
+# ~1/3 in the v8 benchmark. Escalating that lone sample straight to exit 20
+# ("terminal failure, no retry", whose own contract asserts "re-running on the
+# same inputs fails the same way") is unsound: re-running an LLM judge does NOT
+# fail the same way. This helper turns a single sample into an N-of-M agreement:
+# it re-grills up to (MIN_SAMPLES - 1) more times and returns confident (0) only
+# if the contradiction PERSISTS across the required number of independent
+# samples. A verdict that does not reproduce is treated as flaky -> not
+# confident (non-zero) -> the caller must NOT terminal-exit; it falls through to
+# the in-loop resolve-with-default recovery (spec_ledger_acknowledge_all).
+#
+# This is a general "confirm before an irreversible terminal action on a
+# non-deterministic verdict" pattern, not a fix for any one spec. It is a no-op
+# (returns confident immediately) when MIN_SAMPLES<=1 (LOKI_SPEC_CONTRADICTION_MIN_SAMPLES=1
+# restores the pre-fix single-sample behavior), or when re-grilling is impossible
+# (no provider / grill unavailable) -- in that degraded case we KEEP the original
+# single-sample verdict rather than silently clearing it (fail-closed on the
+# original signal, never fabricate a clear).
+#
+# Usage: spec_contradiction_confident <spec_path>
+#   exit 0  -> contradiction confirmed across samples (safe to terminal-fail)
+#   exit 1  -> not confirmed / flaky (caller must recover-before-fail, not exit 20)
+# ---------------------------------------------------------------------------
+spec_contradiction_confident() {
+    local spec_path="${1:-}"
+    local min_samples="${LOKI_SPEC_CONTRADICTION_MIN_SAMPLES:-2}"
+    case "$min_samples" in ''|*[!0-9]*) min_samples=2 ;; esac
+
+    # MIN_SAMPLES<=1: legacy single-sample behavior -> the current (already >=1)
+    # verdict is authoritative. Confident.
+    [ "$min_samples" -le 1 ] && return 0
+
+    # Re-grill up to (min_samples - 1) additional times; every re-sample must ALSO
+    # report >=1 unresolved contradiction for the verdict to be confident.
+    # We already hold sample #1 (the caller only invokes us when count>=1).
+    local needed=$(( min_samples - 1 ))
+    local i
+    for (( i = 1; i <= needed; i++ )); do
+        # A fresh grill sample. spec_interrogation_run re-runs grill_main and
+        # re-classifies into the ledger. If re-grilling is not possible (no
+        # provider), the count will not change and we must not clear a real
+        # signal -- so treat an unchanged/failed re-sample as still-present
+        # (fail-closed on the original verdict).
+        if type spec_interrogation_run &>/dev/null; then
+            spec_interrogation_run "$spec_path" >/dev/null 2>&1 || true
+        fi
+        local _n
+        _n="$(spec_ledger_contradiction_unresolved_count 2>/dev/null | head -1)"
+        case "$_n" in ''|*[!0-9]*) _n=0 ;; esac
+        if [ "$_n" -lt 1 ]; then
+            # This independent sample does NOT see the contradiction -> flaky.
+            return 1
+        fi
+    done
+    # Persisted across all required samples -> confident it is a real contradiction.
+    return 0
+}
+
 spec_ledger_counts() {
     local dir
     dir="$(_spec_ledger_dir)"

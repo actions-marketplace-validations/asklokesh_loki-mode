@@ -523,6 +523,8 @@ run_check "tests/test-loki-steer.sh (loki steer writes the file the loop reads; 
 run_check "tests/test-loki-why-stall.sh (loki why names the real stall reason: UNCERTAINTY_ESCALATION + convergence signal, suggests loki steer)" "bash tests/test-loki-why-stall.sh 2>&1 | tail -3"
 run_check "tests/test-spec-expand.sh (OpenAPI/GraphQL/Postman contract expands to a per-operation checklist; no ops lost to prompt truncation; non-contract untouched)" "bash tests/test-spec-expand.sh 2>&1 | tail -3"
 run_check "tests/test-spec-contract-drift.sh (contract locks one requirement per operation; mutating one response schema drifts exactly that operationId, exit 1)" "bash tests/test-spec-contract-drift.sh 2>&1 | tail -3"
+run_check "tests/test-spec-contradiction-confident.sh (a flaky single-sample spec-contradiction verdict must reproduce across N samples before it can terminal-fail a run)" "bash tests/test-spec-contradiction-confident.sh 2>&1 | tail -3"
+run_check "tests/test-failure-learn-forward.sh (learn-forward: prior failure archived to append-only bounded history before clear; completion.json carries error_class+brief)" "bash tests/test-failure-learn-forward.sh 2>&1 | tail -3"
 run_check "tests/test-bench-honest-degrade.sh (L4 packaged-install bench UX)" "bash tests/test-bench-honest-degrade.sh 2>&1 | tail -3"
 run_check "tests/test-emit-json-escape.sh (C0 control-char escaping + UTF-8)" "bash tests/test-emit-json-escape.sh 2>&1 | tail -3"
 run_check "tests/test-codex-model-trusted.sh (LOKI_CODEX_MODEL verbatim, generic validated)" "bash tests/test-codex-model-trusted.sh 2>&1 | tail -3"

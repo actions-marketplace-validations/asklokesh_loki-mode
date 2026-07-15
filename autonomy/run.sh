@@ -1162,6 +1162,46 @@ except Exception:
     return 0
 }
 
+# _loki_archive_last_error <last_error_json> <history_jsonl>
+# LEARN-FORWARD: append a prior run's LAST_ERROR record to an append-only,
+# bounded failure-history so the next run can detect a REPEATED failure signature
+# (same error_class recurring) even though the single LAST_ERROR.json is cleared
+# each run. No-op when there is no prior error. Bounded to the most recent 50
+# entries so it never grows unbounded. Best-effort; never fails the run.
+_loki_archive_last_error() {
+    local src="${1:-}"
+    local hist="${2:-}"
+    [ -n "$src" ] && [ -n "$hist" ] || return 0
+    [ -f "$src" ] || return 0
+    LOKI_AE_SRC="$src" LOKI_AE_HIST="$hist" python3 -c "
+import json, os, tempfile
+src = os.environ['LOKI_AE_SRC']
+hist = os.environ['LOKI_AE_HIST']
+try:
+    with open(src) as f:
+        rec = json.load(f)
+    if not isinstance(rec, dict):
+        raise ValueError('bad record')
+    lines = []
+    if os.path.exists(hist):
+        try:
+            with open(hist) as hf:
+                lines = [ln for ln in hf.read().splitlines() if ln.strip()]
+        except Exception:
+            lines = []
+    lines.append(json.dumps(rec, separators=(',', ':')))
+    lines = lines[-50:]
+    d = os.path.dirname(hist) or '.'
+    fd, tmp = tempfile.mkstemp(dir=d, suffix='.jsonl')
+    with os.fdopen(fd, 'w') as f:
+        f.write('\n'.join(lines) + '\n')
+    os.replace(tmp, hist)
+except Exception:
+    pass
+" 2>/dev/null || true
+    return 0
+}
+
 # _loki_classify_iteration_error (T2.5 helper): map an iteration's signals to one
 # of the LAST_ERROR error_class values. Conservative: only returns a specific
 # class when a signal confidently supports it, else "unknown". Never fabricates
@@ -3580,14 +3620,32 @@ except Exception:
     _LOKI_CS_ASSUMPTIONS_TOTAL="$assumptions_total" \
     _LOKI_CS_ASSUMPTIONS_HIGH="$assumptions_high" \
     _LOKI_CS_OUT_FILE="$loki_dir/state/completion.json" \
+    _LOKI_CS_LAST_ERROR="$loki_dir/state/LAST_ERROR.json" \
     python3 -c "
 import json, os, tempfile
 out = os.environ['_LOKI_CS_OUT_FILE']
 def i(v):
     try: return int(v)
     except (TypeError, ValueError): return 0
+# Carry the CLASSIFIED failure reason (error_class + brief) into the machine-
+# readable completion record, from the side-record loki wrote before this summary
+# (.loki/state/LAST_ERROR.json). Without it a terminal outcome like
+# 'inconclusive_spec_contradiction' is only a label with no cause a downstream
+# (operator, next run, bench) can act on. None on a clean run.
+_err_class = None
+_err_brief = None
+try:
+    with open(os.environ.get('_LOKI_CS_LAST_ERROR', '')) as _ef:
+        _er = json.load(_ef)
+    if isinstance(_er, dict):
+        _err_class = _er.get('error_class')
+        _err_brief = _er.get('brief')
+except Exception:
+    pass
 rec = {
     'outcome': os.environ.get('_LOKI_CS_OUTCOME', ''),
+    'error_class': _err_class,
+    'error_brief': _err_brief,
     'branch': os.environ.get('_LOKI_CS_BRANCH', ''),
     'start_sha': os.environ.get('_LOKI_CS_START_SHA', ''),
     'head_sha': os.environ.get('_LOKI_CS_HEAD_SHA', ''),
@@ -16898,20 +16956,40 @@ except Exception:
             _sc_n="$(printf '%s' "$_sc_out" | head -1)"
             case "$_sc_n" in ''|*[!0-9]*) _sc_n=0 ;; esac
             if [ "$_sc_n" -ge 1 ]; then
-                # Option C: name the contradicting clauses so `loki why` is actionable.
-                local _sc_titles
-                _sc_titles="$(printf '%s' "$_sc_out" | tail -n +2 | sed 's/^/  - /' | head -5)"
-                log_error "Spec has ${_sc_n} unresolved internal contradiction(s); an autonomous run cannot resolve them (only a human can). Failing fast instead of grinding to max-iterations."
-                [ -n "$_sc_titles" ] && printf '%s\n' "$_sc_titles" >&2
-                if type _loki_write_last_error &>/dev/null; then
-                    _loki_write_last_error 0 "spec_contradiction" \
-                        "Spec is internally inconsistent (${_sc_n} unresolved contradiction(s)); resolve the conflicting requirements, then re-run."
+                # CONFIDENCE GATE (never fail a stage on a flaky verdict): the
+                # contradiction count comes from a SINGLE Devil's-Advocate grill
+                # sample, and an LLM judge is non-deterministic -- the same spec is
+                # judged contradictory only some fraction of runs (~1/3 measured).
+                # exit 20 is a NO-RETRY terminal whose contract asserts "re-running
+                # fails the same way", which is false for a lone LLM sample. So
+                # before terminal-failing, require the contradiction to reproduce
+                # across LOKI_SPEC_CONTRADICTION_MIN_SAMPLES independent samples
+                # (default 2). If it does NOT reproduce, it was flaky: do NOT
+                # exit 20 -- fall through into the loop, where the existing
+                # resolve-with-default recovery (spec_ledger_acknowledge_all)
+                # handles it. Set LOKI_SPEC_CONTRADICTION_MIN_SAMPLES=1 to restore
+                # the old single-sample terminal behavior.
+                if type spec_contradiction_confident &>/dev/null \
+                   && ! spec_contradiction_confident "$prd_path"; then
+                    log_warn "Spec contradiction did not reproduce across ${LOKI_SPEC_CONTRADICTION_MIN_SAMPLES:-2} independent grill samples; treating the single-sample verdict as flaky and proceeding (resolve-with-default handles any residual). Not failing the run."
+                else
+                    # Confirmed across samples (or confidence gate unavailable):
+                    # this is a real contradiction -> fast-fail honestly.
+                    # Option C: name the contradicting clauses so `loki why` is actionable.
+                    local _sc_titles
+                    _sc_titles="$(printf '%s' "$_sc_out" | tail -n +2 | sed 's/^/  - /' | head -5)"
+                    log_error "Spec has ${_sc_n} unresolved internal contradiction(s) (confirmed across samples); an autonomous run cannot resolve them (only a human can). Failing fast instead of grinding to max-iterations."
+                    [ -n "$_sc_titles" ] && printf '%s\n' "$_sc_titles" >&2
+                    if type _loki_write_last_error &>/dev/null; then
+                        _loki_write_last_error 0 "spec_contradiction" \
+                            "Spec is internally inconsistent (${_sc_n} unresolved contradiction(s)); resolve the conflicting requirements, then re-run."
+                    fi
+                    save_state "$retry" "inconclusive_spec_contradiction" 0
+                    if type emit_completion_summary &>/dev/null; then
+                        emit_completion_summary inconclusive_spec_contradiction 2>/dev/null || true
+                    fi
+                    return 20
                 fi
-                save_state "$retry" "inconclusive_spec_contradiction" 0
-                if type emit_completion_summary &>/dev/null; then
-                    emit_completion_summary inconclusive_spec_contradiction 2>/dev/null || true
-                fi
-                return 20
             fi
         fi
     fi
@@ -20109,6 +20187,16 @@ main() {
     # failed run it must not surface next to THIS run's outcome (a stale error
     # shown beside a fresh success would be a fake-green-adjacent lie). Mirrors
     # the RATE_LIMITED signal clear. Best-effort; never blocks the run.
+    #
+    # LEARN-FORWARD: before deleting, ARCHIVE the prior failure to an append-only
+    # history (.loki/state/failure-history.jsonl) so the lesson survives the
+    # clear. Deleting the single record made every failure invisible to the next
+    # run (the founder's "the lesson learnt must not affect the next run" cuts
+    # both ways: don't SHOW a stale error as current, but DO remember it happened
+    # so a repeated failure signature can be surfaced at preflight). Append-only,
+    # bounded, best-effort; never blocks the run.
+    _loki_archive_last_error "${TARGET_DIR:-.}/.loki/state/LAST_ERROR.json" \
+        "${TARGET_DIR:-.}/.loki/state/failure-history.jsonl" 2>/dev/null || true
     rm -f "${TARGET_DIR:-.}/.loki/state/LAST_ERROR.json" 2>/dev/null || true
 
     if [ "$PARALLEL_MODE" = "true" ]; then
