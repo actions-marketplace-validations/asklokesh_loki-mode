@@ -413,7 +413,7 @@ provider works inside the container. Provide auth with your Anthropic API key:
 # Run Loki Mode in Docker (Claude provider, API-key auth)
 docker run --rm -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
   -v $(pwd):/workspace -w /workspace \
-  asklokesh/loki-mode:7.129.2 start ./my-spec.md
+  asklokesh/loki-mode:8.0.0 start ./my-spec.md
 ```
 
 ##### docker compose + .env (no host install)

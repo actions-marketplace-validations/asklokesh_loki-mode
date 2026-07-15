@@ -7,13 +7,15 @@ description: Autonomous spec-driven build system with a built-in trust layer. It
 
 **You are an autonomous agent. You make decisions. You do not ask questions. You do not stop.**
 
-**Spec in, verified product out.** Spec-driven: a "spec" is whatever describes the work -- a Markdown PRD, a GitHub issue, an OpenAPI doc, a Jira ticket (a PRD is one form of spec). The differentiator is the trust layer: Loki does not call work done until it is verified. The RARV-C closure loop, 8 quality gates, the completion council, and the verified-completion evidence gate must all clear before completion is accepted.
+**Spec in, verified product out.** Spec-driven: a "spec" is whatever describes the work -- a Markdown PRD, a GitHub issue, an OpenAPI doc, a Jira ticket (a PRD is one form of spec). The differentiator is the trust layer: Loki does not call work done until it is verified. The RARV-C closure loop, 8 quality gates, the completion council, and the verified-completion evidence gate must all clear before completion is accepted. The evidence gate blocks on empty-diff, red tests, an unhealthy serveable app (runtime-boot axis, `LOKI_EVIDENCE_BOOT_GATE=0` to opt out), and a leaked credential in the changed files (secret-leak axis, `LOKI_EVIDENCE_SECRET_GATE=0` to opt out) -- v8.0.0.
 
 **Evidence Receipt (verify it yourself).** Every run writes a receipt to `.loki/proofs/<run_id>/` (opt out with `LOKI_PROOF=0`) that separates deterministic FACTS (git diff with base/head SHAs and a `diff_sha256`, the test command + exit code, the build command + exit code, each gate verdict) from AI ASSESSMENTS (the council verdict, labeled judgment not proof). The headline is computed only from the facts: VERIFIED (tests ran a real command and exited 0, diff non-empty, nothing skipped), VERIFIED WITH GAPS (each gap listed by name), or NOT VERIFIED (a check ran and failed). Inspect and re-check with `loki proof list|show <id>|verify <id>` (aliased `loki receipt`); `loki proof verify` re-hashes the receipt (tamper) and re-derives the diff from the recorded base SHA against the live repo (drift), exiting 0 clean / 1 tamper-or-drift. This is honesty-of-done, not a claim that the code is bug-free.
 
 **Provider-agnostic (stable since v5.0.0):** runs on Claude/Codex/Cline/Aider with abstract model tiers and degraded mode for non-Claude providers; no vendor lock-in. Gemini deprecated v7.5.18. See `skills/providers.md`. **Current track (v7.7.x):** LSP grounding as first-class agent tool (v7.7.0-v7.7.9; lsp_get_diagnostics actually-returns-diagnostics regression fix v7.7.14), provider_source cli (v7.7.11-v7.7.12 bash/bun parity), Docker/bash-3.2 robustness (v7.7.13), audit chain cross-file verification fix (v7.7.15), Phase 1 RARV-C closure (real provider judges, gate-failure flock, synthetic PRD e2e, status `--json`).
 
 **Runtime migration:** Bash-to-Bun migration. Read-only commands (`version`, `status`, `stats`, `doctor`, `provider show/list`, `memory list/index`) flow through Bun runtime via `bin/loki` since v7.3.0. Every other command remains on the Bash runtime (`autonomy/loki`). Rollback: `LOKI_LEGACY_BASH=1`. See `UPGRADING.md` and `docs/architecture/ADR-001-runtime-migration.md`.
+
+**Anthropic Agent SDK route (v8.0.0, opt-in, default-off):** a claude-binary-free path where the RARV loop runs on `@anthropic-ai/claude-agent-sdk` `query()` and judges run on the raw `@anthropic-ai/sdk`. One operator switch `LOKI_SDK_MODE` (`off` default / `judges` / `full`), mirrored byte-for-byte in bash (`autonomy/lib/sdk-mode.sh`) and TypeScript (`loki-ts/src/runner/sdk_mode.ts`). Unset = byte-identical to the claude-CLI route. See `references/sdk-mode.md`.
 
 ---
 
@@ -203,7 +205,7 @@ claude --dangerously-skip-permissions
 # Unified `loki start` -- one command, auto-detected mode
 loki start                                   # no arg: analyze current dir, auto-generate spec
 loki start ./prd.md                          # PRD mode (.md/.json/.txt/.yaml) -- a PRD is one form of spec
-loki start ./openapi.yaml                    # SPEC mode (OpenAPI doc treated as the spec)
+loki start ./openapi.yaml                    # SPEC mode: OpenAPI/GraphQL/Postman contract expands to a per-operation checklist (v8.0.0)
 loki start owner/repo#123                    # ISSUE mode (GitHub specific repo)
 loki start https://github.com/o/r/issues/42  # ISSUE mode (GitHub URL)
 loki start 123                               # ISSUE mode (GitHub issue in current repo)
@@ -250,7 +252,9 @@ When running with `autonomy/run.sh`, you can intervene:
 | Method | Effect |
 |--------|--------|
 | `touch .loki/PAUSE` | Pauses after current session |
+| `loki steer "<note>"` | Appends a directive to `.loki/HUMAN_INPUT.md` (needs `LOKI_PROMPT_INJECTION=1`); v8.0.0 |
 | `echo "instructions" > .loki/HUMAN_INPUT.md` | Injects directive (requires `LOKI_PROMPT_INJECTION=true`) |
+| `loki why` | Explains the current outcome; on a stall names the real stall reason and suggests `loki steer` (v8.0.0) |
 | `touch .loki/STOP` | Stops immediately |
 | Ctrl+C (once) | Pauses, shows options |
 | Ctrl+C (twice) | Exits immediately |

@@ -448,7 +448,7 @@ docker inspect --format='{{.State.Health.Status}}' <container-id>
 | Tag | Description |
 |-----|-------------|
 | `latest` | Latest stable release |
-| `7.121.1` | Specific version (current release) |
+| `8.0.0` | Specific version (current release) |
 | `7.x.x` | Prior versions |
 | `sandbox` | Security-hardened image (Debian slim) |
 
