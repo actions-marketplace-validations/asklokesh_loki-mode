@@ -147,12 +147,36 @@ spec_interrogation_class_for() {
             printf 'contradictory'; return 0 ;;
     esac
 
-    # P2-4: a "Contradictions" SECTION tags its findings contradictory even when
-    # the line carries no contradiction keyword (see severity_for for rationale).
-    case "$lc_section" in
-        *contradiction*|*contradictor*)
-            printf 'contradictory'; return 0 ;;
-    esac
+    # P2-4 REFINED (false-positive fix): a contradiction is "X and not-X" -- it
+    # must be evidenced by the FINDING itself, not merely by living under a
+    # loosely-named section. The grill's report sections are free-form LLM text
+    # and commonly group unlike findings ("Contradictions and ambiguities",
+    # "Contradictions / open questions"), so a section-only force-tag mislabeled
+    # pure AMBIGUITY (which CAN be assumed away with an implementer default) as a
+    # no-retry-terminal CONTRADICTION -- observed terminal-failing valid specs on
+    # findings whose text was "Ambiguities and missing acceptance criteria".
+    # A section heading now escalates to contradictory ONLY when the finding line
+    # ALSO shows real conflict language (two requirements in tension), not for a
+    # bare ambiguity/underspecification finding filed under a contradiction-ish
+    # heading. The line-level check above already catches genuinely-worded
+    # contradictions regardless of section. Opt back into the old broad behavior
+    # with LOKI_SPEC_SECTION_CONTRADICTION_FORCE=1.
+    if [ "${LOKI_SPEC_SECTION_CONTRADICTION_FORCE:-0}" = "1" ]; then
+        case "$lc_section" in
+            *contradiction*|*contradictor*)
+                printf 'contradictory'; return 0 ;;
+        esac
+    else
+        case "$lc_section" in
+            *contradiction*|*contradictor*)
+                # require corroborating conflict language in the line itself
+                case "$lc_line" in
+                    *contradict*|*conflict*|*inconsistent*|*incompatible*|*cannot\ both*|*mutually\ exclusive*|*versus*|*but\ also*)
+                        printf 'contradictory'; return 0 ;;
+                esac
+                ;;
+        esac
+    fi
 
     case "$lc_section" in
         *security*|*scale*|*reliability*) printf 'missing'; return 0 ;;
