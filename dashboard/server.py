@@ -9942,7 +9942,10 @@ def get_prompt_versions():
     if not _read_limiter.check("prompt_versions"):
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
     try:
-        return _get_prompt_optimizer().get_current_version()
+        result = _get_prompt_optimizer().get_current_version()
+        result["experimental"] = True
+        result["note"] = "heuristic-only: returns content-hash version tracking, not an applied LLM optimization"
+        return result
     except Exception as exc:
         logger.error("Prompt version read error: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to read prompt versions")
@@ -9956,7 +9959,10 @@ def optimize_prompts(sessions: int = 10, dry_run: bool = True):
     if not _control_limiter.check("prompt_optimize"):
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
     try:
-        return _get_prompt_optimizer().optimize(sessions=sessions, dry_run=dry_run)
+        result = _get_prompt_optimizer().optimize(sessions=sessions, dry_run=dry_run)
+        result["experimental"] = True
+        result["note"] = "heuristic-only: returns content-hash version tracking, not an applied LLM optimization"
+        return result
     except Exception as exc:
         logger.error("Prompt optimization error: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to run prompt optimization")

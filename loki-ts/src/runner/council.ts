@@ -27,8 +27,52 @@ import {
   appendFileSync,
   readdirSync,
   statSync,
+  openSync,
+  fstatSync,
+  readSync,
+  closeSync,
 } from "node:fs";
 import { resolve, dirname } from "node:path";
+
+// RUN-25 iter 17 (Wave C #1/#3): read only the LAST `n` lines of a file by
+// reading at most `maxBytes` from its tail, instead of readFileSync-ing the whole
+// file and slicing. The council devil's-advocate reads the unbounded, append-only
+// events.jsonl (and each test log) on EVERY completion attempt; a full read is
+// O(filesize) and grows with run length (micro-bench: 3.5MB file 0.89ms vs
+// 0.026ms tail = 34x; 17.6MB 5.11ms vs 0.024ms = 210x). This ports the bash
+// `tail -50` the TS side had regressed away from. Returns the last n lines (or
+// fewer). 64KB holds ~400 lines at ~150B, comfortably covering the -50/-30 tails.
+// Fail-soft: any error returns null (caller treats it as "could not read").
+export function tailLines(path: string, n: number, maxBytes = 65536): string[] | null {
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, "r");
+    const size = fstatSync(fd).size;
+    const readLen = Math.min(size, maxBytes);
+    const start = size - readLen;
+    const buf = Buffer.allocUnsafe(readLen);
+    let got = 0;
+    while (got < readLen) {
+      const r = readSync(fd, buf, got, readLen - got, start + got);
+      if (r <= 0) break;
+      got += r;
+    }
+    // If we did not read from byte 0, the first (partial) line may be truncated;
+    // slice(-n) discards it whenever n < available lines, which is the intent.
+    const text = buf.toString("utf-8", 0, got);
+    return text.split("\n").slice(-n);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
 import type { CouncilHook, RunnerContext } from "./types.ts";
 import { lokiDir as defaultLokiDir } from "../util/paths.ts";
 import { claudeFlagSupported } from "../providers/claude_flags.ts";
@@ -395,14 +439,11 @@ export async function councilDevilsAdvocate(
   // Check 2: recent error events
   const eventsFile = resolve(root, "events.jsonl");
   if (existsSync(eventsFile)) {
-    let lines: string[] | null = null;
-    try {
-      lines = readFileSync(eventsFile, "utf-8").split("\n").slice(-50);
-    } catch (err) {
-      console.warn(
-        `council devil's advocate: failed to read ${eventsFile}: ${(err as Error).message}`,
-      );
-      lines = null;
+    // Tail-read: events.jsonl is append-only and unbounded; only the last 50
+    // lines are inspected. Reads at most 64KB from the tail (Wave C #1).
+    const lines = tailLines(eventsFile, 50);
+    if (lines === null) {
+      console.warn(`council devil's advocate: failed to read ${eventsFile}`);
     }
     if (lines !== null) {
       let errors = 0;
@@ -428,11 +469,14 @@ export async function councilDevilsAdvocate(
           const full = resolve(logsDir, entry);
           const st = statSync(full);
           if (st.isFile()) {
-            if (st.size > 5_000_000) {
-              console.warn(`[council] skipping large log ${full} (${st.size} bytes)`);
-              continue;
-            }
-            const tail = readFileSync(full, "utf-8").split("\n").slice(-30).join("\n");
+            // Wave C #3: tail-read the last 30 lines (at most 64KB from the tail)
+            // instead of reading the whole log then slicing. This also drops the
+            // old `st.size > 5MB -> skip` guard, which was a BLIND SPOT: a large
+            // verbose pytest/jest log would silently contribute NO pass marker,
+            // so a real passing suite could read as "no pass marker found". The
+            // pass/fail marker lives in the tail, which we now always read cheaply.
+            const tailArr = tailLines(full, 30);
+            const tail = tailArr ? tailArr.join("\n") : "";
             if (/passed|success|all tests|\bok\b/i.test(tail)) {
               hasPassMarker = true;
             }

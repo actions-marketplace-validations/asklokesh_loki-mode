@@ -72,15 +72,33 @@ register_pid() { :; }; unregister_pid() { :; }
 # ---------------------------------------------------------------------------
 STUB_BIN="$(mktemp -d "${TMPDIR:-/tmp}/loki-reviewdiff-stubbin.XXXXXX")"
 STUB_BODY_FILE="$STUB_BIN/body.txt"
+STUB_EMPTY_REVIEWER_FILE="$STUB_BIN/empty_reviewer.txt"
 : > "$STUB_BODY_FILE"
+: > "$STUB_EMPTY_REVIEWER_FILE"
 cat > "$STUB_BIN/claude" <<'STUB'
 #!/usr/bin/env bash
-# Print the configured review body (empty => NO_OUTPUT). Ignore all flags/prompt.
-cat "$(dirname "$0")/body.txt"
+# Print the configured review body (empty => NO_OUTPUT). The prompt (the arg
+# after -p) always opens with "You are <reviewer_name>." (see run.sh's
+# BUILD_PROMPT heredoc), so a single reviewer can be singled out for EMPTY
+# output via empty_reviewer.txt while the rest print the shared body -- same
+# file-stub mechanism as body.txt, just keyed by name for the mixed case.
+self_dir="$(dirname "$0")"
+empty_name="$(cat "$self_dir/empty_reviewer.txt" 2>/dev/null)"
+if [ -n "$empty_name" ]; then
+    prev=""
+    for arg in "$@"; do
+        if [ "$prev" = "-p" ] && printf '%s' "$arg" | grep -q "^You are ${empty_name}\."; then
+            exit 0
+        fi
+        prev="$arg"
+    done
+fi
+cat "$self_dir/body.txt"
 STUB
 chmod +x "$STUB_BIN/claude"
 export PATH="$STUB_BIN:$PATH"
 set_review_body() { printf '%s' "$1" > "$STUB_BODY_FILE"; }
+set_empty_reviewer() { printf '%s' "$1" > "$STUB_EMPTY_REVIEWER_FILE"; }
 
 setup_repo() {
     local dir="$1"
@@ -205,10 +223,69 @@ case2_real_pass() {
 }
 
 # ===========================================================================
-# Case 3 -- Finding #598: ensure_completion_test_evidence RUNS the project's
-# tests and persists test-results.json (so the evidence gate is not half-blind).
-# A red test command yields pass:false in the persisted file.
+# Case 2d -- Finding #596 partial NO_OUTPUT: some reviewers answer, one does
+# not. The real battery for an unset/standard complexity is always 4
+# reviewers (2 always-on + a 2-specialist floor; see SPECIALIST_COUNT_BY_TIER
+# in run.sh), so this proves the guard on 3-of-4 real verdicts: 3 reviewers
+# return non-empty "VERDICT: PASS" bodies, 1 (maintainer-mergeability, always
+# dispatched second) returns EMPTY (crashed/overflowed). The gate must NOT
+# ship green on the survivors -- it must block and record the exact
+# real_verdict_count/reviewer_count split, not just "some real verdicts".
+# reviewer_count itself is not a field on aggregate.json (only
+# real_verdict_count/inconclusive are), so the total is read from the sibling
+# selection.json that run_code_review already writes in the same review dir.
 # ===========================================================================
+case2_partial_no_output() {
+    local dir; dir="$(mktemp -d "${TMPDIR:-/tmp}/loki-reviewdiff-c2d.XXXXXX")"
+    setup_repo "$dir"
+    (
+        cd "$dir" || exit 1
+        echo "init" > README.md; git add README.md && git commit -qm init
+        echo "export const real = 5;" > src.ts
+        git add src.ts && git commit -qm work
+
+        local rc agg
+        set_review_body $'VERDICT: PASS\nFINDINGS:\n- None'
+        set_empty_reviewer "maintainer-mergeability"
+        TARGET_DIR="$dir" PROVIDER_NAME=claude ITERATION_COUNT=1 \
+        LOKI_REVIEW_RETRY=0 \
+            run_code_review >/dev/null 2>&1
+        rc=$?
+        agg="$(find "$dir/.loki/quality/reviews" -name aggregate.json 2>/dev/null | head -1)"
+        local sel="?"
+        [ -n "$agg" ] && sel="$(dirname "$agg")/selection.json"
+        local inconclusive="?" real="?" total="?"
+        if [ -n "$agg" ] && [ -f "$agg" ]; then
+            inconclusive="$(python3 -c "import json,sys;print(json.load(open('$agg')).get('inconclusive'))" 2>/dev/null)"
+            real="$(python3 -c "import json,sys;print(json.load(open('$agg')).get('real_verdict_count'))" 2>/dev/null)"
+        fi
+        if [ -n "$sel" ] && [ -f "$sel" ]; then
+            total="$(python3 -c "import json,sys;print(len(json.load(open('$sel'))['reviewers']))" 2>/dev/null)"
+        fi
+        echo "rc=$rc inconclusive=$inconclusive real=$real total=$total"
+    ) > "$dir/result.txt" 2>/dev/null
+    local r; r="$(cat "$dir/result.txt" 2>/dev/null)"
+    set_empty_reviewer ""
+    if echo "$r" | grep -q "rc=0 "; then
+        bad "A2 partial: MIXED review (survivors PASS, 1 EMPTY) PASSED the gate (rc=0) -- majority-passes-on-survivors" "$r"
+    elif echo "$r" | grep -q "inconclusive=True"; then
+        # real_verdict_count must be strictly less than reviewer_count (some
+        # answered) and strictly greater than 0 (not the already-covered
+        # all-empty case) -- the genuine partial-NO_OUTPUT signature.
+        local real_n total_n
+        real_n="$(echo "$r" | sed -E 's/.*real=([0-9]+).*/\1/')"
+        total_n="$(echo "$r" | sed -E 's/.*total=([0-9]+).*/\1/')"
+        if [ -n "$real_n" ] && [ -n "$total_n" ] && [ "$real_n" -gt 0 ] && [ "$total_n" -gt 0 ] && [ "$real_n" -lt "$total_n" ]; then
+            ok "A2 partial: MIXED review BLOCKED (rc!=0, inconclusive=True, real_verdict_count=$real_n < reviewer_count=$total_n)"
+        else
+            bad "A2 partial: aggregate counts do not show a genuine partial split" "$r"
+        fi
+    else
+        bad "A2 partial: unexpected aggregate state" "$r"
+    fi
+    rm -rf "$dir"
+}
+
 case3_test_capture() {
     local dir; dir="$(mktemp -d "${TMPDIR:-/tmp}/loki-reviewdiff-c3.XXXXXX")"
     setup_repo "$dir"
@@ -322,6 +399,7 @@ case1
 case2_no_output
 case2_real_pass
 case2_verbose_pass
+case2_partial_no_output
 case3_test_capture
 case3_optout
 

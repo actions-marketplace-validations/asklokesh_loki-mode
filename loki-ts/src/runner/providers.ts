@@ -20,7 +20,7 @@
 // discoverable "STUB: Phase 5" marker so failures surface loudly instead
 // of silently degrading (BUG-22 stub-discipline rule).
 
-import { mkdirSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { run as shellRun } from "../util/shell.ts";
 import {
@@ -30,7 +30,11 @@ import {
   sessionResumeArgv,
   cavemanActivateEnv,
   cavemanSuppressEnv,
+  effortForTier,
+  remainingBudget,
+  fallbackForPrimary,
 } from "../providers/claude_flags.ts";
+import { mcpConfigPath } from "../providers/mcp_config.ts";
 import { consumeSdkStream, type StreamMsg } from "./sdk_stream_parser.ts";
 import type {
   ProviderInvocation,
@@ -58,7 +62,14 @@ export async function resolveProvider(
       // in. sdkQueryProvider delegates non-mainLoop calls back to claudeProvider,
       // so judge subcalls never touch query(). Uses the established truthy()
       // helper so the spelling matches the rest of the codebase.
-      return truthy(process.env["LOKI_SDK_LOOP"]) ? sdkQueryProvider() : claudeProvider();
+      //
+      // v8.1 (Story 6, T3-prep): LOKI_LEGACY_BASH is a SYMMETRIC escape hatch --
+      // see selectClaudeInvokerKind for the precedence. Decision is extracted to
+      // a pure helper so the release-safety rollback can be unit-tested without
+      // constructing/spawning a provider.
+      return selectClaudeInvokerKind(process.env) === "sdk"
+        ? sdkQueryProvider()
+        : claudeProvider();
     case "codex":
       return codexProvider();
     case "cline":
@@ -111,6 +122,25 @@ export function truthy(value: string | undefined): boolean {
     default:
       return false;
   }
+}
+
+// v8.1 (Story 6, T3-prep): decide whether the claude main-loop provider runs on
+// the Agent SDK ("sdk") or the legacy bash claude spawn ("legacy"). Pure over
+// env so the release-safety rollback is unit-testable without spawning.
+//
+// Precedence (LOKI_LEGACY_BASH is the SYMMETRIC escape hatch):
+//   1. LOKI_LEGACY_BASH truthy  -> "legacy"  (rollback ALWAYS wins, even if the
+//      loop is opted-on or, in a future release, default-on). bin/loki also
+//      honors it at the shim; this is the in-process backstop for when the Bun
+//      route is reached another way (LOKI_TS_ENTRY / direct src run / a default
+//      flip). CI-tested now so the rollback exists before LOKI_SDK_LOOP flips.
+//   2. else LOKI_SDK_LOOP truthy -> "sdk".
+//   3. else                      -> "legacy" (default-off; byte-identical to v8).
+export function selectClaudeInvokerKind(
+  env: Record<string, string | undefined>,
+): "sdk" | "legacy" {
+  if (truthy(env["LOKI_LEGACY_BASH"])) return "legacy";
+  return truthy(env["LOKI_SDK_LOOP"]) ? "sdk" : "legacy";
 }
 
 // Resolve tier -> Claude model alias. Mirrors claude.sh:121-142
@@ -328,6 +358,79 @@ export function claudeProvider(): ProviderInvoker {
 // bash stream-json parser writes, so downstream consumers are unchanged.
 // ---------------------------------------------------------------------------
 
+// RUN-25 iter 3 (T3(b)): compose the query() options the SDK loop was MISSING
+// vs the shell route -- MCP tools, effort tier, USD budget backstop, fallback
+// model, settingSources. Without these the SDK loop silently dropped all 34 MCP
+// tools (loki_complete_task, code search, memory, ...), effort tuning, the
+// per-call budget circuit breaker, and the rate-limit fallback model: the exact
+// hidden-capability regression the T3 pre-flight gate exists to block. Each value
+// derives from the SAME helpers the shell route uses (effortForTier /
+// remainingBudget / fallbackForPrimary / mcp_config), so bash and the SDK loop
+// resolve identically. Every field is best-effort: any miss (no budget set, MCP
+// bundle unreadable) simply omits that option -- never throws, never wedges.
+export interface SdkLoopExtraOptions {
+  mcpServers?: Array<Record<string, unknown>>;
+  strictMcpConfig?: boolean;
+  settingSources?: string[];
+  effort?: string;
+  maxBudgetUsd?: number;
+  fallbackModel?: string;
+}
+export function buildSdkLoopOptions(args: {
+  tier: string | undefined;
+  model: string;
+  cwd: string;
+  complexity?: string;
+  allowHaiku?: boolean;
+}): SdkLoopExtraOptions {
+  const out: SdkLoopExtraOptions = {};
+
+  // MCP tools: reuse the exact bundle the shell route writes (loki-mode server +
+  // optional lsp-proxy). mcpConfigPath writes it idempotently; read its server
+  // map and pass as one mcpServers array element. strictMcpConfig ignores any
+  // ambient project .mcp.json (parity with the hardcoded-bundle shell behavior).
+  try {
+    const cfgPath = mcpConfigPath(args.cwd);
+    if (existsSync(cfgPath)) {
+      const bundle = JSON.parse(readFileSync(cfgPath, "utf8")) as { mcpServers?: Record<string, unknown> };
+      if (bundle.mcpServers && Object.keys(bundle.mcpServers).length > 0) {
+        out.mcpServers = [bundle.mcpServers];
+        out.strictMcpConfig = true;
+      }
+    }
+  } catch {
+    // MCP bundle unreadable -> omit (loop still runs, just without MCP tools).
+  }
+  // settingSources: match the shell route's claude_code preset behavior (project
+  // + user settings resolved by the CLI). Explicit so the SDK does not diverge.
+  out.settingSources = ["user", "project", "local"];
+
+  // effort tier (same mapping as buildAutoFlags).
+  try {
+    out.effort = effortForTier(args.tier, args.complexity);
+  } catch {
+    // omit
+  }
+  // USD budget backstop: only when a limit is configured AND spend remains.
+  try {
+    const rem = remainingBudget(args.cwd);
+    if (rem !== null) {
+      const n = Number(rem);
+      if (Number.isFinite(n) && n > 0) out.maxBudgetUsd = n;
+    }
+  } catch {
+    // omit
+  }
+  // fallback model (rate-limit resilience), same derivation as the shell route.
+  try {
+    const fb = fallbackForPrimary(args.model, args.allowHaiku);
+    if (fb) out.fallbackModel = fb;
+  } catch {
+    // omit
+  }
+  return out;
+}
+
 export function sdkQueryProvider(): ProviderInvoker {
   return {
     async invoke(call: ProviderInvocation): Promise<ProviderResult> {
@@ -359,6 +462,17 @@ export function sdkQueryProvider(): ProviderInvoker {
         const env: Record<string, string> = { ...(process.env as Record<string, string>) };
         if (cavemanLvl) env["CAVEMAN_DEFAULT_MODE"] = cavemanLvl;
 
+        // T3(b): compose the MCP/effort/budget/fallback options the loop was
+        // missing vs the shell route (see buildSdkLoopOptions). Only fields that
+        // resolved are spread in; a miss omits that option.
+        const extra = buildSdkLoopOptions({
+          tier: call.tier,
+          model,
+          cwd: call.cwd,
+          complexity: process.env["DETECTED_COMPLEXITY"] ?? process.env["LOKI_COMPLEXITY"],
+          allowHaiku: process.env["LOKI_ALLOW_HAIKU"] === "true",
+        });
+
         const q = query({
           prompt: call.prompt,
           options: {
@@ -374,6 +488,13 @@ export function sdkQueryProvider(): ProviderInvoker {
             // append so system-prompt behavior matches `claude -p`.
             systemPrompt: { type: "preset", preset: "claude_code" },
             env,
+            // T3(b) parity: MCP tools + effort + USD budget + fallback model.
+            ...(extra.mcpServers ? { mcpServers: extra.mcpServers } : {}),
+            ...(extra.strictMcpConfig ? { strictMcpConfig: true } : {}),
+            ...(extra.settingSources ? { settingSources: extra.settingSources } : {}),
+            ...(extra.effort ? { effort: extra.effort } : {}),
+            ...(extra.maxBudgetUsd ? { maxBudgetUsd: extra.maxBudgetUsd } : {}),
+            ...(extra.fallbackModel ? { fallbackModel: extra.fallbackModel } : {}),
           },
           // biome-ignore lint/suspicious/noExplicitAny: SDK Options type is broader than our subset
         } as any);

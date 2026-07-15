@@ -780,4 +780,34 @@ describe("docScopeInstruction (F52: docs scale to project size)", () => {
     expect(out).toContain(_internals.DOC_SCOPE_INSTRUCTION_FULL);
     expect(out).not.toContain(_internals.DOC_SCOPE_INSTRUCTION_SIMPLE);
   });
+
+  // RUN-25 iter 2: --skip-memory (LOKI_SKIP_MEMORY) actually skips memory
+  // injection on the Bun route (previously accepted-but-unread = a hidden
+  // capability loss under the loop-flip). loadStartupLearnings reads env fresh.
+  describe("LOKI_SKIP_MEMORY skips startup learnings", () => {
+    const saved = process.env["LOKI_SKIP_MEMORY"];
+    afterEach(() => {
+      if (saved === undefined) delete process.env["LOKI_SKIP_MEMORY"];
+      else process.env["LOKI_SKIP_MEMORY"] = saved;
+    });
+
+    it("injects startup learnings by default, but NOT when LOKI_SKIP_MEMORY is set", () => {
+      mkLoki("state");
+      writeFileSync(
+        resolve(workDir, ".loki", "state", "memory-context.json"),
+        JSON.stringify({
+          memory_count: 1,
+          memories: [{ source: "proj-x", score: 9, summary: "avoid the null-deref in auth" }],
+        }),
+      );
+      delete process.env["LOKI_SKIP_MEMORY"];
+      const withMem = _internals.loadStartupLearnings(workDir);
+      expect(withMem).toContain("STARTUP LEARNINGS");
+      expect(withMem).toContain("avoid the null-deref");
+
+      process.env["LOKI_SKIP_MEMORY"] = "true";
+      const skipped = _internals.loadStartupLearnings(workDir);
+      expect(skipped).toBe(""); // memory injection suppressed
+    });
+  });
 });

@@ -1,6 +1,6 @@
 # V8: SDK-Based Runtime Migration Plan
 
-Status: PROPOSED (planning only, no code)
+Status: IMPLEMENTED (shipped on feature/v8-agent-sdk as v8.0.0 + v8.1; kept as design history)
 Target branch: `feature/v8-agent-sdk`
 Author: architecture spike (research-grounded, live SDK docs verified)
 Scope: replace the bash `claude -p` wrapper with the Anthropic TypeScript SDKs. Codex/Cline/Aider stay on bash. This is a multi-week arc, not one workflow.

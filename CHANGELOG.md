@@ -5,6 +5,61 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v8.1.0 (unreleased -- feature branch)
+
+### One-switch SDK activation + rollback + packaging gate (MINOR, default-off)
+
+v8 shipped the Anthropic SDK route behind eight per-site `LOKI_SDK_*` flags. v8.1
+makes it operable at scale without learning eight flags, adds the rollback that
+must exist before the loop can ever default-on, and proves the SDK judge ships in
+the packed artifact. Everything remains OPT-IN and DEFAULT-OFF: with nothing set,
+the engine is byte-identical to v8 (which is byte-identical to v7).
+
+**One-switch mode (`LOKI_SDK_MODE`).** A single operator switch sets the default
+for all eight per-site flags at once via a write-once resolver, mirrored
+byte-for-byte in bash (`autonomy/lib/sdk-mode.sh`) and TypeScript
+(`loki-ts/src/runner/sdk_mode.ts`):
+- `off` (default) writes nothing -- every site keeps its own `:-0` default.
+- `judges` turns on the seven one-shot JUDGE/TEXT sites; the RARV loop stays off.
+  The recommended scale tier.
+- `full` turns on all eight, including the loop (`LOKI_SDK_LOOP`). Pre-flight
+  tier; the loop default-flip remains a later release.
+- `LOKI_SDK=1` is an alias for `judges`; `LOKI_SDK=full` for `full`.
+An explicit per-site flag ALWAYS wins over the mode (even an explicit `=0` under
+`full`) -- the resolver only writes a var that is unset. The resolver runs in all
+entrypoints (`bin/loki`, `autonomy/loki`, `run.sh`, and the Bun `cli.ts`) so
+`LOKI_SDK_MODE=full loki start` correctly routes the loop to the Bun runner. bash
+and TS bind to one shared parity fixture (`loki-ts/test/fixtures/
+sdk-mode-table.json`) so the two resolvers cannot drift. Opt-in
+`LOKI_SDK_MODE_DEBUG=1` prints what one switch turned on.
+
+**Symmetric rollback (`LOKI_LEGACY_BASH`).** Already honored by the `bin/loki`
+shim; now also honored inside the Bun provider resolver
+(`selectClaudeInvokerKind`), so it forces the legacy `claude` spawn even if the
+Bun route is reached another way. It wins over `LOKI_SDK_LOOP`. This lands and is
+CI-tested now, before the loop ever flips default-on, so the escape hatch exists
+before it is needed. Today (loop default-off) it is a no-op.
+
+**Packaging gate (CI).** A new `sdk-tarball-no-binary` job packs the real npm
+tarball, installs it into a clean prefix with NO `claude` binary on PATH, and
+proves the bundled `@anthropic-ai/sdk` judge SHIPS: keyless, `loki internal
+sdk-judge` fail-closes with exit exactly 1 (no module-not-found). A billable
+real-verdict probe is gated on the `ANTHROPIC_API_KEY` secret. This catches the
+".gitignore-excluded dist" class of bug for the SDK route and is the gate that
+later lets `LOKI_SDK_LOOP` flip default-on safely.
+
+**Sandbox deprecation notice (annotation-only).** The Docker Desktop microVM path
+now emits a one-shot notice that its bundled-`claude`-binary template is legacy
+under the SDK route, while stating explicitly that code-execution ISOLATION is
+RETAINED (in-process SDK runs at host privilege, so isolation matters more, not
+less). No behavior change, no removal; opt out `LOKI_SANDBOX_DEPRECATION_QUIET=1`.
+
+**Not in v8.1 (deliberate, YAGNI).** The Message Batches API judge fan-out was
+scoped out after a codebase-wide audit: every judge fan-out is either a single
+inlined call or on the RARV critical path, where the Batch API's minutes-of-async
+polling is a latency regression, not a win. No batch-appropriate site exists
+today; revisit if a latency-tolerant bulk-judge site is introduced.
+
 ## v8.0.0
 
 ### The Anthropic SDK transformation (MAJOR)

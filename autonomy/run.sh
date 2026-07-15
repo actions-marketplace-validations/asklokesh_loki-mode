@@ -257,6 +257,17 @@ if [ -f "$_LOKI_CONFIG_MAP_LIB" ]; then
     source "$_LOKI_CONFIG_MAP_LIB"
 fi
 
+# v8.1: one-switch SDK activation. LOKI_SDK_MODE=off|judges|full (default off)
+# sets the default for the 8 per-site LOKI_SDK_* flags via a write-once resolver;
+# per-site flags still win. Sourced + resolved here, before any judge lib or the
+# main loop reads a flag. No-op (byte-identical) when the mode is unset.
+_LOKI_SDK_MODE_LIB="$SCRIPT_DIR/lib/sdk-mode.sh"
+if [ -f "$_LOKI_SDK_MODE_LIB" ]; then
+    # shellcheck source=lib/sdk-mode.sh
+    source "$_LOKI_SDK_MODE_LIB"
+    loki_sdk_resolve_mode
+fi
+
 load_config_file() {
     local config_file=""
 
@@ -7264,118 +7275,18 @@ setup_agent_branch() {
     echo "$branch_name"
 }
 
-_commit_scan_secret_file() {
-    # Two-tier secret matcher. Returns 0 if a high-confidence secret is found in
-    # the file, 1 otherwise. Patterns copied verbatim from the shipped scanner
-    # (autonomy/verify.sh verify_secret_scan_file) so the commit-time gate matches
-    # the verification gate's behavior. Top-level (not nested) so tests can
-    # override it for the mutation/non-vacuity proof.
-    local file="${1:-}"
-    [ -n "$file" ] && [ -f "$file" ] || return 1
-
-    # TIER 1: specific formats. No deny filter -- a format match is a finding.
-    local tier1=(
-        'AKIA[0-9A-Z]{16}'                          # AWS access key id
-        'ASIA[0-9A-Z]{16}'                          # AWS temporary (STS) key id
-        '-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----'     # PEM private key block
-        'gh[pousr]_[A-Za-z0-9]{36,}'                # GitHub token (ghp_/gho_/...)
-        'github_pat_[A-Za-z0-9_]{60,}'              # GitHub fine-grained PAT
-        'xox[baprs]-[A-Za-z0-9-]{10,}'              # Slack token (xoxb-/xoxp-/...)
-        'sk-[A-Za-z0-9]{20,}'                       # OpenAI-style secret key
-        'AIza[0-9A-Za-z_-]{35}'                     # Google API key
-        'glpat-[A-Za-z0-9_-]{20,}'                  # GitLab personal access token
-    )
-    local p
-    for p in "${tier1[@]}"; do
-        # -e terminates option parsing so a pattern beginning with '-' (the PEM
-        # block) is not mistaken for a flag.
-        if LC_ALL=C grep -Eq -e "$p" "$file" 2>/dev/null; then
-            return 0
-        fi
-    done
-
-    # Deny filter for TIER 2: a matched line is IGNORED if it is plainly a
-    # placeholder or an environment-variable reference rather than a literal.
-    local deny='(\$\{|\$[A-Za-z_]|process\.env|os\.(environ|getenv)|%[A-Za-z_]+%|your[-_]|redacted|changeme|change[-_]me|placeholder|example|dummy|sample|fake|<[^>]*>|x{4,}|\*{4,})'
-
-    # TIER 2: generic assignments + bearer tokens + connection-string creds.
-    local tier2='(api[_-]?key|secret|token|password|passwd|access[_-]?key|client[_-]?secret|auth)[A-Za-z0-9_]*[[:space:]]*[:=][[:space:]]*["'"'"']?[A-Za-z0-9_/+.=-]{16,}'
-    local bearer='[Bb]earer[[:space:]]+[A-Za-z0-9_.\-]{20,}'
-    # URI-embedded credentials: scheme://user:password@host. The #1 leak vector
-    # in 12-factor apps (DATABASE_URL=postgres://u:pass@h, mongodb+srv://, redis://).
-    # Runs through the deny filter below, so ${VAR}-ref URIs are correctly ignored.
-    # Username segment is optional (*) so the password-only form redis://:pass@host
-    # (Redis < 6 / Heroku Redis / Redis Cloud emit exactly this) is caught too.
-    local uricred='[a-z][a-z0-9+.\-]*://[^/[:space:]:@]*:[^/[:space:]:@]+@'
-
-    local surviving
-    surviving="$(LC_ALL=C grep -EiI "$tier2|$bearer|$uricred" "$file" 2>/dev/null \
-        | LC_ALL=C grep -Eiv "$deny" 2>/dev/null)"
-    if [ -n "$surviving" ]; then
-        return 0
-    fi
-    return 1
-}
-
-_commit_path_looks_secret() {
-    # Filename/path heuristic. Returns 0 if the path looks like a credential or
-    # secret file ANYWHERE in the tree (basename OR any directory component),
-    # 1 otherwise. This is the PRIMARY commit-time guard: it catches likely-secret
-    # files regardless of where they sit and regardless of how weak the value
-    # inside looks, closing the nested-path gap that a top-level glob (':!credentials*')
-    # and a content-pattern scan both miss (e.g. secrets/credentials.json holding
-    # {"key":"sk-secret"}). The content scan (_commit_scan_secret_file) remains the
-    # complementary layer 2 for strong secrets hiding in non-obvious filenames.
-    #
-    # Safe-default bias: this runs only for the session-end AUTO-commit. A false
-    # positive merely leaves the file uncommitted for the user to commit by hand,
-    # which is acceptable and honest. So we err toward caution.
-    #
-    # Top-level (not nested) so tests can override it for the non-vacuity proof.
-    local p="${1:-}"
-    [ -n "$p" ] || return 1
-    # Case-insensitive match: lower the full path AND the basename, test both.
-    local lower base
-    lower="$(printf '%s' "$p" | tr '[:upper:]' '[:lower:]')"
-    base="${lower##*/}"
-    local cand
-    for cand in "$lower" "$base"; do
-        case "$cand" in
-            # dotenv files (basename or any path component ending in them)
-            .env|.env.*|*/.env|*/.env.*|*.env) return 0 ;;
-            # credential(s) anywhere (basename or any segment): secrets/credentials.json,
-            # aws-credentials, my-credential.txt, .git-credentials
-            *credential*) return 0 ;;
-            # a "secret"/"secrets" segment anywhere: secrets/anything, config/secret.json
-            *secret*) return 0 ;;
-            # private-key / keystore / cert material (extension-anchored so we do
-            # NOT match innocuous names like config.js or monkey.js)
-            *.pem|*.key|*.p12|*.keystore|*.pfx|*.jks|*.ppk) return 0 ;;
-            id_rsa|id_rsa.*|*/id_rsa|*/id_rsa.*) return 0 ;;
-            id_ed25519*|*/id_ed25519*) return 0 ;;
-            # token files: extension (*.token) OR "token" as a whole word/segment
-            # (delimited by /, -, _, or .). Deliberately NOT a bare *token*: that
-            # would flag ubiquitous innocuous frontend/parser names (tokenizer.js,
-            # tokens.css, design-tokens.json), and since the scan aborts the WHOLE
-            # session auto-commit on any single offender, one such file would block
-            # committing all of the user's work. Segment-style still catches real
-            # token files: api.token, auth_token, id-token, github.token, oauth-token.json.
-            *.token) return 0 ;;
-            token|token.*|token-*|token_*) return 0 ;;
-            *-token|*_token|*.token.*) return 0 ;;
-            *-token.*|*_token.*|*/token|*/token.*) return 0 ;;
-            *-token-*|*_token_*|*-token_*|*_token-*) return 0 ;;
-            # package/registry/cloud credential configs
-            .npmrc|*/.npmrc|.pypirc|*/.pypirc|.netrc|*/.netrc) return 0 ;;
-            *.kubeconfig|kubeconfig|*/kubeconfig) return 0 ;;
-            .dockercfg|*/.dockercfg|.docker/config.json|*/.docker/config.json) return 0 ;;
-            # service-account / gcp key json
-            service-account*.json|*/service-account*.json|*serviceaccount*) return 0 ;;
-            gcp-key*.json|*/gcp-key*.json) return 0 ;;
-        esac
-    done
-    return 1
-}
+# RUN-25 iter 21 (Wave D #2): the two secret matchers now live in one sourceable
+# lib so the commit gate (here) and the completion evidence gate (completion-
+# council.sh) share a single implementation. Sourced with a guard so a re-source
+# is a no-op. Falls back to inert stubs only if the lib is somehow missing (the
+# commit-time deny path then simply never flags -- same as pre-lib on a broken
+# install), but the file ships in the package so this is the normal path.
+if [ -f "$SCRIPT_DIR/lib/secret-scan.sh" ]; then
+    # shellcheck source=lib/secret-scan.sh
+    source "$SCRIPT_DIR/lib/secret-scan.sh"
+fi
+if ! type _commit_scan_secret_file >/dev/null 2>&1; then _commit_scan_secret_file() { return 1; }; fi
+if ! type _commit_path_looks_secret >/dev/null 2>&1; then _commit_path_looks_secret() { return 1; }; fi
 
 commit_session_changes() {
     # Squash the session's work into one honest session-end commit on the agent
@@ -12387,22 +12298,41 @@ CPEOF
             rm -rf "$old_cp" 2>/dev/null || true
         done
         # Rebuild index atomically from remaining checkpoints (sorted by epoch).
-        # BUG-ST-012: sort on the checkpoint dir BASENAME, not the full path.
-        # Checkpoint ids are cp-<iter>-<epoch> so basename field 3 is the epoch,
-        # but a full path like .../loki-mode/.loki/.../cp-N-EPOCH/metadata.json has
-        # extra hyphens (e.g. the loki-mode cwd) that shift the epoch out of field 3.
-        # Prefix each path with a basename-derived key, sort on it, then strip it.
+        # RUN-25 iter 18 (Wave C #5): ONE python3 process reads ALL surviving
+        # metadata.json files, sorts by the checkpoint-dir-basename epoch, and
+        # writes the whole index -- instead of a shell for-loop that spawned one
+        # python3 -c PER checkpoint (up to the 50 retention cap = ~50 interpreter
+        # cold-starts, ~30-50ms each). Same sort key (BUG-ST-012: the epoch is the
+        # LAST hyphen-separated field of the dir basename cp-<iter>-<epoch>, robust
+        # to extra hyphens in the cwd path) and same per-record JSON shape, so the
+        # index is byte-identical to the old loop's output. Only fires on a prune,
+        # not every iteration.
         local tmp_index="${index_file}.tmp.$$"
-        for remaining in $(find "$checkpoint_dir" -maxdepth 2 -name "metadata.json" -path "*/cp-*/*" 2>/dev/null \
-            | while read -r mp; do printf '%s\t%s\n' "$(basename "$(dirname "$mp")")" "$mp"; done \
-            | sort -t'-' -k3 -n | cut -f2-); do
-            [ -f "$remaining" ] || continue
-            _CP_META="$remaining" python3 -c "
-import json,os
-m=json.load(open(os.environ['_CP_META']))
-print(json.dumps({'id':m['id'],'ts':m['timestamp'],'iter':m['iteration'],'task':m.get('task_description',''),'sha':m['git_sha']}))
-" >> "$tmp_index" 2>/dev/null || true
-        done
+        _CP_DIR="$checkpoint_dir" python3 -c "
+import json, os, glob
+cp_dir = os.environ['_CP_DIR']
+recs = []
+for mp in glob.glob(os.path.join(cp_dir, '*', 'metadata.json')):
+    base = os.path.basename(os.path.dirname(mp))
+    if not base.startswith('cp-'):
+        continue
+    # epoch = last hyphen-separated field of the dir basename (cp-<iter>-<epoch>).
+    try:
+        epoch = int(base.rsplit('-', 1)[-1])
+    except ValueError:
+        epoch = 0
+    try:
+        m = json.load(open(mp))
+    except Exception:
+        continue
+    recs.append((epoch, {
+        'id': m['id'], 'ts': m['timestamp'], 'iter': m['iteration'],
+        'task': m.get('task_description', ''), 'sha': m['git_sha'],
+    }))
+recs.sort(key=lambda r: r[0])
+for _epoch, rec in recs:
+    print(json.dumps(rec))
+" > "$tmp_index" 2>/dev/null || true
         mv -f "$tmp_index" "$index_file" 2>/dev/null || true
     fi
 
@@ -16573,11 +16503,40 @@ run_autonomous() {
         case "$prd_path" in
             *.loki/generated-prd.md|*.loki/generated-prd.json) ;;
             *)
+                # Contract ingest (RUN-25 iter 24): if the source is an OpenAPI /
+                # GraphQL / Postman contract, expand it into a per-operation
+                # checklist at .loki/generated-prd.md so every operation becomes a
+                # build requirement, instead of copying the raw contract verbatim
+                # and truncating it to the first 4000 prompt bytes. Only rewrites
+                # the input; on a non-contract file it echoes "" and we fall
+                # through to the normal persist path unchanged.
+                if [ -f "$prd_path" ]; then
+                    # shellcheck disable=SC1090,SC1091
+                    [ -f "${SCRIPT_DIR}/lib/spec-expand.sh" ] && source "${SCRIPT_DIR}/lib/spec-expand.sh" 2>/dev/null || true
+                    if declare -f spec_maybe_expand_contract >/dev/null 2>&1; then
+                        local _expanded_tmp
+                        # Default (temp) mode: the expander returns a TEMP checklist
+                        # path; we repoint prd_path at it so the persist_user_prd
+                        # call below copies it into .loki/generated-prd.md AND writes
+                        # the source:"user" signature (so a later no-file resume
+                        # reuses it exactly like a user PRD, not the update path).
+                        _expanded_tmp=$(spec_maybe_expand_contract "$prd_path")
+                        if [ -n "$_expanded_tmp" ] && [ -f "$_expanded_tmp" ]; then
+                            log_info "Expanded API contract ($prd_path) into a per-operation build checklist"
+                            prd_path="$_expanded_tmp"
+                        fi
+                    fi
+                fi
                 if [ -f "$prd_path" ]; then
                     local _persisted_prd
                     _persisted_prd=$(persist_user_prd "$prd_path")
                     if [ -n "$_persisted_prd" ]; then
                         log_info "Persisted your PRD ($prd_path) to $_persisted_prd; later runs without a file will reuse it as-is"
+                        # If prd_path was a spec-expand temp checklist, it is now
+                        # copied into the canonical slot -- drop the temp file.
+                        case "$prd_path" in
+                            *"/loki-spec-expand."*.md) rm -f "$prd_path" 2>/dev/null || true ;;
+                        esac
                         prd_path="$_persisted_prd"
                         GENERATED_PRD_ACTION="user_owned"
                         export GENERATED_PRD_ACTION
@@ -18796,6 +18755,21 @@ else:
                 log_warn "Completion claim rejected: invariant gate found CRITICAL/HIGH invariant/property violation(s)."
                 log_warn "  Details under .loki/quality/invariant-findings.txt ; opt-in blocking -- disable with LOKI_GATE_INVARIANTS_BLOCK=false"
                 # Fall through; keep iterating until the invariant violations are fixed.
+            # OPT-IN test_coverage completion block (LOKI_GATE_TEST_COVERAGE_BLOCK,
+            # default OFF; accepts "true" or "1"). By DEFAULT a failing suite is
+            # advisory at completion (the council evidence gate is the backstop);
+            # this opt-in ALSO refuses the completion claim at the loop layer when
+            # this iteration's test-results.json shows a real failing suite
+            # (pass:false), so a red suite cannot be declared complete even if a
+            # heuristic council with no evidence gate is in play. Mirrors the Bun
+            # route's LOKI_GATE_TEST_COVERAGE_BLOCK arm (loki-ts/src/runner/
+            # autonomous.ts completionRefusalReason) for bash<->Bun parity. Only a
+            # concrete pass:false blocks; inconclusive/not_run/absent never deadlock
+            # a clean run.
+            elif [ "$_completion_claimed" = 1 ] && { [ "${LOKI_GATE_TEST_COVERAGE_BLOCK:-false}" = "true" ] || [ "${LOKI_GATE_TEST_COVERAGE_BLOCK:-false}" = "1" ]; } && grep -q '"pass"[[:space:]]*:[[:space:]]*false' "${TARGET_DIR:-.}/.loki/quality/test-results.json" 2>/dev/null; then
+                log_warn "Completion claim rejected: test suite is RED (test-results.json pass:false)."
+                log_warn "  opt-in blocking -- disable with LOKI_GATE_TEST_COVERAGE_BLOCK=false"
+                # Fall through; keep iterating until the tests pass.
             elif [ "$_completion_claimed" = 1 ]; then
                 echo ""
                 if [ -n "$COMPLETION_PROMISE" ]; then

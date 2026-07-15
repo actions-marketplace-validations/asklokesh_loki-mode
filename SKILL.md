@@ -408,4 +408,4 @@ See `CHANGELOG.md` entries [7.5.7], [7.5.8], [7.5.13] for the per-fix list and r
 
 ---
 
-**v8.0.0 | [Autonomi](https://www.autonomi.dev/) flagship product | ~260 lines core**
+**v8.0.0 | [Autonomi](https://www.autonomi.dev/) flagship product | ~410 lines core**

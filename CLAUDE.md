@@ -19,7 +19,7 @@ loki start owner/repo#123        # issue-mode (GitHub issue)
 ## Project Structure
 
 ```
-SKILL.md                    # Slim core skill (~266 lines) - progressive disclosure
+SKILL.md                    # Slim core skill (~410 lines) - progressive disclosure
 providers/                  # Multi-provider support (4 providers)
   claude.sh                 # Claude Code - full features (Tier 1)
   cline.sh                  # Cline - Tier 2
@@ -165,18 +165,20 @@ These knobs together implement the RARV-C (closure) loop: findings -> override c
 
 ### Top-Level File Map
 
+Line counts approximate; re-run `wc -l` for exact.
+
 | File | Lines | Role |
 |---|---|---|
-| `autonomy/loki` | 23,109 | CLI (102 cmd_ functions, dispatch at `loki:11828`) |
-| `autonomy/run.sh` | 12,170 | Orchestration engine (RARV loop) |
-| `autonomy/completion-council.sh` | 1,771 | Completion detection (council voting) |
-| `dashboard/server.py` | 5,952 | FastAPI (100+ endpoints, WebSocket) |
-| `memory/retrieval.py` | 1,611 | Task-aware memory retrieval |
-| `memory/storage.py` | 1,521 | File-based memory backend |
-| `memory/engine.py` | 1,401 | Memory orchestrator |
-| `memory/consolidation.py` | 999 | Episodic-to-semantic pipeline |
-| `mcp/server.py` | 2,288 | MCP server (34 tools: 26 in-file + 7 magic + 1 gated managed; +3 resources, 2 prompts) |
-| `providers/loader.sh` | 185 | Provider loader |
+| `autonomy/loki` | ~32,700 | CLI (102 cmd_ functions, dispatch at `loki:main`) |
+| `autonomy/run.sh` | ~20,400 | Orchestration engine (RARV loop) |
+| `autonomy/completion-council.sh` | ~3,800 | Completion detection (council voting) |
+| `dashboard/server.py` | ~11,500 | FastAPI (100+ endpoints, WebSocket) |
+| `memory/retrieval.py` | ~2,100 | Task-aware memory retrieval |
+| `memory/storage.py` | ~2,000 | File-based memory backend |
+| `memory/engine.py` | ~1,600 | Memory orchestrator |
+| `memory/consolidation.py` | ~1,100 | Episodic-to-semantic pipeline |
+| `mcp/server.py` | ~2,700 | MCP server (34 tools: 26 in-file + 7 magic + 1 gated managed; +3 resources, 2 prompts) |
+| `providers/loader.sh` | ~185 | Provider loader |
 
 ### Key Function Lookup
 
@@ -184,25 +186,25 @@ Verified against v7.5.13 source on 2026-04-29. Line numbers drift; re-verify wit
 
 | Function | Location | Purpose |
 |---|---|---|
-| `cmd_start()` | `autonomy/loki:622` | Start autonomous execution |
-| `main()` (CLI) | `autonomy/loki:11828` | CLI dispatch |
-| `main()` (runner) | `autonomy/run.sh:11633` | Runner entry point |
-| `run_autonomous()` | `autonomy/run.sh:10253` | Main iteration loop |
-| `build_prompt()` | `autonomy/run.sh:8987` | Prompt construction |
-| `save_state()` | `autonomy/run.sh:8806` | Persist state |
-| `council_should_stop()` | `autonomy/completion-council.sh:1605` | Completion decision |
-| `run_code_review()` | `autonomy/run.sh:6259` | 3-reviewer code review |
-| `create_checkpoint()` | `autonomy/run.sh:6943` | Snapshot state |
-| `store_episode_trace()` | `autonomy/run.sh:8504` | Memory storage bridge |
-| `check_human_intervention()` | `autonomy/run.sh:11262` | PAUSE/STOP/INPUT signals |
-| `detect_complexity()` | `autonomy/run.sh:1338` | Auto-detect project complexity |
-| `get_rarv_tier()` | `autonomy/run.sh:1484` | Map iteration to model tier |
-| `check_budget_limit()` | `autonomy/run.sh:7897` | Budget circuit breaker |
-| `is_rate_limited()` | `autonomy/run.sh:7712` | Rate limit detection |
-| `cmd_heal()` | `autonomy/loki:9916` | Legacy system healing |
-| `hook_pre_healing_modify()` | `autonomy/hooks/migration-hooks.sh:283` | Friction safety gate |
-| `hook_post_healing_modify()` | `autonomy/hooks/migration-hooks.sh:328` | Characterization test verification |
-| `hook_healing_phase_gate()` | `autonomy/hooks/migration-hooks.sh:386` | Healing phase transition gate |
+| `cmd_start()` | `autonomy/loki` | Start autonomous execution |
+| `main()` (CLI) | `autonomy/loki` | CLI dispatch |
+| `main()` (runner) | `autonomy/run.sh` | Runner entry point |
+| `run_autonomous()` | `autonomy/run.sh` | Main iteration loop |
+| `build_prompt()` | `autonomy/run.sh` | Prompt construction |
+| `save_state()` | `autonomy/run.sh` | Persist state |
+| `council_should_stop()` | `autonomy/completion-council.sh` | Completion decision |
+| `run_code_review()` | `autonomy/run.sh` | 3-reviewer code review |
+| `create_checkpoint()` | `autonomy/run.sh` | Snapshot state |
+| `store_episode_trace()` | `autonomy/run.sh` | Memory storage bridge |
+| `check_human_intervention()` | `autonomy/run.sh` | PAUSE/STOP/INPUT signals |
+| `detect_complexity()` | `autonomy/run.sh` | Auto-detect project complexity |
+| `get_rarv_tier()` | `autonomy/run.sh` | Map iteration to model tier |
+| `check_budget_limit()` | `autonomy/run.sh` | Budget circuit breaker |
+| `is_rate_limited()` | `autonomy/run.sh` | Rate limit detection |
+| `cmd_heal()` | `autonomy/loki` | Legacy system healing |
+| `hook_pre_healing_modify()` | `autonomy/hooks/migration-hooks.sh` | Friction safety gate |
+| `hook_post_healing_modify()` | `autonomy/hooks/migration-hooks.sh` | Characterization test verification |
+| `hook_healing_phase_gate()` | `autonomy/hooks/migration-hooks.sh` | Healing phase transition gate |
 
 ### Critical Data Flow
 
@@ -296,7 +298,7 @@ Prompt: "Review the following claims for factual accuracy.
 6. Only after user confirms, commit and push if requested
 
 ### When Modifying SKILL.md
-- Keep under 500 lines (currently ~266)
+- Keep under 500 lines (currently ~410)
 - Reference detailed docs in `references/` instead of inlining
 - Update version in header AND footer
 - Update CHANGELOG.md with new version entry

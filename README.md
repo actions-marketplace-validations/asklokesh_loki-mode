@@ -15,7 +15,7 @@ _The free, source-available autonomous coding agent by [Autonomi](https://www.au
 
 [Website](https://www.autonomi.dev/) | [Documentation](wiki/Home.md) | [Installation](docs/INSTALLATION.md) | [Changelog](CHANGELOG.md) | [Purple Lab -- deprecated v7.44.0](#purple-lab)
 
-**Current release: v7.121.5**
+**Current release: v8.0.0**
 
 </div>
 
@@ -502,6 +502,20 @@ Status legend: "E2E-verified" means we run real spec-to-code builds on it oursel
 </details>
 
 Run `loki --help` for all options. Full reference: [CLI Reference](wiki/CLI-Reference.md) | Config: [config.example.yaml](autonomy/config.example.yaml)
+
+### Configuration file
+
+Pass a config file to `loki start` with `--config <path>` (aliases: `--env-file`, `--vars`), or set `LOKI_CONFIG_FILE`. The format is detected from the extension or content: `.yaml`/`.yml`, `.json`, or `.env` (flat `LOKI_*=value` lines). Values resolve by precedence: a CLI flag beats an ambient env var, which beats the `--config` file, which beats built-in defaults. Never inline a secret; reference an env var with `${VAR}` and the loader expands it at load time (an unset reference is skipped with a warning, and a raw-looking secret literal is flagged). Generate a starter with `loki config example`.
+
+```bash
+# config.yaml
+dashboard:
+  port: 9000
+github:
+  token: ${GITHUB_TOKEN}   # expanded from the environment, never stored inline
+
+loki start --config config.yaml ./prd.md
+```
 
 ---
 

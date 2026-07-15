@@ -508,7 +508,19 @@ async function loadHandoffContext(cwd: string): Promise<string> {
 // as `- [source|score] summary[:100]`.
 // ---------------------------------------------------------------------------
 
+// RUN-25 iter 2: --skip-memory maps to LOKI_SKIP_MEMORY=true (bash autonomy/
+// loki:1630, read at :664). Honor it on the Bun route too so the flag actually
+// takes effect (it was accepted by start.ts but previously unread here -- a
+// hidden capability loss under the loop-flip). Byte-lock-safe: the fixtures never
+// set LOKI_SKIP_MEMORY and never ship memory-context.json, so the default (unset)
+// path is byte-identical.
+function skipMemory(): boolean {
+  const v = process.env["LOKI_SKIP_MEMORY"];
+  return v === "true" || v === "1";
+}
+
 function loadStartupLearnings(cwd: string): string {
+  if (skipMemory()) return "";
   const path = resolve(cwd, ".loki/state/memory-context.json");
   const raw = readFileSafe(path);
   if (raw === null) return "";
@@ -542,6 +554,7 @@ function loadStartupLearnings(cwd: string): string {
 // ---------------------------------------------------------------------------
 
 function retrieveMemoryContext(cwd: string): string {
+  if (skipMemory()) return ""; // RUN-25 iter 2: --skip-memory / LOKI_SKIP_MEMORY
   const indexPath = resolve(cwd, ".loki/memory/index.json");
   if (!existsSync(indexPath)) return "";
   // For now, do not attempt to invoke the Python retrieval pipeline from

@@ -13,6 +13,7 @@ import { runVersion } from "./commands/version.ts";
 import { runProvider } from "./commands/provider.ts";
 import { runMemory } from "./commands/memory.ts";
 import { installCrashHandlers } from "./runner/crash.ts";
+import { resolveSdkMode } from "./runner/sdk_mode.ts";
 
 const HELP = `Loki Mode (TypeScript port, Phase 2 of bash->Bun migration)
 
@@ -62,6 +63,11 @@ function warnIfLegacyBashSetUnderBun(): void {
 
 async function dispatch(argv: readonly string[]): Promise<number> {
   warnIfLegacyBashSetUnderBun();
+  // v8.1: resolve the one-switch SDK mode (LOKI_SDK_MODE=off|judges|full) into
+  // the per-site LOKI_SDK_* flags before any Bun SDK site reads them. Mirror of
+  // the bash resolver (run.sh sources autonomy/lib/sdk-mode.sh). No-op when the
+  // mode is unset; an explicit per-site flag always wins. See runner/sdk_mode.ts.
+  resolveSdkMode();
   const cmd = argv[0];
   const rest = argv.slice(1);
 

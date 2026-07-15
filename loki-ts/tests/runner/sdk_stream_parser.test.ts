@@ -173,6 +173,29 @@ describe("consumeSdkStream (.loki parity with the bash Python parser)", () => {
     expect(r.rateLimit?.resetSeconds).toBe(30);
   });
 
+  // Backoff-math hole: the dominant real rate-limit shape is status "rejected"
+  // with an EPOCH "resetsAt" (not a relative retryAfter). Under an injected
+  // clock, `nowS` is forced to 0 (line ~286: `clock ? 0 : Date.now()/1000`),
+  // which used to make resetSeconds come out `undefined` for any epoch
+  // resetsAt -- and providers.ts treats a falsy resetSeconds as "no wait"
+  // (`rateLimit?.resetSeconds && resetSeconds > 0`), i.e. an effective 0s
+  // backoff that would hammer the API right after a real rejection. Assert
+  // the epoch path resolves to the real ~300s wait, using the REAL clock
+  // (Date.now()) so nowS is a genuine epoch, not 0.
+  test("rate_limit_event: status rejected + epoch resetsAt ~300s out -> resetSeconds ~300 (not 0/undefined)", async () => {
+    const nowS = Math.floor(Date.now() / 1000);
+    const resetsAt = nowS + 300; // ~5 minutes from now, epoch seconds (> 1_000_000)
+    const msgs = [
+      { type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt } },
+    ] as unknown as StreamMsg[];
+    // No injected clock here -- this exercises the real Date.now() branch so
+    // nowS is a genuine current epoch, matching the real rate-limit shape.
+    const r = await consumeSdkStream(msgs, ctx());
+    expect(r.rateLimit).toBeTruthy();
+    expect(r.rateLimit?.resetSeconds).toBeGreaterThan(290);
+    expect(r.rateLimit?.resetSeconds).toBeLessThanOrEqual(300);
+  });
+
   test("TodoWrite tool_use -> .loki/queue/in-progress.json (in_progress items enriched)", async () => {
     const msgs: StreamMsg[] = [
       {
@@ -327,5 +350,152 @@ describe("consumeSdkStream (.loki parity with the bash Python parser)", () => {
     );
     expect(existsSync(costPath("42"))).toBe(true);
     expect(existsSync(costPath("0"))).toBe(false);
+  });
+});
+
+// RUN-25 iter 4 (T3(a)): loop-flip pre-flight gate. Prove the parser covers every
+// event the loop-flip needs by replaying REALISTIC, FULLY-SHAPED SDK messages
+// (the exact SDKHookResponseMessage / SDKResultSuccess / SDKAssistantMessage
+// field sets from @anthropic-ai/claude-agent-sdk, not the stripped shapes above),
+// end to end, and asserting the parser writes the correct .loki state. This is the
+// fixture-replay reconciliation the T3(a) gate requires before LOKI_SDK_LOOP can
+// default-on: a message the loop actually emits that the parser dropped would be a
+// silent capability/observability loss.
+describe("consumeSdkStream: T3(a) full-shape SDK message replay (loop-flip gate)", () => {
+  // A realistic single-iteration session, in emission order.
+  function fullSession(): StreamMsg[] {
+    return [
+      // 1. partial stream deltas (SDKPartialAssistantMessage: type 'stream_event')
+      {
+        type: "stream_event",
+        event: { type: "message_start" },
+        parent_tool_use_id: null,
+        uuid: "u-1",
+        session_id: "s-1",
+      } as StreamMsg,
+      {
+        type: "stream_event",
+        event: { type: "content_block_delta", delta: { type: "text_delta", text: "Reasoning..." } },
+        parent_tool_use_id: null,
+        uuid: "u-2",
+        session_id: "s-1",
+      } as StreamMsg,
+      // 2. hook lifecycle (full SDKHookStarted/Progress/Response shapes)
+      {
+        type: "system",
+        subtype: "hook_started",
+        hook_id: "h-1",
+        hook_name: "my-pretool",
+        hook_event: "PreToolUse",
+        uuid: "u-3",
+        session_id: "s-1",
+      } as StreamMsg,
+      {
+        type: "system",
+        subtype: "hook_progress",
+        hook_id: "h-1",
+        hook_name: "my-pretool",
+        hook_event: "PreToolUse",
+        stdout: "working",
+        stderr: "",
+        output: "working",
+        uuid: "u-4",
+        session_id: "s-1",
+      } as StreamMsg,
+      {
+        type: "system",
+        subtype: "hook_response",
+        hook_id: "h-1",
+        hook_name: "my-pretool",
+        hook_event: "PreToolUse",
+        output: "ok",
+        stdout: "ok",
+        stderr: "",
+        exit_code: 0,
+        outcome: "success",
+        uuid: "u-5",
+        session_id: "s-1",
+      } as StreamMsg,
+      // 3. assistant tool_use (full SDKAssistantMessage: message + parent_tool_use_id + uuid)
+      {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "Running a check." }, { type: "tool_use", name: "Bash", id: "call-1", input: { description: "run the suite" } }] },
+        parent_tool_use_id: null,
+        uuid: "u-6",
+        session_id: "s-1",
+      } as StreamMsg,
+      // 4. user tool_result
+      {
+        type: "user",
+        message: { content: [{ type: "tool_result", tool_use_id: "call-1", content: "42 passed" }] },
+        parent_tool_use_id: null,
+        uuid: "u-7",
+        session_id: "s-1",
+      } as StreamMsg,
+      // 5. terminal result (full SDKResultSuccess field set)
+      {
+        type: "result",
+        subtype: "success",
+        duration_ms: 1234,
+        duration_api_ms: 1000,
+        is_error: false,
+        num_turns: 3,
+        result: "Done: the app builds and tests pass.",
+        stop_reason: "end_turn",
+        total_cost_usd: 0.0731,
+        usage: { input_tokens: 100, output_tokens: 50 },
+        modelUsage: {},
+        permission_denials: [],
+        uuid: "u-8",
+        session_id: "s-1",
+      } as StreamMsg,
+    ];
+  }
+
+  test("full realistic session -> exit 0, captured result text, cost json, hook event, agents", async () => {
+    const r = await consumeSdkStream(fullSession(), ctx("7"), clock);
+    // Terminal success result -> exit 0, captured the result string, sawResult true.
+    expect(r.sawResult).toBe(true);
+    expect(r.exitCode).toBe(0);
+    expect(r.capturedText).toContain("Done: the app builds");
+    expect(r.totalCostUsd).toBeCloseTo(0.0731, 4);
+    // result-cost-<iter>.json written with the real cost.
+    expect(existsSync(costPath("7"))).toBe(true);
+    const cost = readJson(costPath("7"));
+    expect(cost.total_cost_usd ?? cost.cost_usd ?? cost.total_cost).toBeDefined();
+    // hook event forwarded as claude_hook_pretooluse (dedup: exactly one for the lifecycle).
+    const events = readFileSync(eventsPath(), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const hookEvents = events.filter((e) => String(e.type).startsWith("claude_hook_"));
+    expect(hookEvents.length).toBe(1);
+    expect(hookEvents[0].type).toBe("claude_hook_pretooluse");
+    // agents.json has the orchestrator + a bumped tool_count from the tool_use.
+    const agents = readJson(agentsPath());
+    const orch = agents.find((a: { tool_id: string }) => a.tool_id === "orchestrator-main");
+    expect(orch).toBeTruthy();
+    expect(orch.tool_count).toBeGreaterThanOrEqual(1);
+  });
+
+  test("SDKResultError (is_error true) is fail-closed -> exit non-zero", async () => {
+    const msgs: StreamMsg[] = [
+      {
+        type: "result",
+        subtype: "error_max_budget_usd",
+        is_error: true,
+        result: "budget exceeded",
+        total_cost_usd: 5.0,
+        num_turns: 2,
+        duration_ms: 100,
+        duration_api_ms: 90,
+        stop_reason: null,
+        usage: { input_tokens: 1, output_tokens: 1 },
+        modelUsage: {},
+        permission_denials: [],
+        uuid: "e-1",
+        session_id: "s-1",
+      } as StreamMsg,
+    ];
+    const r = await consumeSdkStream(msgs, ctx("8"), clock);
+    expect(r.sawResult).toBe(true);
+    expect(r.exitCode).not.toBe(0); // an error result must never be counted as success
   });
 });

@@ -47,6 +47,25 @@
 #
 #===============================================================================
 
+# RUN-25 iter 21 (Wave D #2): share the ONE secret matcher with the commit gate.
+# The completion evidence gate uses _commit_scan_secret_file / _commit_path_looks_secret
+# to add a secret-leak axis, so a credential can no longer ship in a "done"
+# deliverable via the completion-promise / dirty-tree route. Resolve this file's
+# dir robustly: BASH_SOURCE[0] can be EMPTY when the file is sourced at top level,
+# so fall back to run.sh's exported SCRIPT_DIR and finally to the on-disk location.
+_LOKI_CC_DIR="$(dirname "${BASH_SOURCE[0]:-}" 2>/dev/null)"
+if [ -z "$_LOKI_CC_DIR" ] || [ "$_LOKI_CC_DIR" = "." ]; then
+    _LOKI_CC_DIR="${SCRIPT_DIR:-}"
+fi
+for _cc_cand in "$_LOKI_CC_DIR/lib/secret-scan.sh" "${SCRIPT_DIR:-}/lib/secret-scan.sh" "autonomy/lib/secret-scan.sh"; do
+    if [ -n "$_cc_cand" ] && [ -f "$_cc_cand" ]; then
+        # shellcheck source=lib/secret-scan.sh
+        source "$_cc_cand"
+        break
+    fi
+done
+unset _LOKI_CC_DIR _cc_cand
+
 # Council configuration
 COUNCIL_ENABLED=${LOKI_COUNCIL_ENABLED:-true}
 COUNCIL_SIZE=${LOKI_COUNCIL_SIZE:-3}
@@ -1252,7 +1271,25 @@ except: print('Results unavailable')
 council_reverify_checklist() {
     if type checklist_verify &>/dev/null && [ -f ".loki/checklist/checklist.json" ]; then
         log_info "[Council] Re-verifying checklist before evaluation..."
-        checklist_verify 2>/dev/null || true
+        # RUN-25 iter 15 (Wave B #10): capture the REAL exit status. The old
+        # `checklist_verify 2>/dev/null || true` swallowed a failure, leaving LAST
+        # iteration's (possibly-green) verification-results.json in place -- so a
+        # build that regressed since the last checklist run would sail through the
+        # gates on STALE green evidence. On a re-verify failure we cannot trust the
+        # existing results, so we mark them unverifiable: overwrite
+        # verification-results.json with an explicit critical-failure sentinel that
+        # council_checklist_gate reads as BLOCK (fail-closed). The next successful
+        # re-verify overwrites the sentinel with fresh data.
+        local _rv_rc=0
+        checklist_verify 2>/dev/null || _rv_rc=$?
+        if [ "$_rv_rc" -ne 0 ]; then
+            log_warn "[Council] Checklist re-verify FAILED (rc=$_rv_rc); invalidating stale results (fail-closed)."
+            local _rf=".loki/checklist/verification-results.json"
+            local _tmp="${_rf}.tmp.$$"
+            if printf '%s\n' '{"categories":[{"items":[{"id":"reverify_failed","title":"checklist re-verify failed","priority":"critical","status":"failing"}]}]}' > "$_tmp" 2>/dev/null; then
+                mv -f "$_tmp" "$_rf" 2>/dev/null || rm -f "$_tmp" 2>/dev/null
+            fi
+        fi
     fi
 }
 
@@ -1267,9 +1304,22 @@ council_checklist_gate() {
     local waivers_file=".loki/checklist/waivers.json"
     local heldout_file=".loki/checklist/held-out.json"
 
-    # No checklist = no gate (backwards compatible)
+    # No checklist = no gate (backwards compatible). Absent is genuinely "nothing
+    # to verify"; present-but-corrupt is handled fail-closed below.
     if [ ! -f "$results_file" ]; then
         return 0
+    fi
+
+    # RUN-25 iter 13 (Wave B #4): the results file EXISTS (a checklist was
+    # generated, possibly with a failing critical item), so if we cannot read it
+    # we must fail CLOSED -- a checklist we cannot parse is NOT proof of a clean
+    # build. python3 absent -> we cannot evaluate the gate at all -> BLOCK rather
+    # than the old `|| echo PASS`, which cleared the first hard gate on a broken
+    # host. (Absent python is a real deployment problem; failing open here is
+    # exactly the fake-green this gate exists to prevent.)
+    if ! command -v python3 >/dev/null 2>&1; then
+        log_warn "[Council] Hard gate BLOCKED: python3 unavailable, cannot verify checklist (fail-closed)."
+        return 1
     fi
 
     # Check for critical failures, excluding waived AND held-out items. Held-out
@@ -1287,8 +1337,11 @@ heldout_file = os.environ.get('_HELDOUT_FILE', '')
 try:
     with open(results_file) as f:
         results = json.load(f)
-except (json.JSONDecodeError, IOError, KeyError):
-    print('PASS')
+except (json.JSONDecodeError, IOError, KeyError, ValueError):
+    # RUN-25 iter 13 (Wave B #4): the file EXISTS but is unreadable/corrupt. A
+    # checklist we cannot parse is NOT proof of a clean build -- a failing
+    # critical item could be hiding in the unparseable bytes. Fail CLOSED.
+    print('BLOCK:unreadable_checklist_results')
     sys.exit(0)
 
 # Load waivers
@@ -1325,7 +1378,7 @@ if critical_failures:
 else:
     print('PASS')
     sys.exit(0)
-" 2>/dev/null || echo "PASS")
+" 2>/dev/null || echo "BLOCK:checklist_gate_error")
 
     if [[ "$gate_result" == BLOCK:* ]]; then
         local failures="${gate_result#BLOCK:}"
@@ -1425,8 +1478,14 @@ try:
         results = json.load(f)
     with open(heldout_file) as f:
         heldout_ids = set(json.load(f).get('held_out', []))
-except (json.JSONDecodeError, IOError, KeyError):
-    print('NONE 0 0')
+except (json.JSONDecodeError, IOError, KeyError, ValueError):
+    # RUN-25 iter 13 (Wave B #4): BOTH files are known to EXIST (guarded above),
+    # so an error here is a present-but-corrupt results/held-out file, NOT an
+    # inert no-items-reserved state. A held-out gate we cannot evaluate must fail
+    # CLOSED (BLOCK), never emit NONE (which the caller treats as nothing-to-check).
+    # The caller reads verdict pass fail, so emit BLOCK as the first field with a
+    # synthetic 1 fail. A hidden failing reserved item could ship otherwise.
+    print('BLOCK 0 1')
     sys.exit(0)
 
 # No held-out items reserved (e.g. N<4): gate is inert. Emit NONE so the caller
@@ -1476,7 +1535,7 @@ if matched == 0:
 
 verdict = 'BLOCK' if failed > 0 else 'PASS'
 print('%s %d %d' % (verdict, passed, failed))
-" 2>/dev/null || echo "NONE 0 0")
+" 2>/dev/null || echo "BLOCK 0 1")
 
     local verdict pass_count fail_count
     read -r verdict pass_count fail_count <<< "$gate_result"
@@ -2008,8 +2067,116 @@ DETAILS_EOF
         mv "$_det_tmp" "$_det_file" 2>/dev/null || rm -f "$_det_tmp" 2>/dev/null || true
     }
 
-    # --- Block decision: block iff DIFF FAILS or TEST FAILS ---
-    if [ "$diff_fails" != "true" ] && [ "$test_fails" != "true" ]; then
+    # --- Evidence check (c): RUNTIME BOOT -- does the built app actually run? ---
+    # RUN-25 iter 20 (Wave D #1): the single most load-bearing claim of a
+    # spec-to-product builder is "the app runs", and until now the evidence gate
+    # NEVER checked it -- app_runner_health_check already writes
+    # .loki/app-runner/health.json but nothing read it here. Mirror the test axis:
+    # a SERVEABLE app confirmed unhealthy -> boot_fails (BLOCK); no serveable
+    # runner / probe never attempted (a CLI tool or library has no server to boot)
+    # -> boot_inconclusive, pass-through (must NOT deadlock a non-web project).
+    # Opt out with LOKI_EVIDENCE_BOOT_GATE=0.
+    local boot_fails="false"
+    local boot_inconclusive="false"
+    local boot_inconclusive_reason=""
+    local _health_file=".loki/app-runner/health.json"
+    local _state_file=".loki/app-runner/state.json"
+    if [ "${LOKI_EVIDENCE_BOOT_GATE:-1}" = "0" ]; then
+        boot_inconclusive="true"
+        boot_inconclusive_reason="boot_gate_disabled"
+    elif [ ! -f "$_health_file" ] && [ ! -f "$_state_file" ]; then
+        # No app-runner artifacts at all -> no serveable app was ever launched
+        # (CLI/library project, or the runner never ran). Inconclusive, not a block.
+        boot_inconclusive="true"
+        boot_inconclusive_reason="no_app_runner"
+    elif command -v python3 >/dev/null 2>&1; then
+        local _boot_status
+        _boot_status=$(_HEALTH="$_health_file" _STATE="$_state_file" python3 <<'PYEOF' 2>/dev/null || echo "INCONCLUSIVE:parse_error"
+import json, os
+health_file = os.environ.get('_HEALTH', '')
+state_file = os.environ.get('_STATE', '')
+
+def load(p):
+    try:
+        with open(p) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+state = load(state_file) or {}
+health = load(health_file) or {}
+# A "serveable" app is one the runner classified with a real service (status not
+# 'none'/'unknown' and a primary_service or url present). Only then is an
+# unhealthy probe a genuine BLOCK; otherwise there is nothing to boot.
+status = str(state.get('status', 'unknown')).lower()
+svc = state.get('primary_service') or ''
+url = state.get('url') or ''
+serveable = status not in ('none', 'unknown', '') and (bool(svc) or bool(url))
+# health 'ok' is the last health-check verdict (True healthy / False failing).
+ok = health.get('ok', None)
+if not serveable:
+    print('INCONCLUSIVE:not_serveable')
+elif ok is True:
+    print('PASS')
+elif ok is False:
+    print('FAIL')
+else:
+    # serveable but no health verdict recorded -> probe never completed.
+    print('INCONCLUSIVE:no_health_probe')
+PYEOF
+)
+        case "$_boot_status" in
+            FAIL)
+                boot_fails="true" ;;
+            PASS)
+                : ;; # affirmative: the app boots and serves.
+            INCONCLUSIVE:*)
+                boot_inconclusive="true"
+                boot_inconclusive_reason="${_boot_status#INCONCLUSIVE:}" ;;
+            *)
+                boot_inconclusive="true"
+                boot_inconclusive_reason="unknown" ;;
+        esac
+    else
+        boot_inconclusive="true"
+        boot_inconclusive_reason="no_python3"
+    fi
+
+    # --- Evidence check (d): SECRET LEAK -- did the build ship a credential? ---
+    # RUN-25 iter 21 (Wave D #2): the secret matcher ran ONLY on the auto-commit
+    # path, so a completion via the promise / dirty-tree route could ship a leaked
+    # credential in a "done" deliverable -- a hole in the exact trust moat. Run the
+    # SAME matcher (shared lib) over the changed files. A high-confidence hit ->
+    # secret_fails (BLOCK); no matcher available or no scannable files ->
+    # inconclusive pass-through. Opt out LOKI_EVIDENCE_SECRET_GATE=0.
+    local secret_fails="false"
+    if [ "${LOKI_EVIDENCE_SECRET_GATE:-1}" != "0" ] \
+       && type _commit_scan_secret_file >/dev/null 2>&1 \
+       && type _commit_path_looks_secret >/dev/null 2>&1; then
+        # Changed files vs run-start SHA (committed) + working-tree (staged/unstaged/
+        # untracked), excluding .loki/ (Loki's own state is never project work).
+        local _sec_files
+        _sec_files=$(
+            {
+                [ -n "$base_sha" ] && git diff --name-only "$base_sha" 2>/dev/null
+                git diff --name-only 2>/dev/null
+                git diff --name-only --cached 2>/dev/null
+                git ls-files --others --exclude-standard 2>/dev/null
+            } | grep -v '^$' | grep -vE '^\.loki/' | sort -u
+        )
+        local _sf
+        while IFS= read -r _sf; do
+            [ -n "$_sf" ] || continue
+            if _commit_path_looks_secret "$_sf" || { [ -f "$_sf" ] && _commit_scan_secret_file "$_sf"; }; then
+                secret_fails="true"
+                log_warn "[Council] Evidence gate: secret-leak match in changed file '${_sf}'"
+                break
+            fi
+        done <<< "$_sec_files"
+    fi
+
+    # --- Block decision: block iff DIFF FAILS or TEST FAILS or BOOT FAILS or SECRET FAILS ---
+    if [ "$diff_fails" != "true" ] && [ "$test_fails" != "true" ] && [ "$boot_fails" != "true" ] && [ "$secret_fails" != "true" ]; then
         # Gate passes: remove any stale block report.
         if [ -f "$COUNCIL_STATE_DIR/evidence-block.json" ]; then
             rm -f "$COUNCIL_STATE_DIR/evidence-block.json"
@@ -2021,6 +2188,12 @@ DETAILS_EOF
         # the human-visible honesty at the pass site.
         if [ "$test_inconclusive" = "true" ]; then
             log_warn "[Council] Evidence gate: completion not backed by test evidence (${test_inconclusive_reason}). Pass-through; set LOKI_EVIDENCE_NO_TESTS_AFFIRMATIVE=1 to treat no-tests as affirmative."
+        fi
+        # Same honesty for the runtime-boot axis: a pass that could not confirm the
+        # app boots (CLI/library, probe never ran, gate disabled) says so out loud
+        # rather than implying the app was verified to run.
+        if [ "$boot_inconclusive" = "true" ]; then
+            log_warn "[Council] Evidence gate: app-boot not confirmed (${boot_inconclusive_reason}). Pass-through; set LOKI_EVIDENCE_BOOT_GATE=0 to silence, or run the app so its health probe records a verdict."
         fi
         _write_evidence_details "pass"
         return 0
@@ -2034,6 +2207,10 @@ DETAILS_EOF
         reason="empty_diff"
     elif [ "$test_fails" = "true" ]; then
         reason="tests_red"
+    elif [ "$boot_fails" = "true" ]; then
+        reason="app_boot_failed"
+    elif [ "$secret_fails" = "true" ]; then
+        reason="secret_leak_in_changed_files"
     fi
 
     local failures=""
@@ -2048,6 +2225,27 @@ DETAILS_EOF
             failures="test runner '${test_runner}' ran and was red"
         fi
         log_warn "[Council] Evidence gate BLOCKED: test runner '${test_runner}' was red"
+    fi
+    if [ "$boot_fails" = "true" ]; then
+        # Wave D #1: the built app was launched and its health probe reported
+        # unhealthy -- a spec-to-product build cannot be "done" if its app does not
+        # run. Pass-through for CLI/library projects (boot_inconclusive above).
+        if [ -n "$failures" ]; then
+            failures="${failures}|app runner started but the app is not healthy (does not serve)"
+        else
+            failures="app runner started but the app is not healthy (does not serve)"
+        fi
+        log_warn "[Council] Evidence gate BLOCKED: the built app is not running/serving (app-runner health FAIL)"
+    fi
+    if [ "$secret_fails" = "true" ]; then
+        # Wave D #2: a credential-shaped secret is present in the changed files. A
+        # trust builder cannot call a build "done" while it would leak a secret.
+        if [ -n "$failures" ]; then
+            failures="${failures}|a secret/credential was detected in the changed files"
+        else
+            failures="a secret/credential was detected in the changed files"
+        fi
+        log_warn "[Council] Evidence gate BLOCKED: a secret/credential was detected in the changed files"
     fi
 
     # Rail 3 (one-step self-rescue): the terminal user (no dashboard open) must
@@ -2069,8 +2267,14 @@ import json, os
 items = [s for s in os.environ['_FAILURES'].split('|') if s]
 print(json.dumps(items[:5]))
 " 2>/dev/null || echo '[]')
+    local boot_ok secret_ok boot_reason_json
     if [ "$diff_fails" = "true" ]; then diff_ok="false"; else diff_ok="true"; fi
     if [ "$test_fails" = "true" ]; then tests_ok="false"; else tests_ok="true"; fi
+    if [ "$boot_fails" = "true" ]; then boot_ok="false"; else boot_ok="true"; fi
+    if [ "$secret_fails" = "true" ]; then secret_ok="false"; else secret_ok="true"; fi
+    # Record WHY boot was inconclusive (no_app_runner / not_serveable / etc.) so a
+    # consumer of the block report can tell a genuine boot pass from a pass-through.
+    boot_reason_json=$(_R="${boot_inconclusive_reason:-}" python3 -c "import json,os; print(json.dumps(os.environ['_R']))" 2>/dev/null || echo '""')
     base_for_json="${base_sha:-}"
     cat > "$ev_tmp" << EVIDENCE_EOF
 {
@@ -2081,7 +2285,9 @@ print(json.dumps(items[:5]))
     "reason": "$reason",
     "checks": {
         "diff": {"ok": $diff_ok, "base_sha": "$base_for_json", "files_changed": $diff_files, "sources": "committed|unstaged|staged|untracked union"},
-        "tests": {"ok": $tests_ok, "runner": "$test_runner", "pass": $test_pass}
+        "tests": {"ok": $tests_ok, "runner": "$test_runner", "pass": $test_pass},
+        "boot": {"ok": $boot_ok, "inconclusive": $boot_inconclusive, "reason": $boot_reason_json},
+        "secret": {"ok": $secret_ok}
     },
     "failures": $failures_json
 }
@@ -2647,11 +2853,35 @@ council_heuristic_review() {
             fi
             ;;
         test_auditor)
-            # Check for test files
-            if ! echo "$evidence" | grep -qiE "(test|spec)"; then
+            # RUN-25 iter 14 (Wave B #9): require AFFIRMATIVE evidence that tests
+            # actually ran AND passed before approving -- the old logic approved on
+            # the ABSENCE of a negative signal (evidence merely MENTIONS "test" and
+            # lacks "fail"), which is a fake-green: a build where the suite never
+            # ran has no failure text either. Mirror council_evaluate_member: a real
+            # .loki/quality/test-results.json with a runner (not "none") AND pass
+            # true is the only thing that clears this auditor. No such affirmative
+            # evidence -> REJECT (keep iterating), never a heuristic APPROVE.
+            local _tr_file=".loki/quality/test-results.json"
+            local _tests_ok=0
+            if [ -f "$_tr_file" ] && command -v python3 >/dev/null 2>&1; then
+                _tests_ok=$(_TR="$_tr_file" python3 -c "
+import json, os
+try:
+    with open(os.environ['_TR']) as f:
+        d = json.load(f)
+except Exception:
+    print(0); raise SystemExit
+runner = str(d.get('runner', 'none'))
+p = d.get('pass', None)
+# affirmative: a real runner ran AND reported pass true (not inconclusive/false).
+print(1 if runner not in ('none', '', 'None') and p is True else 0)
+" 2>/dev/null || echo 0)
+            fi
+            if [ "${_tests_ok:-0}" != "1" ]; then
+                # No affirmative pass evidence -> this auditor cannot approve.
                 ((issues++))
             fi
-            # Check for passing indicators
+            # A negative signal in the evidence is still an independent issue.
             if echo "$evidence" | grep -qiE "(fail|error|FAIL)"; then
                 ((issues++))
             fi

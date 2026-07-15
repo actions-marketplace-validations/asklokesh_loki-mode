@@ -74,6 +74,11 @@ export type GateOutcome = {
   passed: string[];
   // Gate names that ran and failed this iteration.
   failed: string[];
+  // Wave B #2: gates pushed to `passed` by CLEAR_LIMIT but STILL failing. The
+  // completion decision treats a cleared always-on-refusing gate (code_review)
+  // as still-blocking, so a real unresolved BLOCK cannot ship during the clear
+  // window. Optional (empty/absent when nothing was cleared).
+  cleared?: string[];
   // True when at least one gate failed and was not cleared by the CLEAR rule.
   blocked: boolean;
   // True when the PAUSE_LIMIT or ESCALATE_LIMIT was reached for any gate.
@@ -97,6 +102,15 @@ export type GateResult = {
   passed: boolean;
   // Optional human-readable detail surfaced into logs / prompt injection.
   detail?: string;
+  // TRUE when the gate did NOT actually run to a verdict (detector spawn failure,
+  // timeout, or malformed/unparseable output) and defaulted to passed:true so the
+  // loop is not wedged. Distinguishes "the gate ran and found nothing" from "the
+  // gate went dark" -- without this an un-run authenticity gate is byte-identical
+  // to a clean pass, so a mis-pathed/broken detector silently disables the gate
+  // with zero operator/council signal. Consumers (runner log, council, dashboard)
+  // can surface or escalate on repeated inconclusive runs. Does NOT change the
+  // pass/block decision.
+  inconclusive?: boolean;
 };
 
 // Escalation ladder limits, mirroring autonomy/run.sh:725-727. Read once at
@@ -710,6 +724,7 @@ export async function runSemanticTests(ctx?: RunnerContext): Promise<GateResult>
     clearFindings(semanticFindingsPath(base));
     return {
       passed: true,
+      inconclusive: true,
       detail: "semantic_tests: detector not found -- gate did not run",
     };
   }
@@ -747,6 +762,7 @@ export async function runSemanticTests(ctx?: RunnerContext): Promise<GateResult>
     clearFindings(semanticFindingsPath(base));
     return {
       passed: true,
+      inconclusive: true,
       detail: "semantic_tests: detector spawn failed -- inconclusive, not blocking",
     };
   }
@@ -792,6 +808,7 @@ export async function runSemanticTests(ctx?: RunnerContext): Promise<GateResult>
     clearFindings(semanticFindingsPath(base));
     return {
       passed: true,
+      inconclusive: true,
       detail: "semantic_tests: detector timed out -- inconclusive, not blocking",
     };
   }
@@ -899,6 +916,7 @@ export async function runInvariants(ctx?: RunnerContext): Promise<GateResult> {
     clearFindings(invariantFindingsPath(base));
     return {
       passed: true,
+      inconclusive: true,
       detail: "invariants: detector not found -- gate did not run",
     };
   }
@@ -932,6 +950,7 @@ export async function runInvariants(ctx?: RunnerContext): Promise<GateResult> {
     clearFindings(invariantFindingsPath(base));
     return {
       passed: true,
+      inconclusive: true,
       detail: "invariants: detector spawn failed -- inconclusive, not blocking",
     };
   }
@@ -976,6 +995,7 @@ export async function runInvariants(ctx?: RunnerContext): Promise<GateResult> {
     clearFindings(invariantFindingsPath(base));
     return {
       passed: true,
+      inconclusive: true,
       detail: "invariants: detector timed out -- inconclusive, not blocking",
     };
   }
@@ -1515,7 +1535,15 @@ export function parseVerdict(reviewer: string, output: string): ReviewerVerdict 
     const raw = verdictLine.replace(/^\s*VERDICT:/i, "").trim().toUpperCase();
     if (raw === "PASS" || raw === "FAIL") verdict = raw;
   }
-  const hasBlockingSeverity = /\[(Critical|High)\]/i.test(output);
+  // RUN-25 iter 8 (Wave B #3): blocking-severity detection must be as
+  // format-tolerant as non-blocking detection (countNonBlockingFindings). LLM
+  // reviewers and the devil's-advocate routinely drift from `[Critical]` to
+  // `**Critical**:` / `Severity: Critical` / `- Critical - ...`. The old
+  // bracket-only `/\[(Critical|High)\]/i` let a real Critical/High in any other
+  // form slip through -> blocking=false -> the FAIL fell through to passed:true
+  // and a bolded Critical did not flip a unanimous PASS. Reuse the same 4-form
+  // matcher so a recognizable Critical/High in ANY form makes a FAIL blocking.
+  const hasBlockingSeverity = matchesSeverityAnyForm(output, "critical") || matchesSeverityAnyForm(output, "high");
   return {
     reviewer,
     verdict,
@@ -1524,16 +1552,29 @@ export function parseVerdict(reviewer: string, output: string): ReviewerVerdict 
   };
 }
 
+// Shared 4-form severity matcher: [Sev] | **Sev** | Severity: Sev | "- Sev".
+// Case-insensitive, line-scanned. Used by BOTH blocking (Critical/High) and
+// non-blocking (Medium/Low) detection so the two are equally format-tolerant.
+function severityFormRegex(sev: string): RegExp {
+  return new RegExp(
+    `(\\[${sev}\\])|(\\*\\*\\s*${sev}\\s*\\*\\*)|(severity:?\\s*${sev})|(^\\s*[-*]\\s+${sev}([\\s:.,*]|$))`,
+    "i",
+  );
+}
+export function matchesSeverityAnyForm(output: string, sev: string): boolean {
+  const re = severityFormRegex(sev);
+  return output.split(/\r?\n/).some((line) => re.test(line));
+}
+
 // 7.114.0 (rank 9): count non-blocking (Medium/Low) findings in a reviewer's
 // output, tolerant of bracketed, bold, 'Severity:' and bullet-form severity
 // tokens. Parity-locked with _count_nonblocking_findings() in autonomy/run.sh
 // (the bash side greps with -icE; here we count regex matches line by line).
 export function countNonBlockingFindings(output: string): { medium: number; low: number } {
   const countSev = (sev: string): number => {
-    const re = new RegExp(
-      `(\\[${sev}\\])|(\\*\\*\\s*${sev}\\s*\\*\\*)|(severity:?\\s*${sev})|(^\\s*[-*]\\s+${sev}([\\s:.,*]|$))`,
-      "i",
-    );
+    // Same 4-form matcher used for blocking severity (severityFormRegex), kept in
+    // lockstep so blocking + non-blocking detection recognize identical forms.
+    const re = severityFormRegex(sev);
     let n = 0;
     for (const line of output.split(/\r?\n/)) if (re.test(line)) n += 1;
     return n;
@@ -1557,6 +1598,32 @@ export function computeMergeabilityScore(
 // Port of the diff-fetching block at autonomy/run.sh:6243. Tries `git diff
 // HEAD~1` first; falls back to `git diff --cached`; returns "" on both
 // failures (matches the bash `2>/dev/null || ... || echo ""` chain).
+// RUN-25 iter 19 (Wave C #2, self-contained part): derive the changed-file list
+// from the FULL diff's `diff --git a/X b/X` headers instead of a SECOND git spawn
+// (`git diff --name-only`). The full diff already names every changed file in its
+// headers, so a separate --name-only call is pure redundant work: this halves the
+// git spawns per code_review (2->1, or 4->2 counting each command's cached
+// fallback). Handles quoted paths (git quotes names with special chars) and the
+// a/ b/ prefixes. Byte-parity with `git diff --name-only` is proven in the test.
+export function filesFromDiff(diff: string): string {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const line of diff.split("\n")) {
+    // `diff --git a/<path> b/<path>` -- take the b/ side (post-image), matching
+    // `git diff --name-only`'s reported name. git QUOTES paths with specials in
+    // double quotes; strip the a/ b/ prefixes and any surrounding quotes.
+    const m = /^diff --git (?:"?a\/.*?"?) (?:"?b\/(.+?)"?)$/.exec(line);
+    if (!m || m[1] === undefined) continue;
+    // A trailing quote left by the optional non-greedy quote match.
+    const name = m[1].replace(/"$/, "");
+    if (!seen.has(name)) {
+      seen.add(name);
+      names.push(name);
+    }
+  }
+  return names.length > 0 ? names.join("\n") + "\n" : "";
+}
+
 async function readDiffAndFiles(cwd: string): Promise<{ diff: string; files: string }> {
   const tryGit = async (args: readonly string[]): Promise<string | null> => {
     const r = await run(["git", "-C", cwd, ...args], { timeoutMs: 30_000 });
@@ -1564,7 +1631,10 @@ async function readDiffAndFiles(cwd: string): Promise<{ diff: string; files: str
     return r.stdout;
   };
   const diff = (await tryGit(["diff", "HEAD~1"])) ?? (await tryGit(["diff", "--cached"])) ?? "";
-  const files = (await tryGit(["diff", "--name-only", "HEAD~1"])) ?? (await tryGit(["diff", "--name-only", "--cached"])) ?? "";
+  // Derive the file list from the diff we already fetched (Wave C #2) instead of
+  // a redundant second `git diff --name-only`. Same source diff -> same fallback
+  // path -> consistent file list.
+  const files = filesFromDiff(diff);
   return { diff, files };
 }
 
@@ -1713,9 +1783,36 @@ export async function runCodeReview(
   // auditor. parseVerdict counts every UNAVAILABLE verdict as "UNKNOWN", so
   // passCount/failCount are both 0 here.
   if (!reviewerAvailable) {
+    // code_review is the ONLY gate that refuses completion on this route, so an
+    // UNAVAILABLE that silently PASSES turns the flagship blind-3-reviewer moat
+    // into a no-op on any host without a reviewer (SDK-only containers/CI with no
+    // `claude` binary AND no reachable SDK judge). That is a fake-PASS: a build
+    // ships "reviewed" with zero review. So UNAVAILABLE BLOCKS by default under
+    // hard-gates, symmetric with the inconclusive guard below
+    // (LOKI_REVIEW_INCONCLUSIVE_BLOCK) -- both default to blocking and take only an
+    // explicit "0" opt-out. Opt out with LOKI_REVIEW_UNAVAILABLE_BLOCK=0 (the
+    // honest degraded pass, for a user who deliberately runs without any reviewer)
+    // or by disabling hard-gates (LOKI_HARD_GATES=0). NOTE: the raw-SDK reviewer
+    // path (LOKI_SDK_CODE_REVIEW=1 + a reachable key) keeps reviewerAvailable
+    // TRUE (resolveDefaultReviewer), so this only fires when NO reviewer at all
+    // can run -- exactly when failing open is unsafe.
+    // LOKI_HARD_GATES defaults TRUE (matches readToggles' flag("LOKI_HARD_GATES",
+    // true)); only an explicit "0"/"false" disables it.
+    const hgRaw = (process.env["LOKI_HARD_GATES"] ?? "").trim().toLowerCase();
+    const hardGates = !(hgRaw === "0" || hgRaw === "false" || hgRaw === "no" || hgRaw === "off");
+    const unavailableOptOut = process.env["LOKI_REVIEW_UNAVAILABLE_BLOCK"] === "0";
+    if (hardGates && !unavailableOptOut) {
+      ctx.log(
+        `code_review: UNAVAILABLE - no reviewer CLI/SDK on PATH; BLOCKING under hard-gates (set LOKI_REVIEW_UNAVAILABLE_BLOCK=0 for an honest degraded pass) (${reviewId})`,
+      );
+      return {
+        passed: false,
+        detail: `code_review: UNAVAILABLE - no reviewer available, blocking (fail-closed) (${reviewId})`,
+      };
+    }
     return {
       passed: true,
-      detail: `code_review: UNAVAILABLE - no reviewer CLI on PATH, no real review performed (${reviewId})`,
+      detail: `code_review: UNAVAILABLE - no reviewer CLI on PATH, no real review performed (LOKI_REVIEW_UNAVAILABLE_BLOCK=0 or hard-gates off) (${reviewId})`,
     };
   }
 
@@ -2757,6 +2854,11 @@ export async function runQualityGates(ctx: RunnerContext): Promise<GateOutcome> 
   const toggles = readToggles();
   const passed: string[] = [];
   const failed: string[] = [];
+  // RUN-25 iter 7 (Wave B #2): gates that hit CLEAR_LIMIT this iteration (pushed
+  // to `passed` to suppress prompt double-warn) but are STILL failing. The
+  // completion decision treats a cleared always-on-refusing gate (code_review)
+  // as still-blocking so a real unresolved BLOCK cannot ship during the window.
+  const cleared: string[] = [];
   let escalated = false;
 
   // Soft-gates path matches autonomy/run.sh:10957-10961: only code_review runs
@@ -2802,6 +2904,44 @@ export async function runQualityGates(ctx: RunnerContext): Promise<GateOutcome> 
     if (result.passed) {
       clearGateFailure(gate.name, base);
       passed.push(gate.name);
+      // Surface an INCONCLUSIVE pass distinctly (the gate defaulted to passed:true
+      // because it could not run -- spawn failure / timeout / missing detector --
+      // NOT because it ran clean). Without this an un-run authenticity gate is
+      // invisible, identical to a real pass. Log it and persist a durable marker
+      // (.loki/quality/inconclusive-<gate>.json with a monotonically increasing
+      // count) so an operator or a future escalation policy can see a gate going
+      // dark across iterations. Does not change the pass decision.
+      if (result.inconclusive) {
+        ctx.log(`quality-gate ${gate.name}: INCONCLUSIVE (gate did not run) -- ${result.detail ?? ""}`);
+        try {
+          const qDir = join(base, "quality");
+          mkdirSync(qDir, { recursive: true });
+          const markerPath = join(qDir, `inconclusive-${gate.name}.json`);
+          let count = 0;
+          if (existsSync(markerPath)) {
+            try {
+              const prev = JSON.parse(readFileSync(markerPath, "utf8")) as { count?: number };
+              count = typeof prev.count === "number" ? prev.count : 0;
+            } catch {
+              count = 0;
+            }
+          }
+          atomicWriteText(
+            markerPath,
+            `${JSON.stringify({ gate: gate.name, count: count + 1, last_detail: result.detail ?? "" }, null, 2)}\n`,
+          );
+        } catch (err) {
+          ctx.log(`inconclusive marker persist failed (non-fatal): ${(err as Error).message}`);
+        }
+      } else {
+        // A real clean pass clears any stale inconclusive streak for this gate.
+        try {
+          const markerPath = join(base, "quality", `inconclusive-${gate.name}.json`);
+          if (existsSync(markerPath)) rmSync(markerPath, { force: true });
+        } catch {
+          // best-effort
+        }
+      }
       continue;
     }
     const esc = applyEscalation(gate.name, base, limits, ctx, result.detail);
@@ -2831,6 +2971,13 @@ export async function runQualityGates(ctx: RunnerContext): Promise<GateOutcome> 
       // iteration even though the counter keeps climbing. Surface it under
       // `passed` so the caller's prompt-injection logic does not double-warn.
       passed.push(gate.name);
+      // RUN-25 iter 7 (Wave B #2): but CLEAR is a prompt-noise suppressor, NOT a
+      // completion authorization. A cleared-but-still-FAILING code_review (or any
+      // always-on completion-refusing gate) must STILL refuse completion -- else
+      // a real unresolved Critical/High review ships "done" during the clear
+      // window. Record it in `cleared` so completionRefusalReason can keep
+      // treating it as blocking even though it is not in `failed`.
+      cleared.push(gate.name);
     } else {
       failed.push(gate.name);
     }
@@ -2844,10 +2991,15 @@ export async function runQualityGates(ctx: RunnerContext): Promise<GateOutcome> 
   }
 
   persistFailureList(base, failed);
+  // Only a cleared ALWAYS-ON completion-refusing gate (code_review) forces
+  // blocked (Wave B #2): a cleared advisory gate (static_analysis, ...) never
+  // refuses completion, so clearing it must stay non-blocking exactly as before.
+  const clearedRefusing = cleared.includes("code_review");
   return {
     passed,
     failed,
-    blocked: failed.length > 0,
+    cleared,
+    blocked: failed.length > 0 || clearedRefusing,
     escalated,
   };
 }
