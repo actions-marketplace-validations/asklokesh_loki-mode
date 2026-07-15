@@ -16948,7 +16948,16 @@ except Exception:
         #       specific count, NOT the broader high-unresolved which includes
         #       auto-ackable non-contradictions).
         # Opt-out: LOKI_SPEC_CONTRADICTION_FASTFAIL=0.
-        if [ "${LOKI_SPEC_CONTRADICTION_FASTFAIL:-1}" = "1" ] \
+        # NEVER-FAIL-A-STAGE default (founder policy): a spec-contradiction is now
+        # NON-FATAL by default -- it is recorded as a high-severity finding and the
+        # build PROCEEDS (the completion gate still refuses a "green" done while an
+        # unresolved contradiction stands, and it is surfaced in proof-of-done, so
+        # this never fakes success; it only stops a false-positive from terminating
+        # a valid build before iteration 1). The grill classifier is an LLM and
+        # over-fires; combined with the no-retry terminal that produced valid
+        # specs killed at 0 iterations. Opt INTO the old hard terminal-fail with
+        # LOKI_SPEC_CONTRADICTION_FASTFAIL=1 (default is now 0).
+        if [ "${LOKI_SPEC_CONTRADICTION_FASTFAIL:-0}" = "1" ] \
            && [ ! -t 0 ] \
            && [ "${LOKI_ASSUMPTIONS_REQUIRE_CONFIRM:-0}" != "1" ] \
            && type spec_ledger_contradiction_unresolved_count &>/dev/null; then
