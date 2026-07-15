@@ -65,10 +65,11 @@ describe("buildSdkLoopOptions: USD budget backstop", () => {
     mkdirSync(join(scratch, ".loki", "metrics"), { recursive: true });
     writeFileSync(join(scratch, ".loki", "metrics", "budget.json"), JSON.stringify({ current_spend: 3 }));
     const o = buildSdkLoopOptions({ tier: "development", model: "claude-sonnet-5", cwd: scratch });
-    // remaining is positive; maxBudgetUsd should be a finite positive number.
-    if (o.maxBudgetUsd !== undefined) {
-      expect(o.maxBudgetUsd).toBeGreaterThan(0);
-    }
+    // remaining is positive (7), so maxBudgetUsd MUST be set to a finite positive
+    // number. Assert unconditionally: a guard (if defined) would let a
+    // dropped-passthrough mutation survive by skipping the assertion.
+    expect(o.maxBudgetUsd).toBeGreaterThan(0);
+    expect(Number.isFinite(o.maxBudgetUsd)).toBe(true);
   });
 
   test("omitted when the budget is fully spent (remaining <= 0)", () => {
