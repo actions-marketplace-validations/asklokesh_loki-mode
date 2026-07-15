@@ -80,6 +80,26 @@ r="$(classify "Findings" "requirement A directly contradicts requirement B")"
 r="$(classify "Findings" "what stops them from contradicting the chart" "LOKI_SPEC_CONTRADICTION_KEYWORD_STRICT=0")"
 [ "$r" = "contradictory" ] && ok || fail "keyword-strict=0 must restore old broad match (got $r)"
 
+# --- authoritative section-kind guard (the escaping showcase phrasings) ---
+# The grill's own section categorization wins: a finding it filed under an
+# ambiguity/assumption section is that kind, even if its prose says "contradict".
+
+# 12. "could show contradictory trends" under an Ambiguities section -> ambiguous
+r="$(classify "Ambiguities and missing acceptance criteria" "two implementations could show contradictory trends for the same data")"
+[ "$r" != "contradictory" ] && ok || fail "contradictory prose under Ambiguities must not be a contradiction (got $r)"
+
+# 13. "contradicts opening index.html" under Unstated assumptions -> not contradictory
+r="$(classify "Unstated assumptions" "a dev-server-only build contradicts opening index.html as a standalone acceptance")"
+[ "$r" != "contradictory" ] && ok || fail "contradictory prose under Unstated assumptions must not be a contradiction (got $r)"
+
+# 14. an asserted contradiction in a real Contradictions section IS contradictory
+r="$(classify "Internal contradictions" "requirement A contradicts requirement B")"
+[ "$r" = "contradictory" ] && ok || fail "asserted contradiction in a Contradictions section must be contradictory (got $r)"
+
+# 15. section-kind guard opt-out restores keyword-first behavior
+r="$(classify "Ambiguities" "requirement A directly contradicts requirement B" "LOKI_SPEC_SECTION_KIND_GUARD=0")"
+[ "$r" = "contradictory" ] && ok || fail "guard opt-out must let an asserted keyword classify contradictory (got $r)"
+
 echo ""
 echo "test-spec-contradiction-classify: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

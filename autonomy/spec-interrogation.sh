@@ -142,6 +142,26 @@ spec_interrogation_class_for() {
     lc_section="$(printf '%s' "$section" | tr '[:upper:]' '[:lower:]')"
     lc_line="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
 
+    # AUTHORITATIVE SECTION GUARD (first): the grill CATEGORIZES each finding into
+    # a section, and that categorization is the strongest signal of the finding's
+    # KIND. A finding the grill itself filed under an explicitly non-contradiction
+    # section -- Ambiguities, (Unstated) Assumptions, Open questions, Blind spots,
+    # Missing/gaps -- is that KIND, even if its prose happens to use the word
+    # "contradict"/"conflict" while POSING the ambiguity ("two implementations
+    # could show contradictory trends", "a dev-only build contradicts opening
+    # index.html"). Those are assumable-away ambiguities, not spec-internal
+    # "X and not-X". Classify by the grill's own section here so a stray keyword
+    # in the finding prose can never escalate an ambiguity to a no-retry-terminal
+    # contradiction. Opt out with LOKI_SPEC_SECTION_KIND_GUARD=0.
+    if [ "${LOKI_SPEC_SECTION_KIND_GUARD:-1}" = "1" ]; then
+        case "$lc_section" in
+            *ambigu*|*acceptance*)            printf 'ambiguous'; return 0 ;;
+            *unstated\ assumption*|*assumption*) printf 'underspecified'; return 0 ;;
+            *open\ question*)                 printf 'ambiguous'; return 0 ;;
+            *blind\ spot*|*security*|*scale*|*reliability*) printf 'missing'; return 0 ;;
+        esac
+    fi
+
     # A contradiction keyword classifies the finding as contradictory ONLY when
     # the finding ASSERTS a contradiction ("section 2 says X, section 5 says
     # not-X"), NOT when it merely QUESTIONS a hypothetical one ("what stops the
