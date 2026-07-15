@@ -52,6 +52,10 @@ export async function runInternalSdkJudge(args: string[]): Promise<number> {
     return 3;
   }
 
+  // Defensive default only: every one of the 8 bash judge callers passes --model
+  // explicitly (from a LOKI_SDK_*_MODEL env with its own default), so this literal
+  // is not reached on the real dispatch path -- it just keeps a bare hand-run of
+  // `loki internal sdk-judge` from erroring with no model.
   const model = argVal(args, "--model") ?? "claude-haiku-4-5";
   const effortRaw = argVal(args, "--effort");
   const effort = effortRaw && VALID_EFFORT.has(effortRaw) ? (effortRaw as Effort) : undefined;
@@ -89,6 +93,10 @@ export async function runInternalSdkText(args: string[]): Promise<number> {
     return 3;
   }
 
+  // Defensive default only: every one of the 8 bash judge callers passes --model
+  // explicitly (from a LOKI_SDK_*_MODEL env with its own default), so this literal
+  // is not reached on the real dispatch path -- it just keeps a bare hand-run of
+  // `loki internal sdk-judge` from erroring with no model.
   const model = argVal(args, "--model") ?? "claude-haiku-4-5";
   const effortRaw = argVal(args, "--effort");
   const effort = effortRaw && VALID_EFFORT.has(effortRaw) ? (effortRaw as Effort) : undefined;

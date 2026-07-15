@@ -16779,7 +16779,7 @@ def _resolve_session_pin(alias):
 #     override-path clamp). A 'sonnet' override dispatches sonnet.
 #   - No override (session pin): the runner maps alias -> tier ->
 #     resolve_model_for_tier -> clamp(model, real_tier). Use _resolve_session_pin.
-#     A 'sonnet' session pin dispatches OPUS (development tier).
+#     A 'sonnet' session pin dispatches SONNET (development tier; CLAUDE_DEFAULT_DEVELOPMENT=sonnet since v7.104.0).
 # This is the task-568 fix: price the actually-dispatched model on BOTH routes.
 _is_override = (_session_model_source == '.loki/state/model-override')
 if _is_override:

@@ -3059,7 +3059,8 @@ async def get_session_model():
     default = _normalize_session_pin(os.environ.get("LOKI_SESSION_MODEL")) or "sonnet"
     # Resolve on the route the runner will actually take: override-path clamp when
     # an override file is present, session-pin tier route otherwise. This closes
-    # the task-568 stock-path gap (a "sonnet" pin dispatches opus).
+    # the task-568 stock-path gap (a "sonnet" pin dispatches sonnet post-v7.104.0;
+    # the gap it originally fixed was the pre-flip opus default).
     if override is not None:
         effective = _clamp_to_max_tier(override)
     else:

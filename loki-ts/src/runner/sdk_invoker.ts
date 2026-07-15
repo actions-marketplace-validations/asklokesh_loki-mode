@@ -84,8 +84,11 @@ function client(): Anthropic | null {
   return null;
 }
 
-// Return whether the SDK judge path is usable at all (key present + reachable
-// client). Callers use this to decide the SDK-vs-bash branch before spending.
+// Return whether an SDK judge client can be CONSTRUCTED (an API key is present,
+// or a fresh dev-OAuth token under LOKI_SDK_OAUTH_DEV). This does NOT probe the
+// network -- a true result means "we can attempt a call", not "the endpoint is
+// reachable"; judgeJson/judgeText still fail closed to null on any transport
+// error. Callers use this to decide the SDK-vs-bash branch before spending.
 export function sdkJudgeAvailable(): boolean {
   return client() !== null;
 }

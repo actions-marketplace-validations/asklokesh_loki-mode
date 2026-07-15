@@ -2628,11 +2628,18 @@ detect_complexity() {
 #===============================================================================
 # Dynamic Tier Selection (RARV-aware model routing)
 #===============================================================================
-# Maps RARV cycle phases to optimal model tiers:
-#   - Reason phase  -> planning tier (opus/xhigh/high)
-#   - Act phase     -> development tier (sonnet/high/medium)
-#   - Reflect phase -> development tier (sonnet/high/medium)
-#   - Verify phase  -> fast tier (haiku/low/low)
+# Maps RARV cycle phases to model tiers. IMPORTANT (post-v7.104.0): this rotation
+# is OFF by default -- CURRENT_TIER is pinned once from LOKI_SESSION_MODEL and held
+# constant every iteration; get_rarv_tier() only fires under
+# LOKI_LEGACY_TIER_SWITCHING=true (see the pin logic near run.sh:17150). And even
+# when it does fire, planning/development/fast ALL resolve to the SAME model on
+# stock config (CLAUDE_DEFAULT_*=sonnet), so the rotation changes only the
+# --effort flag, not the model. The tier -> effort map (loki_effort_for_tier,
+# autonomy/lib/claude-flags.sh):
+#   - Reason phase  -> planning tier    (effort xhigh)
+#   - Act phase     -> development tier (effort high)
+#   - Reflect phase -> development tier (effort high)
+#   - Verify phase  -> fast tier        (effort medium)
 
 # Global tier for current iteration (set by get_rarv_tier)
 CURRENT_TIER="development"

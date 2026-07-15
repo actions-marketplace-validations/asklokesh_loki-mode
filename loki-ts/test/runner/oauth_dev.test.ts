@@ -63,6 +63,19 @@ describe.if(process.platform !== "darwin")("readFreshOauthToken file expiry", ()
     }
   });
 
+  test("rejects a token WITHIN the 60s expiry skew (would 401 mid-call) -> empty", () => {
+    // 30s out is not-yet-expired but inside the 60s guard, so it must be rejected
+    // -- this is the real boundary that prevents a mid-call 401 on a token about
+    // to lapse. Locks the fail-closed skew rule (oauth_dev.ts expiresAt guard).
+    const soon = Date.now() + 30_000; // +30s, inside the 60s window
+    const { dir, env } = withCredFile({ claudeAiOauth: { accessToken: "sk-ant-oat-EDGE", expiresAt: soon } });
+    try {
+      expect(readFreshOauthToken(env)).toBe("");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("missing file / no token -> empty (fail closed)", () => {
     expect(readFreshOauthToken({ CLAUDE_CONFIG_DIR: "/nonexistent-loki-oauth-dir" })).toBe("");
   });
