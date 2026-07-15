@@ -79,3 +79,28 @@ LOKI_SDK_MODE=full LOKI_SDK_CODE_REVIEW=0 loki start ./prd.md
 
 Implementation: `autonomy/lib/sdk-mode.sh` (bash), `loki-ts/src/runner/sdk_mode.ts`
 (TypeScript). Shared parity fixture: `loki-ts/test/fixtures/sdk-mode-table.json`.
+
+## Dev-only OAuth auth (`LOKI_SDK_OAUTH_DEV`)
+
+For local development you can drive the SDK JUDGE path with your existing `claude`
+login instead of a standalone `ANTHROPIC_API_KEY`. Set `LOKI_SDK_OAUTH_DEV=1` with
+NO `ANTHROPIC_API_KEY` present: the raw-SDK client (`sdk_invoker.ts`) reads the
+freshest claude.ai OAuth access token (macOS Keychain `Claude Code-credentials`
+first, then `${CLAUDE_CONFIG_DIR:-~/.claude}/.credentials.json`) and calls the
+Messages API with a Bearer token plus the required `anthropic-beta:
+oauth-2025-04-20` header.
+
+```bash
+# judges on the SDK, authenticated by your `claude` login (no API key):
+LOKI_SDK_OAUTH_DEV=1 LOKI_SDK_MODE=judges loki start ./prd.md
+```
+
+DEV ONLY, and deliberately gated so it can never affect production:
+- Activates only when the flag is set AND `ANTHROPIC_API_KEY` is ABSENT (an API
+  key always wins).
+- The token expires ~hourly and is NOT refreshed here; when it lapses mid-run the
+  SDK site fail-closes to the deterministic/bash fallback, same as a missing key.
+- Only wired for the JUDGE path (`sdk_invoker.ts`), not the agentic RARV loop.
+
+Implementation: `loki-ts/src/runner/oauth_dev.ts`. Gate tests:
+`loki-ts/test/runner/oauth_dev.test.ts`.

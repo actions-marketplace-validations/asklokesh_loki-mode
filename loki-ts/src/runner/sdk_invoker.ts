@@ -15,6 +15,7 @@
 // It NEVER throws for a normal failure -- null is the single failure signal.
 
 import Anthropic from "@anthropic-ai/sdk";
+import { oauthDevEnabled, readFreshOauthToken, OAUTH_BETA_HEADER } from "./oauth_dev.js";
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -46,17 +47,41 @@ let _client: Anthropic | null = null;
 function client(): Anthropic | null {
   if (_client !== null) return _client;
   const key = process.env["ANTHROPIC_API_KEY"];
-  if (!key) return null;
-  try {
-    // Bound retries (default is 2): a slow judge site must not stack
-    // timeout-retries under the OS-level ceiling the bash caller wraps us in.
-    // One retry tolerates a transient blip without letting worst-case latency
-    // balloon (council review, security-arch lens).
-    _client = new Anthropic({ apiKey: key, maxRetries: 1 });
-  } catch {
-    _client = null;
+  if (key) {
+    try {
+      // Bound retries (default is 2): a slow judge site must not stack
+      // timeout-retries under the OS-level ceiling the bash caller wraps us in.
+      // One retry tolerates a transient blip without letting worst-case latency
+      // balloon (council review, security-arch lens).
+      _client = new Anthropic({ apiKey: key, maxRetries: 1 });
+    } catch {
+      _client = null;
+    }
+    return _client;
   }
-  return _client;
+  // DEV-ONLY OAuth fallback (LOKI_SDK_OAUTH_DEV=1, no API key): use the developer's
+  // existing `claude` login (a claude.ai OAuth token) so the SDK route can be
+  // exercised in development without a standalone API key. The token expires
+  // ~hourly and is not refreshed here, so we build a FRESH client each call
+  // (never cache it -- a cached client would keep a token that expires mid-run)
+  // and fail closed to null when no fresh token is available. Inert in production
+  // (flag unset) and whenever an API key is present (handled above).
+  if (oauthDevEnabled()) {
+    const token = readFreshOauthToken();
+    if (!token) return null;
+    try {
+      return new Anthropic({
+        authToken: token,
+        maxRetries: 1,
+        // The Messages API requires this beta header to accept a claude.ai OAuth
+        // bearer token (verified live 2026-07-15).
+        defaultHeaders: { "anthropic-beta": OAUTH_BETA_HEADER },
+      });
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 // Return whether the SDK judge path is usable at all (key present + reachable
