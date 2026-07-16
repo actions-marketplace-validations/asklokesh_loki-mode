@@ -282,8 +282,30 @@ council_track_iteration() {
     fi
     COUNCIL_LAST_DIFF_HASH="$combined_hash"
 
-    # Track "done" signals from agent output
-    if [ -n "$log_file" ] && [ -f "$log_file" ]; then
+    # Track "done" signals from agent output.
+    #
+    # A "done signal" is any claim by the agent that the work is complete this
+    # iteration. There are TWO ways it can claim: (1) the STRUCTURED path -- the
+    # loki_complete_task MCP tool writing .loki/signals/COMPLETION_REQUESTED (or
+    # the runner's TASK_COMPLETION_CLAIMED), which is the DEFAULT since v6.82.0;
+    # and (2) fuzzy completion-like language in the iteration log. Historically
+    # only (2) was counted -- so a build that claimed done every iteration via the
+    # structured signal (medium confidence, thin evidence, council correctly
+    # rejects) never incremented COUNCIL_TOTAL_DONE_SIGNALS, the done-signal safety
+    # valve (council_should_stop, "Safety valve 2") never armed, and the loop ran
+    # to the wall spending real dollars. Observed on real builds: 11 identical
+    # structured claims, 0 counted, 60-min timeout at ~$34. We now count a
+    # structured claim as a done signal too, PEEKING the signal files
+    # non-destructively (the council owns consumption; the same two paths the loop
+    # tests at the council_should_stop call site).
+    local _done_this_iter=0
+
+    if [ -f "${TARGET_DIR:-.}/.loki/signals/COMPLETION_REQUESTED" ] \
+       || [ -f "${TARGET_DIR:-.}/.loki/signals/TASK_COMPLETION_CLAIMED" ]; then
+        _done_this_iter=1
+    fi
+
+    if [ "$_done_this_iter" = "0" ] && [ -n "$log_file" ] && [ -f "$log_file" ]; then
         # Check last 200 lines for completion-like language
         local done_indicators
         done_indicators=$(tail -200 "$log_file" 2>/dev/null | grep -ciE \
@@ -292,14 +314,15 @@ council_track_iteration() {
         # Ensure we have a clean integer (strip any whitespace/newlines)
         done_indicators=$(echo "$done_indicators" | tr -dc '0-9')
         done_indicators="${done_indicators:-0}"
+        [ "$done_indicators" -gt 0 ] && _done_this_iter=1
+    fi
 
-        if [ "$done_indicators" -gt 0 ]; then
-            ((COUNCIL_DONE_SIGNALS++))
-            ((COUNCIL_TOTAL_DONE_SIGNALS++))
-        else
-            # Reset if agent stopped claiming done
-            COUNCIL_DONE_SIGNALS=0
-        fi
+    if [ "$_done_this_iter" = "1" ]; then
+        ((COUNCIL_DONE_SIGNALS++))
+        ((COUNCIL_TOTAL_DONE_SIGNALS++))
+    else
+        # Reset consecutive count if agent stopped claiming done
+        COUNCIL_DONE_SIGNALS=0
     fi
 
     # Store convergence data point

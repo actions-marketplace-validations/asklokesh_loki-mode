@@ -148,6 +148,21 @@ export const defaultCouncil: CouncilHook = {
     return false;
   },
   async trackIteration(logFile: string): Promise<void> {
+    // ponytail: PARTIAL PORT. Bash council_track_iteration
+    // (completion-council.sh) maintains the convergence counters that arm the
+    // stagnation + done-signal safety valves; this TS slice only appends a
+    // convergence-log row with placeholder zeros and does NOT yet count
+    // no-change or done signals. KNOWN GAP: on the SDK/TS loop the done-signal
+    // and stagnation force-stop valves are therefore NOT active -- a build that
+    // repeatedly claims done (structured COMPLETION_REQUESTED) with the council
+    // rejecting will run to max-iterations/timeout instead of failing cheap,
+    // the exact failure mode fixed on the bash route (structured claim now
+    // counts as a done signal). The SDK loop is not the default route yet
+    // (gated behind the v8 SDK-loop flag), so production is covered by bash.
+    // Port the counter here (no-change hash + done-signal peek of
+    // .loki/signals/{COMPLETION_REQUESTED,TASK_COMPLETION_CLAIMED}) before the
+    // SDK loop becomes default. See tests/test-council-structured-done-signal.sh
+    // for the bash contract this must match.
     const stateDir = resolve(defaultLokiDir(), "council");
     mkdirSync(stateDir, { recursive: true });
     const convergenceLog = resolve(stateDir, "convergence.log");
