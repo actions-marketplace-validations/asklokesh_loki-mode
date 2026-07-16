@@ -104,6 +104,43 @@ def _read_failure_reason(loki_dir):
     return {"error_class": cls, "brief": brief}
 
 
+def _read_verify_verdict(loki_dir):
+    """The build's HONESTY verdict, from the proof loki writes
+    (.loki/proofs/<run_id>/proof.json -> honesty.headline, e.g. "VERIFIED" /
+    "NOT VERIFIED"). This is the honesty AXIS the equivalence report reads from
+    provenance.verify_verdict -- without it the axis is not_captured.
+
+    A build may write several proofs across iterations; the LATEST proof dir
+    (lexicographically largest, they are timestamp-prefixed) is this run's final
+    verdict. Returns the headline string or None (no proof machinery ran).
+    Best-effort: any read/parse problem returns None."""
+    proofs_dir = os.path.join(loki_dir, "proofs")
+    try:
+        run_dirs = sorted(
+            d for d in os.listdir(proofs_dir)
+            if os.path.isdir(os.path.join(proofs_dir, d))
+        )
+    except Exception:
+        return None
+    if not run_dirs:
+        return None
+    # Latest run dir = this run's final proof (timestamp-prefixed names sort).
+    path = os.path.join(proofs_dir, run_dirs[-1], "proof.json")
+    try:
+        with open(path) as fh:
+            proof = json.load(fh)
+    except Exception:
+        return None
+    if not isinstance(proof, dict):
+        return None
+    honesty = proof.get("honesty")
+    if isinstance(honesty, dict):
+        headline = honesty.get("headline")
+        if isinstance(headline, str) and headline.strip():
+            return headline.strip()
+    return None
+
+
 def run(workdir, spec, *, model="claude", timeout=900, runner=None,
         provider="claude"):
     """Run Loki on `spec` inside `workdir` and return the adapter-output dict.
@@ -154,6 +191,7 @@ def run(workdir, spec, *, model="claude", timeout=900, runner=None,
     loki_dir = os.path.join(workdir, ".loki")
     iterations = _read_iteration_count(loki_dir)
     failure_reason = _read_failure_reason(loki_dir)
+    verify_verdict = _read_verify_verdict(loki_dir)
 
     # Cost: shared with the proof generator. None usd == not recorded.
     cost = {"usd": None, "input_tokens": None, "output_tokens": None}
@@ -186,5 +224,9 @@ def run(workdir, spec, *, model="claude", timeout=900, runner=None,
             # None on a clean run. Lets a failed trial be diagnosed and learned
             # from instead of showing only an opaque exit code.
             "failure_reason": failure_reason,
+            # The build's honesty verdict (proof.json honesty.headline, e.g.
+            # "VERIFIED" / "NOT VERIFIED"). None when no proof ran. This feeds the
+            # equivalence report's HONESTY axis (was not_captured before this).
+            "verify_verdict": verify_verdict,
         },
     )
