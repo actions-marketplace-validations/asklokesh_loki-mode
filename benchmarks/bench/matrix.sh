@@ -18,7 +18,13 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TRIALS="${LOKI_BENCH_TRIALS:-2}"
-TIMEOUT="${LOKI_BENCH_TIMEOUT:-1200}"
+# The timeout wraps runner.py run --trials N, i.e. it caps ALL N trials of a cell
+# together (not per-trial). A baseline cell (1-2 iterations) fits easily; a FULL
+# harness cell (8 iterations + council + code-review + self-heal) on a hard task
+# can take 20-40 min PER TRIAL, so 1200s silently killed the full cells before
+# runner.py could write a result (the whole reason the first pilot produced no
+# haiku-full rows). run_cell() now derives a config-aware default below.
+TIMEOUT="${LOKI_BENCH_TIMEOUT:-}"
 RESULTS="$SCRIPT_DIR/results"
 
 HARD_TASKS="hard-1-order-api multifail-1-two-modules tokenheavy-1-crm"
@@ -48,15 +54,33 @@ model_env() {
 
 run_cell() {
   local model="$1" config="$2" task="$3"
-  local cfg_env
+  local cfg_env cell_timeout
   case "$config" in
     baseline) cfg_env="$(baseline_env)" ;;
     full)     cfg_env="$(full_env)" ;;
     *) echo "unknown config: $config"; return 2 ;;
   esac
+  # Config-aware timeout (caps ALL trials of the cell together). An explicit
+  # LOKI_BENCH_TIMEOUT always wins; otherwise baseline gets 1200s (1-2 iters is
+  # fast) and full gets a generous cap sized for 8 iterations + council +
+  # code-review x TRIALS on a hard task. Under-sizing here silently drops the
+  # cell (no result written), which is exactly the bug that made the first pilot
+  # produce zero haiku-full rows -- so err large.
+  if [ -n "$TIMEOUT" ]; then
+    cell_timeout="$TIMEOUT"
+  elif [ "$config" = "full" ]; then
+    cell_timeout=$(( 2400 * (TRIALS > 0 ? TRIALS : 1) ))   # 40 min/trial
+  else
+    cell_timeout=1200
+  fi
   local cell="${model}-${config}"
-  echo "==== CELL $cell / $task (trials=$TRIALS) ===="
+  echo "==== CELL $cell / $task (trials=$TRIALS, timeout=${cell_timeout}s) ===="
   echo "     env: $(model_env "$model") $cfg_env"
+  # Snapshot the newest result file for this task BEFORE the run so we can detect
+  # whether this cell actually wrote a NEW one (a timed-out full cell writes none;
+  # matrix used to move on silently, hiding the loss).
+  local before_newest
+  before_newest="$(ls -t "$RESULTS"/"${task}"-loki-*.json 2>/dev/null | head -1)"
   # env -i-free: set only our vars on top of the inherited env; run.sh's adapter
   # merges os.environ so these reach the real loki start.
   # Clear any stray lever vars from a prior cell first, then set this cell's.
@@ -64,9 +88,17 @@ run_cell() {
       -u LOKI_SELF_HEAL -u LOKI_TIER_ROUTING -u LOKI_AUTO_TUNE \
       -u LOKI_SESSION_MODEL -u LOKI_ALLOW_HAIKU \
       $(model_env "$model") $cfg_env \
-      LOKI_BENCH_TRIALS="$TRIALS" LOKI_BENCH_TIMEOUT="$TIMEOUT" \
+      LOKI_BENCH_TRIALS="$TRIALS" LOKI_BENCH_TIMEOUT="$cell_timeout" \
       LOKI_BENCH_CELL="$cell" \
       bash "$SCRIPT_DIR/run.sh" run "$task" 2>&1 | grep -E "wrote|result:|success|FAIL|error|CELL" | tail -4
+  # Verify a NEW result landed for this cell; warn loudly if not (silent cell
+  # loss is a fake-completeness failure -- a missing cell must never look "done").
+  local after_newest
+  after_newest="$(ls -t "$RESULTS"/"${task}"-loki-*.json 2>/dev/null | head -1)"
+  if [ -z "$after_newest" ] || [ "$after_newest" = "$before_newest" ]; then
+    echo "     WARNING: cell $cell / $task wrote NO new result (likely timed out at ${cell_timeout}s). This cell is MISSING from the report." >&2
+    return 1
+  fi
 }
 
 cmd="${1:-smoke}"
