@@ -25,7 +25,11 @@ HARD_TASKS="hard-1-order-api multifail-1-two-modules tokenheavy-1-crm"
 
 # Baseline (raw model): minimal orchestration -- the giants' "throw the model at it".
 baseline_env() {
-  echo "LOKI_MAX_ITERATIONS=1 LOKI_COUNCIL_ENABLED=false LOKI_PHASE_CODE_REVIEW=false LOKI_SELF_HEAL=0 LOKI_TIER_ROUTING=0 LOKI_AUTO_TUNE=0"
+  # MAX_ITERATIONS=2, not 1: run.sh checks the cap at the TOP of the loop AFTER
+  # the post-increment, so a cap of 1 hits before the provider is ever invoked
+  # (0 real iterations, null cost). 2 is the minimum for exactly one real
+  # provider pass - the honest "raw model, one shot" baseline.
+  echo "LOKI_MAX_ITERATIONS=2 LOKI_COUNCIL_ENABLED=false LOKI_PHASE_CODE_REVIEW=false LOKI_SELF_HEAL=0 LOKI_TIER_ROUTING=0 LOKI_AUTO_TUNE=0"
 }
 # Full harness: every steering lever on.
 full_env() {

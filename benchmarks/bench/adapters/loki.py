@@ -132,9 +132,19 @@ def run(workdir, spec, *, model="claude", timeout=900, runner=None,
     # LOKI_SESSION_MODEL="claude" (invalid) and silently change nothing. Without
     # this, `--model haiku` in the bench was dropped (the run stayed on sonnet),
     # making tier-routing (Rank 2) unmeasurable.
+    # Do NOT promote the task-spec's default_model LABEL to a session pin when the
+    # CALLER already set LOKI_SESSION_MODEL in the parent env (e.g. the matrix
+    # runner pinning haiku). _base.run_cli merges os.environ then this run_env on
+    # top, so an unconditional set here would clobber the caller's real pin with
+    # the task label ("claude-sonnet-5") and silently dispatch sonnet. Only pin
+    # from the `model` arg when the parent env did NOT already choose a model.
     _pin = (model or "").strip().lower()
     _REAL_MODEL_ALIASES = ("haiku", "sonnet", "opus", "fable")
-    if _pin and (_pin in _REAL_MODEL_ALIASES or _pin.startswith("claude-")):
+    if (
+        "LOKI_SESSION_MODEL" not in os.environ
+        and _pin
+        and (_pin in _REAL_MODEL_ALIASES or _pin.startswith("claude-"))
+    ):
         run_env["LOKI_SESSION_MODEL"] = _pin
     rc, _out, _err, status, duration = _base.run_cli(
         cmd, cwd=workdir, timeout=timeout, runner=runner,

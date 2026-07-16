@@ -6816,15 +6816,34 @@ track_iteration_complete() {
     # Track context window usage FIRST to get token data (v5.42.0)
     track_context_usage "$iteration"
 
-    # Write efficiency tracking file for /api/cost endpoint
+    # Write efficiency tracking file for /api/cost endpoint.
+    # The recorded model MUST be the one that actually ran this iteration. The
+    # dispatch exports LOKI_CURRENT_MODEL="$tier_param" (the exact --model value)
+    # right before the provider call, AFTER every mutation (opus-pin force,
+    # LOKI_MAX_TIER clamp, mid-flight override). That is the single source of
+    # truth -- reading it avoids re-deriving the model here and drifting from
+    # dispatch. Hardcoding PROVIDER_MODEL_DEVELOPMENT (the old code) mislabeled
+    # every non-development iteration: a haiku/fast pin was recorded "sonnet" and
+    # an opus pin (tier_param forced to opus) was recorded "sonnet" too, making
+    # the model-equivalence bench unfalsifiable. Resolver is the fallback for the
+    # policy-blocked path where no dispatch ran (LOKI_CURRENT_MODEL unset).
     mkdir -p .loki/metrics/efficiency
-    local model_tier="${PROVIDER_MODEL_DEVELOPMENT:-sonnet}"
-    if [ "${PROVIDER_NAME:-claude}" = "codex" ]; then
-        model_tier="${PROVIDER_MODEL_DEVELOPMENT:-${CODEX_DEFAULT_MODEL:-gpt-5.3-codex}}"
-    elif [ "${PROVIDER_NAME:-claude}" = "cline" ]; then
-        model_tier="${CLINE_DEFAULT_MODEL:-${LOKI_CLINE_MODEL:-sonnet}}"
-    elif [ "${PROVIDER_NAME:-claude}" = "aider" ]; then
-        model_tier="${AIDER_DEFAULT_MODEL:-${LOKI_AIDER_MODEL:-claude-opus-4-7}}"
+    local model_tier="${LOKI_CURRENT_MODEL:-}"
+    if [ -z "$model_tier" ]; then
+        model_tier="$(get_provider_tier_param "${CURRENT_TIER:-development}" 2>/dev/null)"
+    fi
+    # Fallback to the old per-provider default only if both the dispatched model
+    # and the resolver are unavailable (e.g. provider config not sourced) so we
+    # never write an empty model.
+    if [ -z "$model_tier" ]; then
+        model_tier="${PROVIDER_MODEL_DEVELOPMENT:-sonnet}"
+        if [ "${PROVIDER_NAME:-claude}" = "codex" ]; then
+            model_tier="${PROVIDER_MODEL_DEVELOPMENT:-${CODEX_DEFAULT_MODEL:-gpt-5.3-codex}}"
+        elif [ "${PROVIDER_NAME:-claude}" = "cline" ]; then
+            model_tier="${CLINE_DEFAULT_MODEL:-${LOKI_CLINE_MODEL:-sonnet}}"
+        elif [ "${PROVIDER_NAME:-claude}" = "aider" ]; then
+            model_tier="${AIDER_DEFAULT_MODEL:-${LOKI_AIDER_MODEL:-claude-opus-4-7}}"
+        fi
     fi
     local phase="${LAST_KNOWN_PHASE:-}"
     [ -z "$phase" ] && phase=$(python3 -c "import json; print(json.load(open('.loki/state/orchestrator.json')).get('currentPhase', 'unknown'))" 2>/dev/null || echo "unknown")
