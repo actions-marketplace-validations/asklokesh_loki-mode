@@ -3293,6 +3293,15 @@ class StartBuildRequest(BaseModel):
     # execution stays on the chosen/default execution model. Absent/invalid -> no
     # advisor pin (reviewers use the account default).
     advisor_model: Optional[str] = None
+    # Build profile (e.g. "simple-web"): exported as LOKI_BUILD_PROFILE into the
+    # run env, where run.sh's loki_apply_build_profile helper (run.sh:562) maps it
+    # to a set of LOKI_PHASE_* gate defaults (a simple landing page skips the
+    # gates irrelevant to a static frontend while KEEPING E2E, code review, the
+    # completion council, security, and accessibility). Absent -> unset -> the
+    # full gate suite runs (byte-identical to before this field existed). Never
+    # weakens the moat: the council + evidence/proof gate are not disable-able by
+    # a profile.
+    build_profile: Optional[str] = None
 
     def validate_provider(self) -> None:
         """Validate provider is from the supported list.
@@ -3585,12 +3594,15 @@ async def start_build(request: Request, body: StartBuildRequest):
     # haiku|sonnet|opus (no fable); invalid/absent -> "" -> no pin.
     start_model = _normalize_start_model(body.model)
     advisor_model = _normalize_start_model(body.advisor_model)
+    # Build profile: a light allow-list (only known profiles are forwarded, so a
+    # stray value can never disable a gate we did not intend). Absent -> no profile.
+    build_profile = body.build_profile if body.build_profile in ("simple-web",) else None
 
     # Build a custom env only when we actually need to change something
     # (workspace pin, start-time model pin, or advisor pin). When nothing is set,
     # env stays None (inherit) so behavior is byte-identical to before.
     popen_env = None
-    if workspace_dir is not None or start_model or advisor_model:
+    if workspace_dir is not None or start_model or advisor_model or build_profile:
         popen_env = dict(os.environ)
     if workspace_dir is not None:
         popen_env["LOKI_TARGET_DIR"] = str(workspace_dir)
@@ -3612,6 +3624,11 @@ async def start_build(request: Request, body: StartBuildRequest):
     if advisor_model:
         # Opt-in Opus (or other) judge for code review; execution model unchanged.
         popen_env["LOKI_ADVISOR_MODEL"] = advisor_model
+    if build_profile:
+        # run.sh's loki_apply_build_profile maps this to LOKI_PHASE_* gate defaults
+        # (skips gates irrelevant to a static frontend; keeps E2E, code review,
+        # council, security, accessibility). The moat gates cannot be disabled here.
+        popen_env["LOKI_BUILD_PROFILE"] = build_profile
     try:
         process = subprocess.Popen(
             args,

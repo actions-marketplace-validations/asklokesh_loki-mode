@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# matrix.sh -- model x harness-config matrix runner for the model-equivalence
+# experiment. Sets steering env vars per cell and calls the EXISTING run.sh; no
+# adapter or grader change (the grader stays a held-out acceptance exit code).
+#
+# A cell = (model, config). config in {baseline, full}:
+#   baseline = raw model, minimal orchestration (the Replit/Cursor mode)
+#   full     = all steering levers on (the harness)
+#
+# Usage:
+#   matrix.sh smoke                  # Stage 0: H.B + O.B on fizzbuzz, N=1 (~$1)
+#   matrix.sh pilot                  # Stage 1: H.F vs O.B on 3 hard tasks, N=<TRIALS>
+#   matrix.sh cell <model> <config> <task>   # one cell
+#
+# Env: LOKI_BENCH_TRIALS (default 2), LOKI_BENCH_ISO (isolated engine bin dir on PATH)
+# No emojis. No em dashes.
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TRIALS="${LOKI_BENCH_TRIALS:-2}"
+TIMEOUT="${LOKI_BENCH_TIMEOUT:-1200}"
+RESULTS="$SCRIPT_DIR/results"
+
+HARD_TASKS="hard-1-order-api multifail-1-two-modules tokenheavy-1-crm"
+
+# Baseline (raw model): minimal orchestration -- the giants' "throw the model at it".
+baseline_env() {
+  echo "LOKI_MAX_ITERATIONS=1 LOKI_COUNCIL_ENABLED=false LOKI_PHASE_CODE_REVIEW=false LOKI_SELF_HEAL=0 LOKI_TIER_ROUTING=0 LOKI_AUTO_TUNE=0"
+}
+# Full harness: every steering lever on.
+full_env() {
+  echo "LOKI_MAX_ITERATIONS=8 LOKI_COUNCIL_ENABLED=true LOKI_PHASE_CODE_REVIEW=true LOKI_SELF_HEAL=1 LOKI_AUTO_TUNE=1"
+}
+# Model pin. haiku requires LOKI_ALLOW_HAIKU=true or the router will not drop to it.
+model_env() {
+  local m="$1"
+  case "$m" in
+    haiku)  echo "LOKI_SESSION_MODEL=haiku LOKI_ALLOW_HAIKU=true" ;;
+    sonnet) echo "LOKI_SESSION_MODEL=sonnet" ;;
+    opus)   echo "LOKI_SESSION_MODEL=opus" ;;
+    *) echo "LOKI_SESSION_MODEL=$m" ;;
+  esac
+}
+
+run_cell() {
+  local model="$1" config="$2" task="$3"
+  local cfg_env
+  case "$config" in
+    baseline) cfg_env="$(baseline_env)" ;;
+    full)     cfg_env="$(full_env)" ;;
+    *) echo "unknown config: $config"; return 2 ;;
+  esac
+  local cell="${model}-${config}"
+  echo "==== CELL $cell / $task (trials=$TRIALS) ===="
+  echo "     env: $(model_env "$model") $cfg_env"
+  # env -i-free: set only our vars on top of the inherited env; run.sh's adapter
+  # merges os.environ so these reach the real loki start.
+  # Clear any stray lever vars from a prior cell first, then set this cell's.
+  env -u LOKI_MAX_ITERATIONS -u LOKI_COUNCIL_ENABLED -u LOKI_PHASE_CODE_REVIEW \
+      -u LOKI_SELF_HEAL -u LOKI_TIER_ROUTING -u LOKI_AUTO_TUNE \
+      -u LOKI_SESSION_MODEL -u LOKI_ALLOW_HAIKU \
+      $(model_env "$model") $cfg_env \
+      LOKI_BENCH_TRIALS="$TRIALS" LOKI_BENCH_TIMEOUT="$TIMEOUT" \
+      LOKI_BENCH_CELL="$cell" \
+      bash "$SCRIPT_DIR/run.sh" run "$task" 2>&1 | grep -E "wrote|result:|success|FAIL|error|CELL" | tail -4
+}
+
+cmd="${1:-smoke}"
+case "$cmd" in
+  smoke)
+    echo "### STAGE 0 SMOKE: prove the matrix machinery + haiku pin (N=1, ~\$1) ###"
+    LOKI_BENCH_TRIALS=1
+    run_cell haiku baseline simple-2-fizzbuzz
+    run_cell opus  baseline simple-2-fizzbuzz
+    echo "### SMOKE DONE ###"
+    ;;
+  pilot)
+    echo "### STAGE 1 PILOT: H.F vs O.B on 3 hard tasks (N=$TRIALS) ###"
+    for t in $HARD_TASKS; do run_cell haiku full "$t"; done
+    for t in $HARD_TASKS; do run_cell opus baseline "$t"; done
+    echo "### PILOT DONE ###"
+    ;;
+  cell)
+    run_cell "$2" "$3" "$4"
+    ;;
+  *)
+    echo "usage: matrix.sh smoke|pilot|cell <model> <config> <task>"; exit 2 ;;
+esac

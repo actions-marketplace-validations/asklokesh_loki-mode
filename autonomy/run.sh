@@ -546,6 +546,32 @@ DASHBOARD_LAST_ALIVE=0
 _DASHBOARD_RESTARTING=false
 RESOURCE_MONITOR_PID=""
 
+# Build-profile fast-path (v7.129+). LOKI_BUILD_PROFILE selects a gate profile.
+# Default unset = current full behavior (every phase runs). "simple-web" is a
+# fast profile for static marketing/landing builds: it drops the phases that
+# are irrelevant to a static frontend (API tests, SAML/OIDC/SSO integration,
+# load/performance, regression, UAT, competitor web research) while KEEPING the
+# gates that catch real defects on such a page: E2E/Playwright (catches the
+# broken-reveal / blank-page class of bug), CODE_REVIEW, SECURITY, and
+# ACCESSIBILITY (a landing page must be a11y-clean). The completion council and
+# the evidence/proof gate are NOT phases and are untouched -- the moat stays.
+# Pure env-defaulting: it only fills a LOKI_PHASE_* that the operator has NOT
+# already set, so an explicit operator LOKI_PHASE_* override always wins.
+loki_apply_build_profile() {
+    [ "${LOKI_BUILD_PROFILE:-}" = "simple-web" ] || return 0
+    : "${LOKI_PHASE_API_TESTS:=false}"
+    : "${LOKI_PHASE_INTEGRATION:=false}"
+    : "${LOKI_PHASE_PERFORMANCE:=false}"
+    : "${LOKI_PHASE_REGRESSION:=false}"
+    : "${LOKI_PHASE_UAT:=false}"
+    : "${LOKI_PHASE_WEB_RESEARCH:=false}"
+    : "${LOKI_PHASE_E2E_TESTS:=true}"
+    : "${LOKI_PHASE_CODE_REVIEW:=true}"
+    : "${LOKI_PHASE_SECURITY:=true}"
+    : "${LOKI_PHASE_ACCESSIBILITY:=true}"
+}
+loki_apply_build_profile
+
 # SDLC Phase Controls (all enabled by default)
 PHASE_UNIT_TESTS=${LOKI_PHASE_UNIT_TESTS:-true}
 PHASE_API_TESTS=${LOKI_PHASE_API_TESTS:-true}
@@ -887,6 +913,28 @@ GATE_PAUSE_LIMIT=${LOKI_GATE_PAUSE_LIMIT:-10}
 TARGET_DIR="${LOKI_TARGET_DIR:-$(pwd)}"
 PARALLEL_BLOG=${LOKI_PARALLEL_BLOG:-false}
 AUTO_MERGE=${LOKI_AUTO_MERGE:-true}
+
+# Tier-aware harness policy (model-equivalence experiment, Planned/Stage-3).
+# Given the resolved tier, export the steering-lever env vars UNLESS the operator
+# already set them (operator override ALWAYS wins). Gated on
+# LOKI_TIER_HARNESS_POLICY (default 0 = off) until Stage-2 ablation data justifies
+# the numbers. Pure env-export, no control flow. The table below is a STUB --
+# replace with Stage-2 ablation-derived numbers (see
+# docs/MODEL-EQUIVALENCE-HARNESS-PLAN.md section 3).
+loki_apply_tier_harness_policy() {
+    [ "${LOKI_TIER_HARNESS_POLICY:-0}" = "1" ] || return 0
+    local tier="$1" _iters _council _heal
+    # STUB - replace with Stage-2 ablation-derived numbers.
+    case "$tier" in
+        haiku|fast)          _iters=8; _council=true; _heal=1 ;;
+        sonnet|development)  _iters=5; _council=true; _heal=1 ;;
+        opus|planning)       _iters=3; _council=true; _heal=0 ;;
+        *)                   return 0 ;;
+    esac
+    [ -z "${LOKI_MAX_ITERATIONS:-}" ] && export LOKI_MAX_ITERATIONS="$_iters"
+    [ -z "${LOKI_COUNCIL_ENABLED:-}" ] && export LOKI_COUNCIL_ENABLED="$_council"
+    [ -z "${LOKI_SELF_HEAL:-}" ] && export LOKI_SELF_HEAL="$_heal"
+}
 
 # Multi-project registry (v7.7.29): register this running project in the
 # machine-global registry (~/.loki/dashboard/projects.json) so the dashboard
@@ -17355,6 +17403,8 @@ except Exception as exc:
             # so the LOKI_ALLOW_HAIKU gate for haiku is preserved. Mirrored in the
             # estimator (autonomy/loki) and dashboard (server.py) + parity test.
             [ "$_session_pin" = "opus" ] && _loki_session_pin_opus=1
+            # Apply the tier-aware harness policy (gated + operator-override-safe).
+            loki_apply_tier_harness_policy "$_session_pin"
         fi
         # Architect opt-in (LOKI_FABLE_ARCHITECT=1): route ONLY the first
         # iteration (the architecture/REASON pass) to Fable, then fall back to

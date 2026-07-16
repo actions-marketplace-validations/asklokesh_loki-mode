@@ -155,6 +155,39 @@ class StartBuildWorkspaceTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertEqual(resp.json()["run_id"], "run-20260621120000-9999-7")
 
+    # --- 2b. build_profile: forwarded into LOKI_BUILD_PROFILE end to end -------
+
+    def test_build_profile_simple_web_sets_env(self):
+        # A known profile must reach popen_env as LOKI_BUILD_PROFILE so run.sh's
+        # loki_apply_build_profile can select the fast gate set. Without this the
+        # SaaS threads the profile through its layers and the engine silently
+        # drops it (Pydantic ignores unknown fields), giving ZERO speedup.
+        _FakePopen.last_kwargs = {}
+        resp = self._post(
+            {"prd_text": "build a landing page", "provider": "claude",
+             "build_profile": "simple-web"}
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        env = _FakePopen.last_kwargs.get("env")
+        self.assertIsNotNone(env, "a build_profile must pass an explicit env")
+        self.assertEqual(env.get("LOKI_BUILD_PROFILE"), "simple-web")
+
+    def test_unknown_build_profile_dropped(self):
+        # The allow-list means a stray/unknown profile is NOT forwarded, so it can
+        # never disable a gate we did not intend. With nothing else set, env stays
+        # None (inherit, byte-identical to before).
+        _FakePopen.last_kwargs = {}
+        resp = self._post(
+            {"prd_text": "build a todo app", "provider": "claude",
+             "build_profile": "disable-everything"}
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        env = _FakePopen.last_kwargs.get("env")
+        # Either env is None (nothing to pin) or, if present for another reason,
+        # LOKI_BUILD_PROFILE is absent. Assert the profile did not leak through.
+        if env is not None:
+            self.assertNotIn("LOKI_BUILD_PROFILE", env)
+
     # --- 3. Path-guard: traversal / unsafe / out-of-root -> 400, no spawn ----
 
     def test_traversal_workspace_rejected(self):
