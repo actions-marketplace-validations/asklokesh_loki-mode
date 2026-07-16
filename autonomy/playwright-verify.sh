@@ -324,6 +324,17 @@ playwright_prove_functional() {
   const reloadWaitMs = parseInt(process.env.LOKI_PROOF_RELOAD_WAIT_MS || '1500', 10);
   const createSelector = process.env.LOKI_PROOF_CREATE_SELECTOR || '';
   const protectedPath = process.env.LOKI_PROOF_PROTECTED_PATH || '';
+  // Authorization / tenant-isolation knobs (all optional; absence => auto-detect
+  // or inconclusive pass-through). Configured selectors are the highest-confidence
+  // path; auto-detect (signup form) is the best-effort fallback.
+  const azSignupSel = process.env.LOKI_PROOF_AUTHZ_SIGNUP_SELECTOR || '';
+  const azLoginSel = process.env.LOKI_PROOF_AUTHZ_LOGIN_SELECTOR || '';
+  const azUserField = process.env.LOKI_PROOF_AUTHZ_USER_FIELD || '';
+  const azPassField = process.env.LOKI_PROOF_AUTHZ_PASS_FIELD || '';
+  const azSubmitSel = process.env.LOKI_PROOF_AUTHZ_SUBMIT || '';
+  const azOwnedListSel = process.env.LOKI_PROOF_AUTHZ_OWNED_LIST_SELECTOR || '';
+  const azDetailTemplate = process.env.LOKI_PROOF_AUTHZ_DETAIL_URL_TEMPLATE || '';
+  const azApiTemplate = process.env.LOKI_PROOF_AUTHZ_API_TEMPLATE || '';
 
   const results = {
     verified_at: new Date().toISOString(),
@@ -335,6 +346,7 @@ playwright_prove_functional() {
     },
     persistence: { attempted: false, proven: false, reason: 'not_run' },
     auth: { attempted: false, proven: false, reason: 'not_run' },
+    authorization: { attempted: false, proven: false, reason: 'not_run' },
   };
 
   const write = () => {
@@ -485,6 +497,210 @@ playwright_prove_functional() {
       results.auth = { attempted: true, proven: false, reason: 'auth_detected_timeout' };
     }
 
+    // ---- AUTHORIZATION (tenant isolation) ----
+    // The Lovable-breach class: two LOGGED-IN users where A can read B's owned
+    // rows. Prove by OBSERVED artifact only -- a real second session actually
+    // being DENIED A's sentinel. The ONLY blocking verdict is a fresh positive
+    // leak (reason prefix 'user_b_read_user_a_'); every undetectable/absent case
+    // is attempted:false or a non-leak reason -> inconclusive pass-through.
+    try {
+      // rand sentinel + two distinct identities.
+      const rnd = () => Math.random().toString(36).slice(2, 10);
+      const sentinel = 'loki-authz-' + rnd();
+      const identityA = 'authzA-' + rnd() + '@loki.test';
+      const identityB = 'authzB-' + rnd() + '@loki.test';
+      const pass = 'Loki-authz-Pw1!';
+
+      // Locate a signup/login form in a page. Returns {user, pass, submit} handles
+      // or null. Configured selectors win; else auto-detect a password field + a
+      // text/email input + a submit.
+      const findAuthForm = async (pg, isSignup) => {
+        let userH = null, passH = null, submitH = null;
+        if (azUserField) userH = await pg.$(azUserField).catch(() => null);
+        if (azPassField) passH = await pg.$(azPassField).catch(() => null);
+        if (azSubmitSel) submitH = await pg.$(azSubmitSel).catch(() => null);
+        const scopeSel = isSignup ? azSignupSel : azLoginSel;
+        if (scopeSel) {
+          const scope = await pg.$(scopeSel).catch(() => null);
+          if (scope) {
+            if (!userH) userH = await scope.$('input[type="email"], input[type="text"], input:not([type])').catch(() => null);
+            if (!passH) passH = await scope.$('input[type="password"]').catch(() => null);
+            if (!submitH) submitH = await scope.$('button[type="submit"], input[type="submit"], button').catch(() => null);
+          }
+        }
+        if (!passH) passH = await pg.$('input[type="password"]').catch(() => null);
+        if (!passH) return null;
+        if (!userH) userH = await pg.$('input[type="email"], input[type="text"], input:not([type])').catch(() => null);
+        if (!userH) return null;
+        if (!submitH) submitH = await pg.$('button[type="submit"], input[type="submit"], button:has-text("Sign up"), button:has-text("Sign in"), button:has-text("Log in"), button:has-text("Register"), button:has-text("Continue")').catch(() => null);
+        return { userH, passH, submitH };
+      };
+
+      // Authenticate a fresh context as (email). Prefer signup (guarantees a fresh
+      // distinct user); fall back to login only if a login form is present.
+      // Returns {ctx, page} on success or null.
+      const authAs = async (email) => {
+        const ctx = await browser.newContext();
+        const pg = await ctx.newPage();
+        // Try signup route first, then app root.
+        let form = null;
+        for (const cand of ['/signup', '/register', '/sign-up', '/']) {
+          const target = new URL(cand, url).toString();
+          await pg.goto(target, { waitUntil: 'domcontentloaded', timeout: pageTimeout }).catch(() => {});
+          form = await findAuthForm(pg, true);
+          if (form) break;
+        }
+        if (!form) { await ctx.close().catch(() => {}); return null; }
+        try {
+          await form.userH.fill(email);
+          await form.passH.fill(pass);
+          if (form.submitH) { await form.submitH.click().catch(() => {}); }
+          else { await form.passH.press('Enter').catch(() => {}); }
+          await pg.waitForLoadState('networkidle', { timeout: pageTimeout }).catch(() => {});
+          await pg.waitForTimeout(reloadWaitMs);
+        } catch (e) { await ctx.close().catch(() => {}); return null; }
+        return { ctx, page: pg };
+      };
+
+      // Step 1a: two-session capability. If neither configured nor an auto signup
+      // path exists, this authAs returns null and we bail as no_multiuser_auth.
+      const sessA = await authAs(identityA);
+      if (!sessA) {
+        results.authorization = { attempted: false, proven: false, reason: 'no_multiuser_auth', identity_a: identityA };
+      } else {
+        // Step 1b + 2: as A, create an owned record with the sentinel (reuse the
+        // persistence create-path finder shape).
+        const pgA = sessA.page;
+        let createInput = null;
+        let formHandleA = null;
+        if (createSelector) formHandleA = await pgA.$(createSelector).catch(() => null);
+        if (!formHandleA) {
+          const trig = await pgA.$('button:has-text("Add"), button:has-text("Create"), button:has-text("New"), a:has-text("Add"), a:has-text("Create")').catch(() => null);
+          if (trig) { await trig.click().catch(() => {}); await pgA.waitForTimeout(300); }
+          formHandleA = await pgA.$('form').catch(() => null);
+        }
+        if (formHandleA) createInput = await formHandleA.$('input[type="text"], input:not([type]), input[type="search"], textarea').catch(() => null);
+        if (!createInput) createInput = await pgA.$('input[type="text"], input:not([type]), textarea').catch(() => null);
+
+        if (!createInput) {
+          results.authorization = { attempted: false, proven: false, reason: 'no_owned_data', identity_a: identityA };
+          await sessA.ctx.close().catch(() => {});
+        } else {
+          await createInput.fill(sentinel);
+          const submitBtnA = formHandleA
+            ? await formHandleA.$('button[type="submit"], input[type="submit"], button:has-text("Add"), button:has-text("Create"), button:has-text("Save"), button:has-text("Submit")').catch(() => null)
+            : null;
+          try {
+            if (submitBtnA) await submitBtnA.click();
+            else await createInput.press('Enter');
+          } catch (e) {}
+          await pgA.waitForLoadState('networkidle', { timeout: pageTimeout }).catch(() => {});
+          await pgA.waitForTimeout(reloadWaitMs);
+          // Capture the list route A saw and any detail URL/id after create.
+          const listRouteA = azOwnedListSel ? '' : new URL(pgA.url(), url).pathname;
+          const afterCreateUrl = pgA.url();
+          // Extract a plausible record id from the post-create URL (/items/123).
+          let recordId = '';
+          const idMatch = afterCreateUrl.match(/\/(\d+|[0-9a-f]{8,})(?:[/?#].*)?$/i);
+          if (idMatch) recordId = idMatch[1];
+          const detailUrlA = (afterCreateUrl !== url && /\/(\d+|[0-9a-f]{8,})/.test(afterCreateUrl)) ? afterCreateUrl : '';
+          await sessA.ctx.close().catch(() => {});
+
+          // Step 3: session B in a SEPARATE fresh context.
+          const sessB = await authAs(identityB);
+          if (!sessB) {
+            results.authorization = { attempted: false, proven: false, reason: 'could_not_create_second_user', sentinel, identity_a: identityA, identity_b: identityB };
+          } else {
+            const pgB = sessB.page;
+            // Distinctness guard: if B's initial view already shows A's sentinel
+            // as a BASELINE (single-user app silently reused A), we cannot tell a
+            // leak from a shared store -> inconclusive.
+            const baselineB = await pgB.content().catch(() => '');
+            if (baselineB.indexOf(sentinel) !== -1) {
+              results.authorization = { attempted: false, proven: false, reason: 'could_not_create_second_user', sentinel, identity_a: identityA, identity_b: identityB };
+              await sessB.ctx.close().catch(() => {});
+            } else {
+              // Step 4: as B, attempt to READ A's sentinel via every path.
+              const pathsTried = [];
+              let leakPath = '';
+
+              // (a) list view: the configured owned-list route, else the route A saw.
+              let listTarget = '';
+              if (azOwnedListSel && /^https?:|^\//.test(azOwnedListSel)) listTarget = azOwnedListSel;
+              else if (listRouteA) listTarget = listRouteA;
+              if (listTarget) {
+                const t = new URL(listTarget, url).toString();
+                const r = await pgB.goto(t, { waitUntil: 'networkidle', timeout: pageTimeout }).catch(() => null);
+                const st = r ? r.status() : 0;
+                let contained = false;
+                try {
+                  // If configured, scope the read to the owned-list selector.
+                  if (azOwnedListSel && !/^https?:|^\//.test(azOwnedListSel)) {
+                    const el = await pgB.$(azOwnedListSel).catch(() => null);
+                    const txt = el ? await el.textContent().catch(() => '') : await pgB.content().catch(() => '');
+                    contained = (txt || '').indexOf(sentinel) !== -1;
+                  } else {
+                    contained = (await pgB.content().catch(() => '')).indexOf(sentinel) !== -1;
+                  }
+                } catch (e) {}
+                pathsTried.push({ path: 'list', target: t, observed_status: st, contained_sentinel: contained });
+                if (contained) leakPath = leakPath || 'list';
+              }
+
+              // (b) direct object (IDOR): a detail URL/template navigated in B's ctx.
+              let detailTarget = '';
+              if (azDetailTemplate && recordId) detailTarget = azDetailTemplate.replace('{id}', recordId);
+              else if (detailUrlA) detailTarget = detailUrlA;
+              if (detailTarget) {
+                const t = new URL(detailTarget, url).toString();
+                const r = await pgB.goto(t, { waitUntil: 'domcontentloaded', timeout: pageTimeout }).catch(() => null);
+                const st = r ? r.status() : 0;
+                const body = await pgB.content().catch(() => '');
+                const contained = st >= 200 && st < 300 && body.indexOf(sentinel) !== -1;
+                pathsTried.push({ path: 'detail', target: t, observed_status: st, contained_sentinel: contained });
+                if (contained) leakPath = leakPath || 'detail';
+              }
+
+              // (c) API: configured template in B's cookie context via fetch.
+              let apiTarget = '';
+              if (azApiTemplate) apiTarget = azApiTemplate.replace('{id}', recordId || '');
+              if (apiTarget) {
+                const t = new URL(apiTarget, url).toString();
+                let st = 0, body = '';
+                try {
+                  const resp = await pgB.request.get(t, { timeout: pageTimeout });
+                  st = resp.status();
+                  body = await resp.text().catch(() => '');
+                } catch (e) {}
+                const contained = st >= 200 && st < 300 && body.indexOf(sentinel) !== -1;
+                pathsTried.push({ path: 'api', target: t, observed_status: st, contained_sentinel: contained });
+                if (contained) leakPath = leakPath || 'api';
+              }
+
+              await sessB.ctx.close().catch(() => {});
+
+              // Step 5: verdict.
+              if (pathsTried.length === 0) {
+                // Created data but no list/detail/api to read it as B. INCONCLUSIVE.
+                results.authorization = { attempted: true, proven: false, reason: 'no_read_path_for_b', sentinel, identity_a: identityA, identity_b: identityB, paths_tried: pathsTried };
+              } else if (leakPath) {
+                // POSITIVE LEAK: B's real session received A's sentinel. The ONLY block.
+                results.authorization = { attempted: true, proven: false, reason: 'user_b_read_user_a_' + leakPath, sentinel, identity_a: identityA, identity_b: identityB, paths_tried: pathsTried };
+              } else {
+                // Isolation HOLDS: B was denied on every path actually tried.
+                results.authorization = { attempted: true, proven: true, reason: 'isolated_on_all_paths', sentinel, identity_a: identityA, identity_b: identityB, paths_tried: pathsTried };
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      // Deliberate asymmetry vs persistence: our own driver error is NOT a proof
+      // of a leak. Map to inconclusive (the gate treats authz_drive_error:* as
+      // pass-through). A security property must never be DISPROVEN by our tooling.
+      results.authorization = { attempted: true, proven: false, reason: 'authz_drive_error: ' + String(e && e.message || e).slice(0, 120) };
+    }
+
   } catch (err) {
     // Two inconclusive-passthrough cases land here, both non-blocking:
     //   - the playwright driver could not be required/launched -> driver_unavailable
@@ -494,6 +710,7 @@ playwright_prove_functional() {
     const reason = driverGone ? 'driver_unavailable' : 'not_serveable';
     results.persistence = { attempted: false, proven: false, reason };
     results.auth = { attempted: false, proven: false, reason };
+    results.authorization = { attempted: false, proven: false, reason };
     results.error = msg.slice(0, 160);
   } finally {
     if (browser) await browser.close();
@@ -523,10 +740,11 @@ PROOF_SCRIPT
 import json, os
 try:
     d = json.load(open(os.environ['_PF']))
-    p = d.get('persistence', {}); a = d.get('auth', {})
-    print('persistence attempted=%s proven=%s (%s) | auth attempted=%s proven=%s (%s)' % (
+    p = d.get('persistence', {}); a = d.get('auth', {}); z = d.get('authorization', {})
+    print('persistence attempted=%s proven=%s (%s) | auth attempted=%s proven=%s (%s) | authz attempted=%s proven=%s (%s)' % (
         p.get('attempted'), p.get('proven'), p.get('reason'),
-        a.get('attempted'), a.get('proven'), a.get('reason')))
+        a.get('attempted'), a.get('proven'), a.get('reason'),
+        z.get('attempted'), z.get('proven'), z.get('reason')))
 except Exception:
     print('')
 " 2>/dev/null || true)

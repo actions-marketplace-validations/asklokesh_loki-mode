@@ -140,6 +140,49 @@ A_UNTESTABLE='{"persistence":{"attempted":false,"proven":false,"reason":"no_crea
 # 16. LOKI_PROOF_AUTH=0 -> PASS even on served-200
 [ "$(LOKI_PROOF_AUTH=0 gate_proof "$A_SERVED200" "$NOMOCK_CLEAN")" = "PASS" ] && ok || fail "LOKI_PROOF_AUTH=0 should disable auth block"
 
+echo "--- AUTHORIZATION (tenant isolation) axis ---"
+# Each pins persistence+auth to inconclusive pass-through so ONLY authorization
+# can move the gate. The ONLY block is a fresh positive leak (proven:false with
+# reason prefix user_b_read_user_a_). Every absence/undetectable/driver-error and
+# the attempted-but-unprovable case pass through -- the security-axis asymmetry.
+AZ_BASE='"persistence":{"attempted":false,"proven":false,"reason":"no_create_path"},"auth":{"attempted":false,"proven":false,"reason":"no_auth"}'
+AZ_PROVEN='{'"$AZ_BASE"',"authorization":{"attempted":true,"proven":true,"reason":"isolated_on_all_paths"}}'
+AZ_BROKEN='{'"$AZ_BASE"',"authorization":{"attempted":true,"proven":false,"reason":"user_b_read_user_a_detail","paths_tried":[{"path":"detail","observed_status":200,"contained_sentinel":true}]}}'
+AZ_NO_MULTIUSER='{'"$AZ_BASE"',"authorization":{"attempted":false,"proven":false,"reason":"no_multiuser_auth"}}'
+AZ_NO_OWNED='{'"$AZ_BASE"',"authorization":{"attempted":false,"proven":false,"reason":"no_owned_data"}}'
+AZ_SECOND_USER_FAIL='{'"$AZ_BASE"',"authorization":{"attempted":false,"proven":false,"reason":"could_not_create_second_user"}}'
+AZ_NO_READPATH='{'"$AZ_BASE"',"authorization":{"attempted":true,"proven":false,"reason":"no_read_path_for_b"}}'
+AZ_DRIVE_ERROR='{'"$AZ_BASE"',"authorization":{"attempted":true,"proven":false,"reason":"authz_drive_error: boom"}}'
+AZ_MISSING='{'"$AZ_BASE"'}'
+AZ_STALE_LEAK='{"stamp":{"iteration":99,"head":"old"},'"$AZ_BASE"',"authorization":{"attempted":true,"proven":false,"reason":"user_b_read_user_a_list"}}'
+AZ_STALE_PROVEN='{"stamp":{"iteration":99,"head":"old"},'"$AZ_BASE"',"authorization":{"attempted":true,"proven":true,"reason":"isolated_on_all_paths"}}'
+# 19. proven isolation -> PASS
+[ "$(gate_proof "$AZ_PROVEN" "$NOMOCK_CLEAN")" = "PASS" ] && ok || fail "authz proven-isolation should PASS"
+# 20. BROKEN (B saw A's sentinel) -> BLOCK (the Lovable case, the ONLY block)
+[ "$(gate_proof "$AZ_BROKEN" "$NOMOCK_CLEAN")" = "BLOCK" ] && ok || fail "authz broken (user B read A) should BLOCK"
+# 21. no multi-user auth -> PASS (inconclusive)
+[ "$(gate_proof "$AZ_NO_MULTIUSER" "$NOMOCK_CLEAN")" = "PASS" ] && ok || fail "authz no_multiuser_auth should PASS"
+# 22. no owned data -> PASS
+[ "$(gate_proof "$AZ_NO_OWNED" "$NOMOCK_CLEAN")" = "PASS" ] && ok || fail "authz no_owned_data should PASS"
+# 23. could not create second user -> PASS
+[ "$(gate_proof "$AZ_SECOND_USER_FAIL" "$NOMOCK_CLEAN")" = "PASS" ] && ok || fail "authz could_not_create_second_user should PASS"
+# 24. attempted but no read path for B -> PASS (the asymmetry: attempted/proven:false is NOT a block here)
+[ "$(gate_proof "$AZ_NO_READPATH" "$NOMOCK_CLEAN")" = "PASS" ] && ok || fail "authz no_read_path_for_b should PASS (asymmetry)"
+# 25. our own driver error -> PASS (tooling error never blocks a security axis)
+[ "$(gate_proof "$AZ_DRIVE_ERROR" "$NOMOCK_CLEAN")" = "PASS" ] && ok || fail "authz drive_error should PASS"
+# 26. authorization key absent on a serveable app -> PASS (inconclusive, not false-block)
+[ "$(gate_proof "$AZ_MISSING" "$NOMOCK_CLEAN")" = "PASS" ] && ok || fail "authz missing key should PASS (inconclusive)"
+# 27. STALE leak (wrong iteration stamp) -> PASS (a prior disproof never linger-blocks)
+[ "$(gate_proof "$AZ_STALE_LEAK" "$NOMOCK_CLEAN")" = "PASS" ] && ok || fail "authz stale leak should PASS (not-present, no linger-block)"
+# 28. STALE proven (wrong stamp) -> PASS (never a stale green -- treated as not-present)
+[ "$(gate_proof "$AZ_STALE_PROVEN" "$NOMOCK_CLEAN")" = "PASS" ] && ok || fail "authz stale proven should PASS (not a stale green)"
+# 29. not serveable + broken -> PASS (non-web pass-through)
+[ "$(gate_proof "$AZ_BROKEN" "$NOMOCK_CLEAN" '{"status":"none","primary_service":"","url":""}')" = "PASS" ] && ok || fail "authz not-serveable should PASS (pass-through)"
+# 30. LOKI_PROOF_AUTHZ=0 + broken -> PASS (reversible opt-out)
+[ "$(LOKI_PROOF_AUTHZ=0 gate_proof "$AZ_BROKEN" "$NOMOCK_CLEAN")" = "PASS" ] && ok || fail "LOKI_PROOF_AUTHZ=0 should disable authz block"
+# 31. LOKI_PROOF_GATE=0 + broken -> PASS (master opt-out)
+[ "$(LOKI_PROOF_GATE=0 gate_proof "$AZ_BROKEN" "$NOMOCK_CLEAN")" = "PASS" ] && ok || fail "LOKI_PROOF_GATE=0 should disable authz block"
+
 echo "--- MASTER opt-out + block-report attribution ---"
 # 17. LOKI_PROOF_GATE=0 -> every proof axis pass-through even with all disproofs
 ALL_BAD='{"persistence":{"attempted":true,"proven":false,"reason":"x"},"auth":{"attempted":true,"proven":false,"reason":"served_200_logged_out"}}'
@@ -170,6 +213,49 @@ attr_check() {
 ( attr_check "$P_DISPROVEN" "$NOMOCK_CLEAN" "persistence" ) && ok || fail "block report should record checks.persistence.ok=false"
 ( attr_check "$PROOF_PASSTHRU" "$NOMOCK_HIT" "nomock" ) && ok || fail "block report should record checks.nomock.ok=false"
 ( attr_check "$A_SERVED200" "$NOMOCK_CLEAN" "auth" ) && ok || fail "block report should record checks.auth.ok=false"
+( attr_check "$AZ_BROKEN" "$NOMOCK_CLEAN" "authorization" ) && ok || fail "block report should record checks.authorization.ok=false"
+
+# 32. block-report reason == tenant_isolation_broken on an authz leak; and the
+# pass-path evidence-gate-details.json records authorization.ok=true.
+details_pass_authz_ok() {
+    d="$(mktemp -d)"; cd "$d" || return 3
+    git init -q; git config user.email t@t; git config user.name t; git config commit.gpgsign false
+    echo base > f.txt; git add -A; git commit -qm init
+    _LOKI_RUN_START_SHA="$(git rev-parse HEAD)"
+    echo changed >> f.txt; git add -A
+    mkdir -p .loki/quality .loki/app-runner .loki/council .loki/verification
+    printf '%s\n' '{"runner":"vitest","pass":true,"status":"passed","passed_count":1,"failed_count":0}' > .loki/quality/test-results.json
+    printf '%s\n' "$SERVEABLE_STATE" > .loki/app-runner/state.json
+    printf '%s\n' "$HEALTH_OK" > .loki/app-runner/health.json
+    printf '%s\n' "$AZ_PROVEN" > .loki/verification/functional-proof.json
+    COUNCIL_STATE_DIR="$d/.loki/council"
+    council_evidence_gate >/dev/null 2>&1
+    python3 -c "import json; d=json.load(open('$d/.loki/council/evidence-gate-details.json')); import sys; sys.exit(0 if d['authorization']['ok'] is True else 1)"
+    local rc=$?
+    rm -rf "$d"
+    return $rc
+}
+( details_pass_authz_ok ) && ok || fail "evidence-gate-details.json (pass) should record authorization.ok=true"
+
+reason_broken() {
+    d="$(mktemp -d)"; cd "$d" || return 3
+    git init -q; git config user.email t@t; git config user.name t; git config commit.gpgsign false
+    echo base > f.txt; git add -A; git commit -qm init
+    _LOKI_RUN_START_SHA="$(git rev-parse HEAD)"
+    echo changed >> f.txt; git add -A
+    mkdir -p .loki/quality .loki/app-runner .loki/council .loki/verification
+    printf '%s\n' '{"runner":"vitest","pass":true,"status":"passed","passed_count":1,"failed_count":0}' > .loki/quality/test-results.json
+    printf '%s\n' "$SERVEABLE_STATE" > .loki/app-runner/state.json
+    printf '%s\n' "$HEALTH_OK" > .loki/app-runner/health.json
+    printf '%s\n' "$AZ_BROKEN" > .loki/verification/functional-proof.json
+    COUNCIL_STATE_DIR="$d/.loki/council"
+    council_evidence_gate >/dev/null 2>&1 || true
+    python3 -c "import json; d=json.load(open('$d/.loki/council/evidence-block.json')); import sys; sys.exit(0 if d['reason']=='tenant_isolation_broken' else 1)"
+    local rc=$?
+    rm -rf "$d"
+    return $rc
+}
+( reason_broken ) && ok || fail "block report reason should be tenant_isolation_broken on authz leak"
 
 echo ""
 echo "test-evidence-proof-axes: $PASS passed, $FAIL failed"

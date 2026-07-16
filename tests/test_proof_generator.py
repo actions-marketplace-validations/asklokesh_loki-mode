@@ -1320,6 +1320,35 @@ class FunctionalityAxesTests(unittest.TestCase):
         self.assertEqual(fnc["nomock"]["state"], "not_checked")
         self.assertEqual(fnc["persistence"]["state"], "not_checked")
 
+    def test_authorization_proven_is_green_row_not_gap(self):
+        # The tenant-isolation axis rides the SAME generic tuple. Proven -> green
+        # row; proves _collect_functionality was extended to include it.
+        d = self._gen({"authorization": {"ok": True, "inconclusive": False, "reason": ""}})
+        self.assertIn("authorization", self._fnc(d),
+                      "_collect_functionality must include 'authorization'")
+        self.assertEqual(self._fnc(d)["authorization"]["state"], "proven")
+        self.assertNotIn("functionality:authorization", self._degraded_items(d))
+
+    def test_authorization_disproven_is_a_gap_in_degraded(self):
+        # The Lovable leak: ok:false -> gap AND listed in degraded[].
+        d = self._gen({"authorization": {"ok": False, "inconclusive": False,
+                                         "reason": "user_b_read_user_a_detail"}})
+        self.assertEqual(self._fnc(d)["authorization"]["state"], "gap")
+        deg = {e["item"]: e for e in d["honesty"]["degraded"]}
+        self.assertIn("functionality:authorization", deg)
+        self.assertEqual(deg["functionality:authorization"]["reason"],
+                         "user_b_read_user_a_detail")
+
+    def test_authorization_inconclusive_is_not_checked(self):
+        d = self._gen({"authorization": {"ok": True, "inconclusive": True,
+                                         "reason": "no_multiuser_auth"}})
+        self.assertEqual(self._fnc(d)["authorization"]["state"], "not_checked")
+        self.assertNotIn("functionality:authorization", self._degraded_items(d))
+
+    def test_authorization_absent_axis_is_not_checked(self):
+        d = self._gen({"nomock": {"ok": True, "inconclusive": False, "reason": ""}})
+        self.assertEqual(self._fnc(d)["authorization"]["state"], "not_checked")
+
 
 if __name__ == "__main__":
     unittest.main()

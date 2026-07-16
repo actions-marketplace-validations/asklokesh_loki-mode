@@ -625,7 +625,7 @@ def _collect_functionality(loki_dir):
     )
     axes = raw if isinstance(raw, dict) else {}
     out = {}
-    for axis in ("nomock", "persistence", "auth"):
+    for axis in ("nomock", "persistence", "auth", "authorization"):
         state, reason = _classify_func_axis(axes.get(axis))
         out[axis] = {"state": state, "reason": reason}
     return out
@@ -1082,7 +1082,7 @@ def _compute_degraded(facts):
     # gate already passes those through. Surfacing them here would spam the ledger
     # with "we didn't check X" for every axis the driver could not exercise.
     fnc = facts.get("functionality") or {}
-    for axis in ("nomock", "persistence", "auth"):
+    for axis in ("nomock", "persistence", "auth", "authorization"):
         rec = fnc.get(axis) or {}
         if rec.get("state") == "gap":
             out.append({"item": "functionality:%s" % axis, "status": "failed",

@@ -2094,10 +2094,11 @@ INCONCLUSIVE_EOF
         # Proof-of-Function axes (nomock/persistence/auth) are declared later in
         # the gate; default to "true"/"" when this helper runs before they are
         # set (it never does in practice, but keep the write robust).
-        local _nomock_ok _persist_ok _auth_ok
+        local _nomock_ok _persist_ok _auth_ok _authz_ok
         if [ "${nomock_fails:-false}" = "true" ]; then _nomock_ok="false"; else _nomock_ok="true"; fi
         if [ "${persist_fails:-false}" = "true" ]; then _persist_ok="false"; else _persist_ok="true"; fi
         if [ "${auth_fails:-false}" = "true" ]; then _auth_ok="false"; else _auth_ok="true"; fi
+        if [ "${authz_fails:-false}" = "true" ]; then _authz_ok="false"; else _authz_ok="true"; fi
         cat > "$_det_tmp" << DETAILS_EOF
 {
     "recorded_at": "$_det_ts",
@@ -2131,6 +2132,11 @@ INCONCLUSIVE_EOF
         "ok": $_auth_ok,
         "inconclusive": ${auth_inconclusive:-false},
         "reason": "${auth_inconclusive_reason:-}"
+    },
+    "authorization": {
+        "ok": $_authz_ok,
+        "inconclusive": ${authz_inconclusive:-false},
+        "reason": "${authz_inconclusive_reason:-}"
     }
 }
 DETAILS_EOF
@@ -2225,6 +2231,7 @@ PYEOF
     local nomock_fails="false" nomock_inconclusive="false" nomock_inconclusive_reason=""
     local persist_fails="false" persist_inconclusive="false" persist_inconclusive_reason=""
     local auth_fails="false" auth_inconclusive="false" auth_inconclusive_reason=""
+    local authz_fails="false" authz_inconclusive="false" authz_inconclusive_reason=""
     local _proof_file=".loki/verification/functional-proof.json"
     local _nomock_scan=".loki/verification/nomock-scan.json"
 
@@ -2391,9 +2398,10 @@ PYEOF
     # Web-app-only: only evaluate the dynamic axes when the app is SERVEABLE
     # (same signal the boot axis uses). A non-web build never launches a browser,
     # writes no proof file, and passes through by construction.
-    local _proof_persist_disabled="false" _proof_auth_disabled="false"
+    local _proof_persist_disabled="false" _proof_auth_disabled="false" _proof_authz_disabled="false"
     [ "$_proof_gate" = "0" ] || [ "${LOKI_PROOF_PERSIST:-1}" = "0" ] && _proof_persist_disabled="true"
     [ "$_proof_gate" = "0" ] || [ "${LOKI_PROOF_AUTH:-1}" = "0" ] && _proof_auth_disabled="true"
+    [ "$_proof_gate" = "0" ] || [ "${LOKI_PROOF_AUTHZ:-1}" = "0" ] && _proof_authz_disabled="true"
 
     # Serveable? Reuse the boot axis's own classification: boot_fails or an
     # affirmative boot pass both imply a serveable app was launched. Only a
@@ -2531,6 +2539,83 @@ PYEOF
         auth_inconclusive="true"; auth_inconclusive_reason="no_python3"
     fi
 
+    # --- Evidence check (h): AUTHORIZATION / TENANT ISOLATION (dynamic, driven) ---
+    # The Lovable-breach class: two LOGGED-IN users where user A can read user B's
+    # owned rows (ownership/RLS check inverted or missing). "auth" proves anon->401
+    # (authentication); "authorization" proves user-A-data-denied-to-user-B (tenant
+    # isolation). Read from the SAME functional-proof.json, key "authorization".
+    #
+    # CRITICAL ASYMMETRY vs persistence: a security property must NEVER be declared
+    # VIOLATED by our own tooling's inability to observe. So attempted && !proven
+    # blocks ONLY when the reason is the explicit positive-leak prefix
+    # 'user_b_read_user_a_' (B's real session actually received A's sentinel on a
+    # path). Every other outcome -- no multi-user auth, no owned data, could not
+    # create a second user, no read path for B, a drive error, missing/stale --
+    # is INCONCLUSIVE pass-through, never a block. Absence != insecure. This is the
+    # discipline that prevents the false-block: ONLY a fresh positive disproof of
+    # isolation blocks.
+    if [ "$_proof_authz_disabled" = "true" ]; then
+        authz_inconclusive="true"; authz_inconclusive_reason="authz_gate_disabled"
+    elif [ "$_proof_serveable" != "true" ]; then
+        authz_inconclusive="true"; authz_inconclusive_reason="not_serveable"
+    elif command -v python3 >/dev/null 2>&1; then
+        local _authz_status
+        _authz_status=$(_PF="$_proof_file" _ITER="${ITERATION_COUNT:-0}" python3 <<'PYEOF' 2>/dev/null || echo "MISSING"
+import json, os
+p = os.environ['_PF']
+if not os.path.isfile(p):
+    print("MISSING"); raise SystemExit
+try:
+    d = json.load(open(p))
+except Exception:
+    print("UNPARSEABLE"); raise SystemExit
+# Freshness: a proof stamped for a different iteration is stale -> treat as NOT
+# PRESENT. A stale proven:false leak reason must never linger-block; a stale
+# proven:true must never be a stale green.
+stamp = d.get("stamp") or {}
+try:
+    cur = int(os.environ.get("_ITER", "0"))
+except Exception:
+    cur = 0
+if "iteration" in stamp:
+    try:
+        if int(stamp.get("iteration")) != cur:
+            print("STALE"); raise SystemExit
+    except (TypeError, ValueError):
+        print("STALE"); raise SystemExit
+az = d.get("authorization") or {}
+attempted = az.get("attempted")
+proven = az.get("proven")
+reason = str(az.get("reason", "") or "")
+if attempted is True and proven is True:
+    # Isolation observed to HOLD on every path tried.
+    print("PASS")
+elif attempted is True and proven is False and reason.startswith("user_b_read_user_a_"):
+    # The ONLY blocking outcome: B's real session received A's sentinel on a path.
+    print("FAIL")
+else:
+    # EVERY other case is inconclusive pass-through (never a block):
+    #   attempted:false -> no_multiuser_auth / no_owned_data /
+    #     could_not_create_second_user / not_serveable / driver_unavailable
+    #   attempted:true/proven:false -> no_read_path_for_b / authz_drive_error:*
+    # A generic "could not read as B" or a driver error is OUR failure to observe,
+    # not a proven leak. Never block on it.
+    print("INCONCLUSIVE:" + (reason or "unknown"))
+PYEOF
+        )
+        case "$_authz_status" in
+            PASS) : ;;
+            INCONCLUSIVE:*) authz_inconclusive="true"; authz_inconclusive_reason="${_authz_status#INCONCLUSIVE:}" ;;
+            MISSING) authz_inconclusive="true"; authz_inconclusive_reason="proof_not_attempted" ;;
+            UNPARSEABLE) authz_inconclusive="true"; authz_inconclusive_reason="proof_file_unparseable" ;;
+            STALE) authz_inconclusive="true"; authz_inconclusive_reason="proof_stale" ;;
+            FAIL) authz_fails="true" ;;
+            *) authz_inconclusive="true"; authz_inconclusive_reason="unknown" ;;
+        esac
+    else
+        authz_inconclusive="true"; authz_inconclusive_reason="no_python3"
+    fi
+
     # --- Evidence check (d): SECRET LEAK -- did the build ship a credential? ---
     # RUN-25 iter 21 (Wave D #2): the secret matcher ran ONLY on the auto-commit
     # path, so a completion via the promise / dirty-tree route could ship a leaked
@@ -2564,8 +2649,8 @@ PYEOF
         done <<< "$_sec_files"
     fi
 
-    # --- Block decision: block iff any axis FAILS (diff/test/boot/secret/nomock/persist/auth) ---
-    if [ "$diff_fails" != "true" ] && [ "$test_fails" != "true" ] && [ "$boot_fails" != "true" ] && [ "$secret_fails" != "true" ] && [ "$nomock_fails" != "true" ] && [ "$persist_fails" != "true" ] && [ "$auth_fails" != "true" ]; then
+    # --- Block decision: block iff any axis FAILS (diff/test/boot/secret/nomock/persist/auth/authz) ---
+    if [ "$diff_fails" != "true" ] && [ "$test_fails" != "true" ] && [ "$boot_fails" != "true" ] && [ "$secret_fails" != "true" ] && [ "$nomock_fails" != "true" ] && [ "$persist_fails" != "true" ] && [ "$auth_fails" != "true" ] && [ "$authz_fails" != "true" ]; then
         # Gate passes: remove any stale block report.
         if [ -f "$COUNCIL_STATE_DIR/evidence-block.json" ]; then
             rm -f "$COUNCIL_STATE_DIR/evidence-block.json"
@@ -2595,6 +2680,9 @@ PYEOF
         if [ "$auth_inconclusive" = "true" ] && [ "$auth_inconclusive_reason" != "auth_gate_disabled" ]; then
             log_warn "[Council] Evidence gate: auth enforcement not proven (${auth_inconclusive_reason}). Pass-through; set LOKI_PROOF_AUTH=0 to silence, or set LOKI_PROOF_PROTECTED_PATH so the driver can test a logged-out request."
         fi
+        if [ "$authz_inconclusive" = "true" ] && [ "$authz_inconclusive_reason" != "authz_gate_disabled" ]; then
+            log_warn "[Council] Evidence gate: tenant isolation not proven (${authz_inconclusive_reason}). Pass-through; set LOKI_PROOF_AUTHZ=0 to silence, or configure LOKI_PROOF_AUTHZ_* selectors so the driver can drive two distinct sessions."
+        fi
         _write_evidence_details "pass"
         return 0
     fi
@@ -2617,6 +2705,8 @@ PYEOF
         reason="persistence_unproven"
     elif [ "$auth_fails" = "true" ]; then
         reason="auth_not_enforced"
+    elif [ "$authz_fails" = "true" ]; then
+        reason="tenant_isolation_broken"
     fi
 
     local failures=""
@@ -2689,6 +2779,19 @@ PYEOF
         fi
         log_warn "[Council] Evidence gate BLOCKED: auth enforcement not proven (${auth_inconclusive_reason:-not_enforced}). Opt out: LOKI_PROOF_AUTH=0 (or LOKI_PROOF_PROTECTED_PATH / LOKI_PROOF_AUTH_STRICT=0)"
     fi
+    if [ "$authz_fails" = "true" ]; then
+        # PoF #4 (the Lovable-breach class): user B's real second session READ user
+        # A's owned sentinel via a list/detail/API path -- tenant isolation is
+        # BROKEN (ownership/RLS check inverted or missing). This is the ONLY authz
+        # block outcome: absence/undetectable/driver-error all pass through. Opt
+        # out: LOKI_PROOF_AUTHZ=0.
+        if [ -n "$failures" ]; then
+            failures="${failures}|tenant isolation is broken -- a second user could read another user's owned data (set LOKI_PROOF_AUTHZ=0 to opt out)"
+        else
+            failures="tenant isolation is broken -- a second user could read another user's owned data (set LOKI_PROOF_AUTHZ=0 to opt out)"
+        fi
+        log_warn "[Council] Evidence gate BLOCKED: tenant isolation broken -- user B read user A's owned data (${authz_inconclusive_reason:-user_b_read_user_a}). Opt out: LOKI_PROOF_AUTHZ=0"
+    fi
 
     # Rail 3 (one-step self-rescue): the terminal user (no dashboard open) must
     # be told, right at the block site, how to opt out of the gate. A false
@@ -2710,7 +2813,7 @@ items = [s for s in os.environ['_FAILURES'].split('|') if s]
 print(json.dumps(items[:5]))
 " 2>/dev/null || echo '[]')
     local boot_ok secret_ok boot_reason_json
-    local nomock_ok persist_ok auth_ok nomock_reason_json persist_reason_json auth_reason_json
+    local nomock_ok persist_ok auth_ok authz_ok nomock_reason_json persist_reason_json auth_reason_json authz_reason_json
     if [ "$diff_fails" = "true" ]; then diff_ok="false"; else diff_ok="true"; fi
     if [ "$test_fails" = "true" ]; then tests_ok="false"; else tests_ok="true"; fi
     if [ "$boot_fails" = "true" ]; then boot_ok="false"; else boot_ok="true"; fi
@@ -2718,12 +2821,14 @@ print(json.dumps(items[:5]))
     if [ "$nomock_fails" = "true" ]; then nomock_ok="false"; else nomock_ok="true"; fi
     if [ "$persist_fails" = "true" ]; then persist_ok="false"; else persist_ok="true"; fi
     if [ "$auth_fails" = "true" ]; then auth_ok="false"; else auth_ok="true"; fi
+    if [ "$authz_fails" = "true" ]; then authz_ok="false"; else authz_ok="true"; fi
     # Record WHY boot was inconclusive (no_app_runner / not_serveable / etc.) so a
     # consumer of the block report can tell a genuine boot pass from a pass-through.
     boot_reason_json=$(_R="${boot_inconclusive_reason:-}" python3 -c "import json,os; print(json.dumps(os.environ['_R']))" 2>/dev/null || echo '""')
     nomock_reason_json=$(_R="${nomock_inconclusive_reason:-}" python3 -c "import json,os; print(json.dumps(os.environ['_R']))" 2>/dev/null || echo '""')
     persist_reason_json=$(_R="${persist_inconclusive_reason:-}" python3 -c "import json,os; print(json.dumps(os.environ['_R']))" 2>/dev/null || echo '""')
     auth_reason_json=$(_R="${auth_inconclusive_reason:-}" python3 -c "import json,os; print(json.dumps(os.environ['_R']))" 2>/dev/null || echo '""')
+    authz_reason_json=$(_R="${authz_inconclusive_reason:-}" python3 -c "import json,os; print(json.dumps(os.environ['_R']))" 2>/dev/null || echo '""')
     base_for_json="${base_sha:-}"
     cat > "$ev_tmp" << EVIDENCE_EOF
 {
@@ -2739,7 +2844,8 @@ print(json.dumps(items[:5]))
         "secret": {"ok": $secret_ok},
         "nomock": {"ok": $nomock_ok, "inconclusive": $nomock_inconclusive, "reason": $nomock_reason_json},
         "persistence": {"ok": $persist_ok, "inconclusive": $persist_inconclusive, "reason": $persist_reason_json},
-        "auth": {"ok": $auth_ok, "inconclusive": $auth_inconclusive, "reason": $auth_reason_json}
+        "auth": {"ok": $auth_ok, "inconclusive": $auth_inconclusive, "reason": $auth_reason_json},
+        "authorization": {"ok": $authz_ok, "inconclusive": $authz_inconclusive, "reason": $authz_reason_json}
     },
     "failures": $failures_json
 }
@@ -2757,7 +2863,8 @@ EVIDENCE_EOF
         local _proof_axis=""
         if [ "$nomock_fails" = "true" ]; then _proof_axis="nomock"
         elif [ "$persist_fails" = "true" ]; then _proof_axis="persistence"
-        elif [ "$auth_fails" = "true" ]; then _proof_axis="auth"; fi
+        elif [ "$auth_fails" = "true" ]; then _proof_axis="auth"
+        elif [ "$authz_fails" = "true" ]; then _proof_axis="authorization"; fi
         record_trust_event_bash "evidence_block" \
             "reason=$reason" \
             "diff_ok=$diff_ok" \
