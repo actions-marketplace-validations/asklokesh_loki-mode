@@ -20393,6 +20393,19 @@ main() {
         # a stuck "Planning" state.
         _advance_current_phase "BUILDING"
         run_autonomous "$PRD_PATH" || result=$?
+        # ZOMBIE-RECEIPT GUARD: proof generation + the COMPLETED marker live in the
+        # teardown far below. If the process is killed (Docker restart, OOM, worker
+        # reap) between here and there, a genuinely finished build (real code, exit
+        # 0) leaves NO proof.json and STATUS stuck "BUILDING" -- the build "worked"
+        # but produced no Evidence Receipt (observed on run-20260716194328). Emit
+        # the proof HERE too, right after the loop returns, so the receipt survives
+        # a late teardown death. Idempotent + fire-and-forget: the teardown's own
+        # generate_proof_of_run re-runs harmlessly (same run_id -> same proof dir),
+        # and LOKI_PROOF=0 still opts out. This closes the "nothing gets verified"
+        # gap at its highest-value point without touching run_autonomous itself.
+        if [ "${LOKI_PROOF:-1}" != "0" ] && type generate_proof_of_run &>/dev/null; then
+            generate_proof_of_run "$result" || true
+        fi
     fi
 
     # Final GitHub sync: sync all completed tasks and create PR (v5.41.0)
