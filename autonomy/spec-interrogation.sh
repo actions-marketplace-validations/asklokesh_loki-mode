@@ -195,36 +195,42 @@ spec_interrogation_class_for() {
             ;;
     esac
 
-    # P2-4 REFINED (false-positive fix): a contradiction is "X and not-X" -- it
-    # must be evidenced by the FINDING itself, not merely by living under a
-    # loosely-named section. The grill's report sections are free-form LLM text
-    # and commonly group unlike findings ("Contradictions and ambiguities",
-    # "Contradictions / open questions"), so a section-only force-tag mislabeled
-    # pure AMBIGUITY (which CAN be assumed away with an implementer default) as a
-    # no-retry-terminal CONTRADICTION -- observed terminal-failing valid specs on
-    # findings whose text was "Ambiguities and missing acceptance criteria".
-    # A section heading now escalates to contradictory ONLY when the finding line
-    # ALSO shows real conflict language (two requirements in tension), not for a
-    # bare ambiguity/underspecification finding filed under a contradiction-ish
-    # heading. The line-level check above already catches genuinely-worded
-    # contradictions regardless of section. Opt back into the old broad behavior
-    # with LOKI_SPEC_SECTION_CONTRADICTION_FORCE=1.
-    if [ "${LOKI_SPEC_SECTION_CONTRADICTION_FORCE:-0}" = "1" ]; then
-        case "$lc_section" in
-            *contradiction*|*contradictor*)
-                printf 'contradictory'; return 0 ;;
-        esac
-    else
-        case "$lc_section" in
-            *contradiction*|*contradictor*)
-                # require corroborating conflict language in the line itself
-                case "$lc_line" in
-                    *contradict*|*conflict*|*inconsistent*|*incompatible*|*cannot\ both*|*mutually\ exclusive*|*versus*|*but\ also*)
-                        printf 'contradictory'; return 0 ;;
-                esac
-                ;;
-        esac
-    fi
+    # P2-4 REFINED (false-positive fix): the grill's report sections are free-form
+    # LLM text. A finding under a PURE contradictions heading ("Contradictions",
+    # "Contradictory requirements") is the grill's authoritative "X and not-X"
+    # categorization -- trust it, even when the conflict is stated SEMANTICALLY with
+    # no magic word ("immutable records" vs "an edit endpoint"). Recording a
+    # contradiction is non-fatal by default now (LOKI_SPEC_CONTRADICTION_FASTFAIL=0
+    # in run.sh proceeds with the finding; the completion gate still blocks
+    # fake-green), so trusting a clean heading costs a recorded finding, not a
+    # terminal kill.
+    # The false positives lived in MIXED headings that lump unlike findings
+    # ("Contradictions and ambiguities", "Contradictions / open questions") -- there
+    # a bare ambiguity (assumable away with an implementer default) was mislabeled a
+    # contradiction. For a mixed heading we still require corroborating conflict
+    # language in the line itself. The line-level check above already catches
+    # genuinely-worded contradictions regardless of section.
+    # LOKI_SPEC_SECTION_CONTRADICTION_FORCE=1 forces the old broad behavior (any
+    # contradiction-ish heading -> contradictory).
+    case "$lc_section" in
+        *contradiction*|*contradictor*)
+            # Mixed heading: co-mentions ambiguity/question/assumption/gap words ->
+            # the finding could be either kind, so demand line evidence.
+            local _mixed=0
+            case "$lc_section" in
+                *ambigu*|*question*|*assumption*|*gap*|*missing*|*unclear*|*open*|*blind*)
+                    _mixed=1 ;;
+            esac
+            if [ "${LOKI_SPEC_SECTION_CONTRADICTION_FORCE:-0}" = "1" ] || [ "$_mixed" = "0" ]; then
+                printf 'contradictory'; return 0
+            fi
+            # mixed heading: require corroborating conflict language in the line
+            case "$lc_line" in
+                *contradict*|*conflict*|*inconsistent*|*incompatible*|*cannot\ both*|*mutually\ exclusive*|*versus*|*but\ also*)
+                    printf 'contradictory'; return 0 ;;
+            esac
+            ;;
+    esac
 
     case "$lc_section" in
         *security*|*scale*|*reliability*) printf 'missing'; return 0 ;;
