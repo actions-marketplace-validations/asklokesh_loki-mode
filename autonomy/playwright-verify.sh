@@ -254,6 +254,289 @@ SMOKE_SCRIPT
 }
 
 #===============================================================================
+# Functional Proof (Proof-of-Function dynamic half) -- PERSISTENCE + AUTH
+#===============================================================================
+#
+# Drives the RUNNING app and writes .loki/verification/functional-proof.json
+# with an explicit tri-state per property that council_evidence_gate reads:
+#   {"persistence": {"attempted": bool, "proven": bool, "reason": str},
+#    "auth":        {"attempted": bool, "proven": bool, "reason": str},
+#    "url": str, "verified_at": str}
+#
+# PERSISTENCE: discovers a create path (a <form> with a submit, or an Add/Create/
+#   Save button), fills it with a UNIQUE sentinel token (loki-persist-<uuid>),
+#   submits, waits for network idle, RELOADS, and asserts the sentinel is present
+#   after reload (a real DB/API read-back). proven=false if it does not survive
+#   -> the gate BLOCKS. no create path -> attempted:false reason=no_create_path.
+#
+# AUTH: if an auth signal is detected (a login/signin route/link, or
+#   LOKI_PROOF_PROTECTED_PATH configured), issues a logged-out request to a
+#   protected route and asserts REJECTION (401/403 or redirect to login).
+#   A login screen that merely renders -> proven:false -> BLOCK. No auth signal
+#   -> attempted:false reason=no_auth.
+#
+# Never blocks the iteration itself (|| true at the call site). The council gate
+# is what turns proven:false into a BLOCK. Interval + serveable gated upstream.
+# Opt out per-axis with LOKI_PROOF_PERSIST=0 / LOKI_PROOF_AUTH=0 at the gate.
+#
+# Env knobs:
+#   LOKI_PROOF_CREATE_SELECTOR  - CSS selector to point the driver at a form
+#   LOKI_PROOF_PROTECTED_PATH   - path to test for a logged-out rejection
+#   LOKI_PROOF_RELOAD_WAIT_MS   - wait before asserting sentinel absence (flake)
+#===============================================================================
+
+playwright_prove_functional() {
+    local url="$1"
+
+    if [ -z "$url" ]; then
+        log_warn "playwright_prove_functional: no URL provided"
+        return 0
+    fi
+
+    local verify_dir="${PLAYWRIGHT_VERIFY_DIR:-.loki/verification}"
+    local screenshots_dir="${verify_dir}/screenshots"
+    mkdir -p "$screenshots_dir"
+
+    local results_file="${verify_dir}/functional-proof.json"
+    local script_file="${verify_dir}/.functional-proof.js"
+
+    # BUG 1a: invalidate any PRIOR proof BEFORE driving. A timeout (exit 124) or a
+    # driver hang must not leave a stale proven:true from an earlier iteration that
+    # the gate would read as current. The node script re-writes a fresh, stamped
+    # proof in its finally; if it never gets there, the file stays absent (which
+    # the gate treats as inconclusive pass-through, never a stale green).
+    rm -f "$results_file" "$results_file.tmp" 2>/dev/null || true
+
+    log_step "Running Playwright functional proof (persistence + auth) against ${url}..."
+
+    # Freshness stamp: the current iteration and the current HEAD SHA. The council
+    # gate reads this and treats a proof whose iteration does not match the current
+    # ITERATION_COUNT as NOT PRESENT (inconclusive), so a stale file never passes.
+    local _proof_iter="${ITERATION_COUNT:-0}"
+    local _proof_head
+    _proof_head="$(git rev-parse HEAD 2>/dev/null || echo '')"
+
+    cat > "$script_file" << 'PROOF_SCRIPT'
+(async () => {
+  const url = process.argv[2];
+  const resultsPath = process.argv[3];
+  const pageTimeout = parseInt(process.argv[4] || '15000', 10);
+  const reloadWaitMs = parseInt(process.env.LOKI_PROOF_RELOAD_WAIT_MS || '1500', 10);
+  const createSelector = process.env.LOKI_PROOF_CREATE_SELECTOR || '';
+  const protectedPath = process.env.LOKI_PROOF_PROTECTED_PATH || '';
+
+  const results = {
+    verified_at: new Date().toISOString(),
+    url: url,
+    // BUG 1b: freshness stamp the gate validates against the current iteration.
+    stamp: {
+      iteration: parseInt(process.env.LOKI_PROOF_ITER || '0', 10),
+      head: process.env.LOKI_PROOF_HEAD || '',
+    },
+    persistence: { attempted: false, proven: false, reason: 'not_run' },
+    auth: { attempted: false, proven: false, reason: 'not_run' },
+  };
+
+  const write = () => {
+    const fs = require('fs');
+    const tmp = resultsPath + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(results, null, 2));
+    fs.renameSync(tmp, resultsPath);
+  };
+
+  let browser;
+  try {
+    // BUG 3: require playwright INSIDE the try. If the driver is absent, node
+    // would otherwise throw at module-top require time and write NO proof at all
+    // -- which, combined with the missing-file handling, previously false-blocked.
+    // A fresh fallback proof {attempted:false, reason:driver_unavailable} keeps
+    // the axis inconclusive pass-through instead.
+    const { chromium } = require('playwright');
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: pageTimeout });
+
+    // ---- PERSISTENCE ----
+    try {
+      const sentinel = 'loki-persist-' + Math.random().toString(36).slice(2, 10);
+      // Find a create path: a configured selector, else a form with a text input
+      // and a submit, else an Add/Create/Save button revealing a form.
+      let formHandle = null;
+      if (createSelector) {
+        formHandle = await page.$(createSelector);
+      }
+      if (!formHandle) {
+        // Try to reveal a form behind an Add/Create/New/Save trigger.
+        const trigger = await page.$(
+          'button:has-text("Add"), button:has-text("Create"), button:has-text("New"), a:has-text("Add"), a:has-text("Create")'
+        ).catch(() => null);
+        if (trigger) { await trigger.click().catch(() => {}); await page.waitForTimeout(300); }
+        formHandle = await page.$('form');
+      }
+
+      // Locate a fillable text input inside/near the form.
+      let input = null;
+      if (formHandle) {
+        input = await formHandle.$('input[type="text"], input:not([type]), input[type="search"], input[type="email"], textarea').catch(() => null);
+      }
+      if (!input) {
+        input = await page.$('input[type="text"], input:not([type]), textarea').catch(() => null);
+      }
+
+      if (!input) {
+        results.persistence = { attempted: false, proven: false, reason: 'no_create_path' };
+      } else {
+        results.persistence.attempted = true;
+        await input.fill(sentinel);
+        // Submit: prefer a submit button, else press Enter.
+        let submitted = false;
+        const submitBtn = formHandle
+          ? await formHandle.$('button[type="submit"], input[type="submit"], button:has-text("Add"), button:has-text("Create"), button:has-text("Save"), button:has-text("Submit")').catch(() => null)
+          : null;
+        try {
+          if (submitBtn) { await submitBtn.click(); submitted = true; }
+          else { await input.press('Enter'); submitted = true; }
+        } catch (e) { submitted = false; }
+
+        if (!submitted) {
+          results.persistence = { attempted: true, proven: false, reason: 'submit_failed' };
+        } else {
+          // Wait for the write to settle, then read back in a FRESH context with
+          // NO client storage. BUG 3: a plain page.reload() keeps localStorage /
+          // sessionStorage / IndexedDB, so a no-backend SPA that only persists to
+          // localStorage would falsely prove persistence. A brand-new context
+          // (fresh cookies + empty storage) only sees the sentinel if it survived
+          // in a real DB/API the server read back -- true beyond-client persistence.
+          await page.waitForLoadState('networkidle', { timeout: pageTimeout }).catch(() => {});
+          await page.waitForTimeout(reloadWaitMs);
+          const readCtx = await browser.newContext();
+          const readPage = await readCtx.newPage();
+          await readPage.goto(url, { waitUntil: 'networkidle', timeout: pageTimeout }).catch(() => {});
+          const body = await readPage.content();
+          await readCtx.close().catch(() => {});
+          if (body.indexOf(sentinel) !== -1) {
+            results.persistence = { attempted: true, proven: true, reason: 'sentinel_survived_fresh_context', sentinel };
+          } else {
+            results.persistence = { attempted: true, proven: false, reason: 'sentinel_gone_after_reload', sentinel };
+          }
+        }
+      }
+    } catch (e) {
+      // A create path was found but the drive errored -> proven:false (BLOCK).
+      // "submit errored" is the #1 churn bug and must not green-wash.
+      results.persistence = { attempted: true, proven: false, reason: 'drive_error: ' + String(e.message).slice(0, 120) };
+    }
+
+    // ---- AUTH (negative path) ----
+    try {
+      // Detect an auth signal: a configured protected path, or a login/signin
+      // route/link in the app.
+      let path = protectedPath;
+      let authSignal = !!protectedPath;
+      if (!authSignal) {
+        // Re-load the app root (persistence may have navigated it) and look.
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: pageTimeout }).catch(() => {});
+        const hasLogin = await page.$('a[href*="login"], a[href*="signin"], a:has-text("Log in"), a:has-text("Login"), a:has-text("Sign in"), form[action*="login"], input[type="password"]').catch(() => null);
+        authSignal = !!hasLogin;
+        // Guess a protected path from common conventions.
+        if (authSignal) {
+          for (const cand of ['/dashboard', '/account', '/admin', '/app', '/settings', '/profile']) {
+            path = cand; break;
+          }
+        }
+      }
+
+      if (!authSignal) {
+        results.auth = { attempted: false, proven: false, reason: 'no_auth' };
+      } else if (!path) {
+        results.auth = { attempted: false, proven: false, reason: 'auth_detected_untestable' };
+      } else {
+        results.auth.attempted = true;
+        // Logged-out request in a FRESH context (no cookies/storage).
+        const ctx = await browser.newContext();
+        const p2 = await ctx.newPage();
+        const target = new URL(path, url).toString();
+        let observed = 'none';
+        const resp = await p2.goto(target, { waitUntil: 'domcontentloaded', timeout: pageTimeout }).catch(() => null);
+        const status = resp ? resp.status() : 0;
+        const finalUrl = p2.url();
+        const redirectedToLogin = /login|signin|sign-in|auth/i.test(finalUrl) && finalUrl !== target;
+        const hasPasswordField = await p2.$('input[type="password"]').catch(() => null);
+        if (status === 401 || status === 403) {
+          observed = String(status);
+          results.auth = { attempted: true, proven: true, reason: 'rejected_' + status, path, observed_status: status };
+        } else if (redirectedToLogin) {
+          observed = 'redirect';
+          results.auth = { attempted: true, proven: true, reason: 'redirect_to_login', path, observed_status: 'redirect' };
+        } else if (status >= 200 && status < 300 && !hasPasswordField) {
+          // Protected route served content logged-out -> auth NOT enforced.
+          results.auth = { attempted: true, proven: false, reason: 'served_200_logged_out', path, observed_status: status };
+        } else if (hasPasswordField) {
+          // A login screen merely rendered at the protected path. That is not
+          // enforcement of the protected resource; but it is also not a served
+          // resource. Treat as untestable (a protected page that IS the login).
+          results.auth = { attempted: true, proven: false, reason: 'login_screen_only', path, observed_status: status };
+        } else {
+          results.auth = { attempted: true, proven: false, reason: 'auth_detected_untestable', path, observed_status: status };
+        }
+        await ctx.close().catch(() => {});
+      }
+    } catch (e) {
+      results.auth = { attempted: true, proven: false, reason: 'auth_detected_timeout' };
+    }
+
+  } catch (err) {
+    // Two inconclusive-passthrough cases land here, both non-blocking:
+    //   - the playwright driver could not be required/launched -> driver_unavailable
+    //   - the app was unreachable at all -> not_serveable
+    const msg = String(err && err.message || err);
+    const driverGone = /Cannot find module 'playwright'|Cannot find package 'playwright'|playwright.*not.*found|browserType.launch/i.test(msg);
+    const reason = driverGone ? 'driver_unavailable' : 'not_serveable';
+    results.persistence = { attempted: false, proven: false, reason };
+    results.auth = { attempted: false, proven: false, reason };
+    results.error = msg.slice(0, 160);
+  } finally {
+    if (browser) await browser.close();
+    write();
+  }
+
+  process.exit(0);
+})();
+PROOF_SCRIPT
+
+    # Run with outer timeout (never block iteration). A timeout leaves NO proof
+    # (we deleted the prior file above and the script only writes in its finally);
+    # a hung app therefore reads as inconclusive, never as a stale green.
+    timeout "${PLAYWRIGHT_TIMEOUT_SEC}" \
+        env LOKI_PROOF_ITER="$_proof_iter" LOKI_PROOF_HEAD="$_proof_head" \
+        node "$script_file" \
+        "$url" "$results_file" "$PLAYWRIGHT_TIMEOUT" 2>/dev/null
+    local exit_code=$?
+
+    rm -f "$script_file"
+
+    if [ "$exit_code" -eq 124 ]; then
+        log_warn "Playwright functional proof timed out after ${PLAYWRIGHT_TIMEOUT_SEC}s (proof left inconclusive)"
+    elif [ -f "$results_file" ]; then
+        local psummary
+        psummary=$(_PF="$results_file" python3 -c "
+import json, os
+try:
+    d = json.load(open(os.environ['_PF']))
+    p = d.get('persistence', {}); a = d.get('auth', {})
+    print('persistence attempted=%s proven=%s (%s) | auth attempted=%s proven=%s (%s)' % (
+        p.get('attempted'), p.get('proven'), p.get('reason'),
+        a.get('attempted'), a.get('proven'), a.get('reason')))
+except Exception:
+    print('')
+" 2>/dev/null || true)
+        [ -n "$psummary" ] && log_info "Playwright functional proof: $psummary"
+    fi
+
+    return 0
+}
+
+#===============================================================================
 # Screenshot Rotation
 #===============================================================================
 

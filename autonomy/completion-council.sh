@@ -2091,6 +2091,13 @@ INCONCLUSIVE_EOF
         local _diff_ok _tests_ok
         if [ "$diff_fails" = "true" ]; then _diff_ok="false"; else _diff_ok="true"; fi
         if [ "$test_fails" = "true" ]; then _tests_ok="false"; else _tests_ok="true"; fi
+        # Proof-of-Function axes (nomock/persistence/auth) are declared later in
+        # the gate; default to "true"/"" when this helper runs before they are
+        # set (it never does in practice, but keep the write robust).
+        local _nomock_ok _persist_ok _auth_ok
+        if [ "${nomock_fails:-false}" = "true" ]; then _nomock_ok="false"; else _nomock_ok="true"; fi
+        if [ "${persist_fails:-false}" = "true" ]; then _persist_ok="false"; else _persist_ok="true"; fi
+        if [ "${auth_fails:-false}" = "true" ]; then _auth_ok="false"; else _auth_ok="true"; fi
         cat > "$_det_tmp" << DETAILS_EOF
 {
     "recorded_at": "$_det_ts",
@@ -2109,6 +2116,21 @@ INCONCLUSIVE_EOF
         "pass": $test_pass,
         "inconclusive": $test_inconclusive,
         "inconclusive_reason": "$test_inconclusive_reason"
+    },
+    "nomock": {
+        "ok": $_nomock_ok,
+        "inconclusive": ${nomock_inconclusive:-false},
+        "reason": "${nomock_inconclusive_reason:-}"
+    },
+    "persistence": {
+        "ok": $_persist_ok,
+        "inconclusive": ${persist_inconclusive:-false},
+        "reason": "${persist_inconclusive_reason:-}"
+    },
+    "auth": {
+        "ok": $_auth_ok,
+        "inconclusive": ${auth_inconclusive:-false},
+        "reason": "${auth_inconclusive_reason:-}"
     }
 }
 DETAILS_EOF
@@ -2190,6 +2212,325 @@ PYEOF
         boot_inconclusive_reason="no_python3"
     fi
 
+    # === Proof-of-Function (PoF) axes: NO-MOCK, PERSISTENCE, AUTH ==============
+    # Three functionality-proving axes. Each is proven by an OBSERVED artifact
+    # (static source scan for no-mock; a real browser drive + DB/API read-back
+    # for persistence + auth), never a self-report. Each fails CLOSED on POSITIVE
+    # disproof and passes through ONLY when genuinely inconclusive (non-web build,
+    # browser unavailable, no create path, no auth signal). Web-app-only: the
+    # dynamic axes reuse the SAME serveable gate as boot, so a CLI/API/library
+    # build is NEVER blocked. Master knob LOKI_PROOF_GATE=0 disables all three;
+    # per-axis LOKI_PROOF_NOMOCK / LOKI_PROOF_PERSIST / LOKI_PROOF_AUTH=0.
+    local _proof_gate="${LOKI_PROOF_GATE:-1}"
+    local nomock_fails="false" nomock_inconclusive="false" nomock_inconclusive_reason=""
+    local persist_fails="false" persist_inconclusive="false" persist_inconclusive_reason=""
+    local auth_fails="false" auth_inconclusive="false" auth_inconclusive_reason=""
+    local _proof_file=".loki/verification/functional-proof.json"
+    local _nomock_scan=".loki/verification/nomock-scan.json"
+
+    # --- Evidence check (e): NO-MOCK (static, cheap, runs first) ---
+    # A list/table/dashboard whose backing data traces to an inline mock array /
+    # faker / placeholder literal instead of a real fetch/query is a fake app.
+    # This is the ONLY axis that can run without the app up. Consumer of
+    # verify.sh's nomock-scan.json; if that file is absent (verify did not run),
+    # re-run the identical detector inline over the changed-files union.
+    # BUG 2 / concern 4: a receipt is trustworthy only if it was scanned against
+    # the CURRENT diff base. A receipt stamped with a different base_sha is stale
+    # (a scan of a different diff); prefer a fresh current-diff scan over it. An
+    # un-stamped receipt (older format, no base_sha) is trusted for back-compat.
+    local _nomock_fresh="false"
+    if [ -f "$_nomock_scan" ] && command -v python3 >/dev/null 2>&1; then
+        if _NM="$_nomock_scan" _BASE="$base_sha" python3 -c "
+import json, os, sys
+try:
+    d = json.load(open(os.environ['_NM']))
+except Exception:
+    sys.exit(1)
+stamp = d.get('base_sha', '')
+cur = os.environ.get('_BASE', '')
+# fresh if no stamp (back-compat) or stamp matches the current diff base.
+sys.exit(0 if (not stamp or stamp == cur) else 1)
+" 2>/dev/null; then
+            _nomock_fresh="true"
+        fi
+    fi
+
+    if [ "$_proof_gate" = "0" ] || [ "${LOKI_PROOF_NOMOCK:-1}" = "0" ]; then
+        nomock_inconclusive="true"
+        nomock_inconclusive_reason="nomock_gate_disabled"
+    elif [ -f "$_nomock_scan" ] && [ "$_nomock_fresh" = "true" ] && command -v python3 >/dev/null 2>&1; then
+        # Read the verify-produced receipt: hit==true -> positive mock evidence.
+        local _nm_status
+        _nm_status=$(_NM="$_nomock_scan" python3 <<'PYEOF' 2>/dev/null || echo "INCONCLUSIVE:parse_error"
+import json, os
+try:
+    d = json.load(open(os.environ['_NM']))
+except Exception:
+    print("INCONCLUSIVE:parse_error"); raise SystemExit
+if d.get("hit") is True:
+    print("FAIL")
+elif d.get("scanned", 0) == 0:
+    print("INCONCLUSIVE:no_ui_files")
+else:
+    print("PASS")
+PYEOF
+)
+        case "$_nm_status" in
+            FAIL) nomock_fails="true" ;;
+            PASS) : ;;
+            INCONCLUSIVE:*) nomock_inconclusive="true"; nomock_inconclusive_reason="${_nm_status#INCONCLUSIVE:}" ;;
+            *) nomock_inconclusive="true"; nomock_inconclusive_reason="unknown" ;;
+        esac
+    elif command -v python3 >/dev/null 2>&1; then
+        # No verify receipt -> re-run the detector inline over the changed union.
+        local _nm_files
+        _nm_files=$(
+            {
+                [ -n "$base_sha" ] && git diff --name-only "$base_sha" 2>/dev/null
+                git diff --name-only 2>/dev/null
+                git diff --name-only --cached 2>/dev/null
+                git ls-files --others --exclude-standard 2>/dev/null
+            } | grep -v '^$' | grep -vE '^\.loki/' | sort -u
+        )
+        local _nm_status
+        _nm_status=$(_NM_FILES="$_nm_files" python3 <<'PYEOF' 2>/dev/null || echo "INCONCLUSIVE:detector_error"
+import os, re, sys
+files = [f for f in os.environ.get('_NM_FILES','').splitlines() if f.strip()]
+
+# Scope: shipped UI/data-render modules. Exclude test/story/mock/fixture paths.
+UI_EXT = re.compile(r'\.(jsx?|tsx?|vue|svelte)$')
+EXCLUDE = re.compile(
+    r'(^|/)(node_modules|\.loki|__mocks__|__tests__|__fixtures__|fixtures?|mocks?|stories|storybook)(/|$)'
+    r'|\.(test|spec|stories|story|mock|fixture)\.'
+    r'|\.d\.ts$'
+    r'|(^|/)msw|(^|/)setup', re.IGNORECASE)
+
+# A real data source in the same module.
+REAL_SRC = re.compile(
+    r'\b(fetch|axios|useQuery|useSWR|useSWRInfinite|useLoaderData|createResource'
+    r'|prisma|supabase|firebase|firestore|db\.|knex|mongoose|sequelize|drizzle'
+    r'|graphql|useMutation|getServerSideProps|getStaticProps|createClient'
+    r'|XMLHttpRequest|\.query\(|\.get\(|\.post\(|api\.)', re.IGNORECASE)
+
+# Mock/placeholder data sources.
+FAKER = re.compile(r'\bfaker\s*\.', re.IGNORECASE)
+PLACEHOLDER = re.compile(r'(lorem ipsum|john doe|jane doe|placeholder|dummy data|example@example)', re.IGNORECASE)
+# An inline array literal of objects assigned to a const/let/var (mock dataset).
+INLINE_ARR = re.compile(r'(const|let|var)\s+\w+\s*(:[^=]+)?=\s*\[\s*\{', re.MULTILINE)
+# A collection actually feeding a render: .map(...) near a list/table/grid tag.
+RENDERS_LIST = re.compile(r'\.map\s*\(', re.IGNORECASE)
+LIST_TAG = re.compile(r'<(table|ul|ol|tbody|Table|List|Grid|DataGrid|thead)\b|role=["\']list["\']|className=["\'][^"\']*(list|table|grid|card)', re.IGNORECASE)
+
+scanned = 0
+hit = None  # (file, snippet)
+for f in files:
+    if not UI_EXT.search(f) or EXCLUDE.search(f):
+        continue
+    if not os.path.isfile(f):
+        continue
+    try:
+        src = open(f, encoding='utf-8', errors='replace').read()
+    except Exception:
+        continue
+    scanned += 1
+    # Must actually render a collection into a list/table/grid.
+    if not (RENDERS_LIST.search(src) and LIST_TAG.search(src)):
+        continue
+    has_real = bool(REAL_SRC.search(src))
+    has_mock = bool(FAKER.search(src) or PLACEHOLDER.search(src) or INLINE_ARR.search(src))
+    # High-confidence: renders a collection, HAS a mock/inline source, and has
+    # NO real data source in the same module. Absence of a fetch/query in a
+    # list-rendering module is the disproof (fail-closed), exactly as a red
+    # test runner is treated by the tests axis.
+    if has_mock and not has_real:
+        m = FAKER.search(src) or PLACEHOLDER.search(src) or INLINE_ARR.search(src)
+        snippet = (m.group(0)[:60] if m else 'inline mock data')
+        hit = (f, snippet)
+        break
+
+if hit:
+    print("FAIL")
+    sys.stderr.write(hit[0] + " :: " + hit[1] + "\n")
+elif scanned == 0:
+    print("INCONCLUSIVE:no_ui_files")
+else:
+    print("PASS")
+PYEOF
+)
+        case "$_nm_status" in
+            FAIL) nomock_fails="true" ;;
+            PASS) : ;;
+            INCONCLUSIVE:*) nomock_inconclusive="true"; nomock_inconclusive_reason="${_nm_status#INCONCLUSIVE:}" ;;
+            *) nomock_inconclusive="true"; nomock_inconclusive_reason="unknown" ;;
+        esac
+    else
+        nomock_inconclusive="true"
+        nomock_inconclusive_reason="no_python3"
+    fi
+
+    # --- Evidence checks (f) PERSISTENCE + (g) AUTH (dynamic, driven) ---
+    # Both are read from .loki/verification/functional-proof.json, produced by
+    # playwright_prove_functional (run.sh interval-gated, serveable-only). The
+    # gate reads ONLY this artifact -- never a screenshot, never an LLM opinion.
+    # Tri-state per property: attempted / proven / reason. Fail-closed:
+    #   PERSISTENCE: proven==true -> PASS. attempted && !proven -> BLOCK (a
+    #     create path was exercised and the record did NOT survive reload; a
+    #     submit that errors is the #1 churn bug and must not green-wash).
+    #     attempted==false with reason no_create_path/not_serveable/driver_
+    #     unavailable -> logged pass-through. Missing/unparseable/STALE (a stamp
+    #     whose iteration != the current one) file -> treated as NOT PRESENT ->
+    #     inconclusive pass-through, NEVER a block. Only a FRESH attempted &&
+    #     !proven disproof blocks: absence and staleness must never false-block a
+    #     legitimate build (the fail-closed rule is disproven-blocks, not
+    #     absent-blocks).
+    #   AUTH: proven==true (observed 401/403/redirect) -> PASS. attempted &&
+    #     !proven (protected route served 200 logged-out, or only a login screen
+    #     rendered) -> BLOCK. no_auth/not_serveable -> pass-through. Auth
+    #     detected but unprovable under LOKI_PROOF_AUTH_STRICT=1 -> BLOCK
+    #     (security property never assumed).
+    # Web-app-only: only evaluate the dynamic axes when the app is SERVEABLE
+    # (same signal the boot axis uses). A non-web build never launches a browser,
+    # writes no proof file, and passes through by construction.
+    local _proof_persist_disabled="false" _proof_auth_disabled="false"
+    [ "$_proof_gate" = "0" ] || [ "${LOKI_PROOF_PERSIST:-1}" = "0" ] && _proof_persist_disabled="true"
+    [ "$_proof_gate" = "0" ] || [ "${LOKI_PROOF_AUTH:-1}" = "0" ] && _proof_auth_disabled="true"
+
+    # Serveable? Reuse the boot axis's own classification: boot_fails or an
+    # affirmative boot pass both imply a serveable app was launched. Only a
+    # not_serveable / no_app_runner boot-inconclusive means non-web.
+    local _proof_serveable="false"
+    if [ "$boot_fails" = "true" ]; then
+        _proof_serveable="true"
+    elif [ "$boot_inconclusive" != "true" ]; then
+        _proof_serveable="true"
+    fi
+
+    if [ "$_proof_persist_disabled" = "true" ]; then
+        persist_inconclusive="true"; persist_inconclusive_reason="persist_gate_disabled"
+    elif [ "$_proof_serveable" != "true" ]; then
+        persist_inconclusive="true"; persist_inconclusive_reason="not_serveable"
+    elif command -v python3 >/dev/null 2>&1; then
+        local _p_status
+        _p_status=$(_PF="$_proof_file" _ITER="${ITERATION_COUNT:-0}" python3 <<'PYEOF' 2>/dev/null || echo "MISSING"
+import json, os
+p = os.environ['_PF']
+if not os.path.isfile(p):
+    print("MISSING"); raise SystemExit
+try:
+    d = json.load(open(p))
+except Exception:
+    print("UNPARSEABLE"); raise SystemExit
+# BUG 1b: freshness. A proof stamped for a different iteration is a STALE artifact
+# (a timeout/hang left a prior iteration's file, or the producer did not run this
+# iteration). Treat it as NOT PRESENT -- never let a stale proven:true pass.
+stamp = d.get("stamp") or {}
+try:
+    cur = int(os.environ.get("_ITER", "0"))
+except Exception:
+    cur = 0
+if "iteration" in stamp:
+    try:
+        if int(stamp.get("iteration")) != cur:
+            print("MISSING"); raise SystemExit
+    except (TypeError, ValueError):
+        print("MISSING"); raise SystemExit
+per = d.get("persistence") or {}
+attempted = per.get("attempted")
+proven = per.get("proven")
+reason = str(per.get("reason", "") or "")
+if attempted is True and proven is True:
+    print("PASS")
+elif attempted is False and reason in ("no_create_path", "not_serveable", "driver_unavailable"):
+    print("INCONCLUSIVE:" + reason)
+elif attempted is True and proven is False:
+    # A create path WAS exercised and the record did not survive -> disproven.
+    print("FAIL")
+else:
+    # attempted True/proven unknown, or malformed record on a serveable app.
+    # We cannot prove persistence, but "not proven" is not "disproven": pass
+    # through inconclusive rather than block a legitimate build (BUG 2).
+    print("INCONCLUSIVE:proof_indeterminate")
+PYEOF
+        )
+        case "$_p_status" in
+            PASS) : ;;
+            INCONCLUSIVE:*) persist_inconclusive="true"; persist_inconclusive_reason="${_p_status#INCONCLUSIVE:}" ;;
+            # BUG 2: absence / staleness / unparseable is NOT a disproof. A proof
+            # that was never freshly attempted this iteration (interval not fired,
+            # driver unavailable, timeout left nothing) is INCONCLUSIVE pass-through,
+            # never a hard block. ONLY a FRESHLY-attempted proven:false blocks.
+            MISSING) persist_inconclusive="true"; persist_inconclusive_reason="proof_not_attempted" ;;
+            UNPARSEABLE) persist_inconclusive="true"; persist_inconclusive_reason="proof_file_unparseable" ;;
+            FAIL) persist_fails="true" ;;
+            *) persist_inconclusive="true"; persist_inconclusive_reason="proof_indeterminate" ;;
+        esac
+    else
+        persist_inconclusive="true"; persist_inconclusive_reason="no_python3"
+    fi
+
+    if [ "$_proof_auth_disabled" = "true" ]; then
+        auth_inconclusive="true"; auth_inconclusive_reason="auth_gate_disabled"
+    elif [ "$_proof_serveable" != "true" ]; then
+        auth_inconclusive="true"; auth_inconclusive_reason="not_serveable"
+    elif command -v python3 >/dev/null 2>&1; then
+        local _a_status
+        _a_status=$(_PF="$_proof_file" _STRICT="${LOKI_PROOF_AUTH_STRICT:-1}" _ITER="${ITERATION_COUNT:-0}" python3 <<'PYEOF' 2>/dev/null || echo "MISSING"
+import json, os
+p = os.environ['_PF']
+strict = os.environ.get('_STRICT', '1') != '0'
+if not os.path.isfile(p):
+    # No proof file on a serveable app: cannot prove auth. If auth was never
+    # detected we would expect no_auth; a missing file is ambiguous. Under
+    # STRICT this is not a pass, but we cannot know auth was detected, so treat
+    # missing as inconclusive (the boot/persist axes already catch a dead app).
+    print("INCONCLUSIVE:proof_file_missing"); raise SystemExit
+try:
+    d = json.load(open(p))
+except Exception:
+    print("INCONCLUSIVE:proof_file_unparseable"); raise SystemExit
+# BUG 1b: freshness. A proof stamped for a different iteration is stale -> treat
+# as not present (inconclusive), never let a stale auth proven:true pass.
+stamp = d.get("stamp") or {}
+try:
+    cur = int(os.environ.get("_ITER", "0"))
+except Exception:
+    cur = 0
+if "iteration" in stamp:
+    try:
+        if int(stamp.get("iteration")) != cur:
+            print("INCONCLUSIVE:proof_stale"); raise SystemExit
+    except (TypeError, ValueError):
+        print("INCONCLUSIVE:proof_stale"); raise SystemExit
+a = d.get("auth") or {}
+attempted = a.get("attempted")
+proven = a.get("proven")
+reason = str(a.get("reason", "") or "")
+if attempted is True and proven is True:
+    print("PASS")
+elif attempted is True and proven is False:
+    # observed a protected route served logged-out, or only a login screen
+    # rendered -> auth NOT enforced -> BLOCK.
+    print("FAIL")
+elif attempted is False and reason in ("no_auth", "not_serveable", "driver_unavailable"):
+    print("INCONCLUSIVE:" + reason)
+elif reason in ("auth_detected_untestable", "auth_detected_timeout"):
+    # auth signal detected but enforcement could not be proven. Security
+    # property: STRICT fails closed to BLOCK; otherwise inconclusive-but-logged.
+    print("FAIL" if strict else "INCONCLUSIVE:" + reason)
+else:
+    print("INCONCLUSIVE:" + (reason or "unknown"))
+PYEOF
+        )
+        case "$_a_status" in
+            PASS) : ;;
+            INCONCLUSIVE:*) auth_inconclusive="true"; auth_inconclusive_reason="${_a_status#INCONCLUSIVE:}" ;;
+            FAIL) auth_fails="true" ;;
+            *) auth_inconclusive="true"; auth_inconclusive_reason="unknown" ;;
+        esac
+    else
+        auth_inconclusive="true"; auth_inconclusive_reason="no_python3"
+    fi
+
     # --- Evidence check (d): SECRET LEAK -- did the build ship a credential? ---
     # RUN-25 iter 21 (Wave D #2): the secret matcher ran ONLY on the auto-commit
     # path, so a completion via the promise / dirty-tree route could ship a leaked
@@ -2223,8 +2564,8 @@ PYEOF
         done <<< "$_sec_files"
     fi
 
-    # --- Block decision: block iff DIFF FAILS or TEST FAILS or BOOT FAILS or SECRET FAILS ---
-    if [ "$diff_fails" != "true" ] && [ "$test_fails" != "true" ] && [ "$boot_fails" != "true" ] && [ "$secret_fails" != "true" ]; then
+    # --- Block decision: block iff any axis FAILS (diff/test/boot/secret/nomock/persist/auth) ---
+    if [ "$diff_fails" != "true" ] && [ "$test_fails" != "true" ] && [ "$boot_fails" != "true" ] && [ "$secret_fails" != "true" ] && [ "$nomock_fails" != "true" ] && [ "$persist_fails" != "true" ] && [ "$auth_fails" != "true" ]; then
         # Gate passes: remove any stale block report.
         if [ -f "$COUNCIL_STATE_DIR/evidence-block.json" ]; then
             rm -f "$COUNCIL_STATE_DIR/evidence-block.json"
@@ -2243,6 +2584,17 @@ PYEOF
         if [ "$boot_inconclusive" = "true" ]; then
             log_warn "[Council] Evidence gate: app-boot not confirmed (${boot_inconclusive_reason}). Pass-through; set LOKI_EVIDENCE_BOOT_GATE=0 to silence, or run the app so its health probe records a verdict."
         fi
+        # Proof-of-Function honesty: a pass-through that could not PROVE a
+        # functionality property says so out loud (never imply it was proven).
+        if [ "$nomock_inconclusive" = "true" ] && [ "$nomock_inconclusive_reason" != "nomock_gate_disabled" ]; then
+            log_warn "[Council] Evidence gate: no-mock not confirmed (${nomock_inconclusive_reason}). Pass-through; set LOKI_PROOF_NOMOCK=0 to silence."
+        fi
+        if [ "$persist_inconclusive" = "true" ] && [ "$persist_inconclusive_reason" != "persist_gate_disabled" ]; then
+            log_warn "[Council] Evidence gate: persistence not proven (${persist_inconclusive_reason}). Pass-through; set LOKI_PROOF_PERSIST=0 to silence, or expose a create form the driver can exercise (LOKI_PROOF_CREATE_SELECTOR)."
+        fi
+        if [ "$auth_inconclusive" = "true" ] && [ "$auth_inconclusive_reason" != "auth_gate_disabled" ]; then
+            log_warn "[Council] Evidence gate: auth enforcement not proven (${auth_inconclusive_reason}). Pass-through; set LOKI_PROOF_AUTH=0 to silence, or set LOKI_PROOF_PROTECTED_PATH so the driver can test a logged-out request."
+        fi
         _write_evidence_details "pass"
         return 0
     fi
@@ -2259,6 +2611,12 @@ PYEOF
         reason="app_boot_failed"
     elif [ "$secret_fails" = "true" ]; then
         reason="secret_leak_in_changed_files"
+    elif [ "$nomock_fails" = "true" ]; then
+        reason="mock_backed_data"
+    elif [ "$persist_fails" = "true" ]; then
+        reason="persistence_unproven"
+    elif [ "$auth_fails" = "true" ]; then
+        reason="auth_not_enforced"
     fi
 
     local failures=""
@@ -2295,6 +2653,42 @@ PYEOF
         fi
         log_warn "[Council] Evidence gate BLOCKED: a secret/credential was detected in the changed files"
     fi
+    if [ "$nomock_fails" = "true" ]; then
+        # PoF #1: a list/table/dashboard renders from an inline mock array /
+        # faker / placeholder literal with NO real fetch/query in the module -- a
+        # fake app that only looks done. Opt out: LOKI_PROOF_NOMOCK=0.
+        if [ -n "$failures" ]; then
+            failures="${failures}|a data render is backed by mock/placeholder data, not a real query/fetch (set LOKI_PROOF_NOMOCK=0 to opt out)"
+        else
+            failures="a data render is backed by mock/placeholder data, not a real query/fetch (set LOKI_PROOF_NOMOCK=0 to opt out)"
+        fi
+        log_warn "[Council] Evidence gate BLOCKED: a data render is backed by mock/placeholder data (no real query/fetch). Opt out: LOKI_PROOF_NOMOCK=0"
+    fi
+    if [ "$persist_fails" = "true" ]; then
+        # PoF #2: a create path was FRESHLY driven this iteration and the record
+        # did NOT survive a fresh-context read-back (or the submit errored).
+        # "Submit does nothing" is the #1 churn bug. Absence/staleness of a proof
+        # is inconclusive pass-through, not this block. Opt out: LOKI_PROOF_PERSIST=0.
+        if [ -n "$failures" ]; then
+            failures="${failures}|a create/submit was exercised but the record did not persist across reload (set LOKI_PROOF_PERSIST=0 to opt out)"
+        else
+            failures="a create/submit was exercised but the record did not persist across reload (set LOKI_PROOF_PERSIST=0 to opt out)"
+        fi
+        log_warn "[Council] Evidence gate BLOCKED: persistence not proven -- a submit did not survive reload (${persist_inconclusive_reason:-not_persisted}). Opt out: LOKI_PROOF_PERSIST=0"
+    fi
+    if [ "$auth_fails" = "true" ]; then
+        # PoF #3: a protected route served logged-out (200), only a login screen
+        # rendered, or auth was detected but enforcement could not be proven
+        # under STRICT. A rendered login screen is not "auth done". Opt out:
+        # LOKI_PROOF_AUTH=0 (or LOKI_PROOF_AUTH_STRICT=0 to relax the detected-but-
+        # untestable case, or LOKI_PROOF_PROTECTED_PATH to point the driver).
+        if [ -n "$failures" ]; then
+            failures="${failures}|auth enforcement was not proven -- a protected route was reachable logged-out or could not be tested (set LOKI_PROOF_AUTH=0 to opt out)"
+        else
+            failures="auth enforcement was not proven -- a protected route was reachable logged-out or could not be tested (set LOKI_PROOF_AUTH=0 to opt out)"
+        fi
+        log_warn "[Council] Evidence gate BLOCKED: auth enforcement not proven (${auth_inconclusive_reason:-not_enforced}). Opt out: LOKI_PROOF_AUTH=0 (or LOKI_PROOF_PROTECTED_PATH / LOKI_PROOF_AUTH_STRICT=0)"
+    fi
 
     # Rail 3 (one-step self-rescue): the terminal user (no dashboard open) must
     # be told, right at the block site, how to opt out of the gate. A false
@@ -2316,13 +2710,20 @@ items = [s for s in os.environ['_FAILURES'].split('|') if s]
 print(json.dumps(items[:5]))
 " 2>/dev/null || echo '[]')
     local boot_ok secret_ok boot_reason_json
+    local nomock_ok persist_ok auth_ok nomock_reason_json persist_reason_json auth_reason_json
     if [ "$diff_fails" = "true" ]; then diff_ok="false"; else diff_ok="true"; fi
     if [ "$test_fails" = "true" ]; then tests_ok="false"; else tests_ok="true"; fi
     if [ "$boot_fails" = "true" ]; then boot_ok="false"; else boot_ok="true"; fi
     if [ "$secret_fails" = "true" ]; then secret_ok="false"; else secret_ok="true"; fi
+    if [ "$nomock_fails" = "true" ]; then nomock_ok="false"; else nomock_ok="true"; fi
+    if [ "$persist_fails" = "true" ]; then persist_ok="false"; else persist_ok="true"; fi
+    if [ "$auth_fails" = "true" ]; then auth_ok="false"; else auth_ok="true"; fi
     # Record WHY boot was inconclusive (no_app_runner / not_serveable / etc.) so a
     # consumer of the block report can tell a genuine boot pass from a pass-through.
     boot_reason_json=$(_R="${boot_inconclusive_reason:-}" python3 -c "import json,os; print(json.dumps(os.environ['_R']))" 2>/dev/null || echo '""')
+    nomock_reason_json=$(_R="${nomock_inconclusive_reason:-}" python3 -c "import json,os; print(json.dumps(os.environ['_R']))" 2>/dev/null || echo '""')
+    persist_reason_json=$(_R="${persist_inconclusive_reason:-}" python3 -c "import json,os; print(json.dumps(os.environ['_R']))" 2>/dev/null || echo '""')
+    auth_reason_json=$(_R="${auth_inconclusive_reason:-}" python3 -c "import json,os; print(json.dumps(os.environ['_R']))" 2>/dev/null || echo '""')
     base_for_json="${base_sha:-}"
     cat > "$ev_tmp" << EVIDENCE_EOF
 {
@@ -2335,7 +2736,10 @@ print(json.dumps(items[:5]))
         "diff": {"ok": $diff_ok, "base_sha": "$base_for_json", "files_changed": $diff_files, "sources": "committed|unstaged|staged|untracked union"},
         "tests": {"ok": $tests_ok, "runner": "$test_runner", "pass": $test_pass},
         "boot": {"ok": $boot_ok, "inconclusive": $boot_inconclusive, "reason": $boot_reason_json},
-        "secret": {"ok": $secret_ok}
+        "secret": {"ok": $secret_ok},
+        "nomock": {"ok": $nomock_ok, "inconclusive": $nomock_inconclusive, "reason": $nomock_reason_json},
+        "persistence": {"ok": $persist_ok, "inconclusive": $persist_inconclusive, "reason": $persist_reason_json},
+        "auth": {"ok": $auth_ok, "inconclusive": $auth_inconclusive, "reason": $auth_reason_json}
     },
     "failures": $failures_json
 }
@@ -2347,10 +2751,18 @@ EVIDENCE_EOF
     # be the cross-run corpus for the block rate. Append an event here, where a
     # block is definitely happening. Additive, best-effort, stdout-silent.
     if type record_trust_event_bash &>/dev/null; then
+        # proof_axis attributes a Proof-of-Function block to its axis (nomock|
+        # persistence|auth) so the TS trust metrics can attribute it without a
+        # schema-breaking change; empty for the diff/tests/boot/secret axes.
+        local _proof_axis=""
+        if [ "$nomock_fails" = "true" ]; then _proof_axis="nomock"
+        elif [ "$persist_fails" = "true" ]; then _proof_axis="persistence"
+        elif [ "$auth_fails" = "true" ]; then _proof_axis="auth"; fi
         record_trust_event_bash "evidence_block" \
             "reason=$reason" \
             "diff_ok=$diff_ok" \
             "tests_ok=$tests_ok" \
+            "proof_axis=$_proof_axis" \
             >/dev/null 2>&1 || true
     fi
 

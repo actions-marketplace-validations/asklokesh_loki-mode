@@ -18274,6 +18274,16 @@ if __name__ == "__main__":
                 app_url=$(python3 -c "import json; d=json.load(open('.loki/app-runner/state.json')); print(d.get('url','') if d.get('status')=='running' else '')" 2>/dev/null || true)
                 if [ -n "$app_url" ]; then
                     playwright_verify_app "$app_url" || true
+                    # Proof-of-Function dynamic half: drive create->reload->assert
+                    # (persistence) and logged-out->protected (auth), writing
+                    # .loki/verification/functional-proof.json for the council
+                    # evidence gate. Serveable-only (we are inside the state.json
+                    # running check) and interval-gated (same should_run window).
+                    # || true so it never fails the iteration; the gate is what
+                    # turns proven:false into a BLOCK.
+                    if type playwright_prove_functional &>/dev/null; then
+                        playwright_prove_functional "$app_url" || true
+                    fi
                 fi
             fi
         fi
