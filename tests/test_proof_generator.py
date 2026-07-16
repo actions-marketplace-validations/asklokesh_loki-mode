@@ -1206,5 +1206,120 @@ class StaticAnalysisMarkerTests(unittest.TestCase):
         self.assertEqual(names.get("static_analysis"), "not_run")
 
 
+class FunctionalityAxesTests(unittest.TestCase):
+    """The functionality-proving axes (nomock/persistence/auth) recorded by the
+    completion-council evidence gate must flow into proof.json as HONEST facts:
+      - a fresh ok:true (not inconclusive) -> a PROVEN fact (a green receipt row).
+      - inconclusive (or absent) -> NOT proven: state not_checked, never green,
+        never a gap.
+      - a fresh ok:false -> an honest GAP: state gap AND listed in degraded[]
+        like every other gap, so it can never hide behind a green headline.
+    A fabricated proven axis is catastrophic; these lock the honesty rule."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="loki-proof-gen-func-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _gen(self, axes):
+        """Write evidence-gate-details.json with the given per-axis dicts and
+        return the generated proof. `axes` maps axis name -> {ok,inconclusive,
+        reason} (or is omitted to test an absent axis)."""
+        loki_dir = os.path.join(self.tmp, "app", ".loki")
+        out_dir = os.path.join(self.tmp, "out")
+        os.makedirs(os.path.join(loki_dir, "council"))
+        os.makedirs(out_dir)
+        details = {"verdict": "CONTINUE", "iteration": 3}
+        details.update(axes)
+        with open(os.path.join(loki_dir, "council",
+                               "evidence-gate-details.json"), "w") as f:
+            json.dump(details, f)
+        return _run_generator(loki_dir, out_dir)
+
+    def _fnc(self, d):
+        return d["facts"]["functionality"]
+
+    def _degraded_items(self, d):
+        return {e["item"] for e in d["honesty"]["degraded"]}
+
+    def test_proven_axis_becomes_proven_fact(self):
+        d = self._gen({
+            "nomock": {"ok": True, "inconclusive": False, "reason": ""},
+            "persistence": {"ok": True, "inconclusive": False, "reason": ""},
+            "auth": {"ok": True, "inconclusive": False, "reason": ""},
+        })
+        fnc = self._fnc(d)
+        for axis in ("nomock", "persistence", "auth"):
+            self.assertEqual(fnc[axis]["state"], "proven",
+                             "a fresh ok:true axis must be a proven fact")
+        # A proven axis is NOT a gap.
+        self.assertNotIn("functionality:persistence", self._degraded_items(d))
+
+    def test_inconclusive_axis_is_not_proven_and_not_a_gap(self):
+        d = self._gen({
+            "nomock": {"ok": True, "inconclusive": True,
+                       "reason": "nomock_gate_disabled"},
+            "persistence": {"ok": True, "inconclusive": True,
+                            "reason": "not_serveable"},
+            "auth": {"ok": True, "inconclusive": True,
+                     "reason": "auth_gate_disabled"},
+        })
+        fnc = self._fnc(d)
+        deg = self._degraded_items(d)
+        for axis in ("nomock", "persistence", "auth"):
+            self.assertEqual(fnc[axis]["state"], "not_checked",
+                             "inconclusive must NEVER upgrade to proven "
+                             "(even when ok:true is the pass-through default)")
+            self.assertNotIn("functionality:%s" % axis, deg,
+                             "an inconclusive (not-proven) axis is not a gap")
+
+    def test_disproven_axis_is_a_gap_in_degraded(self):
+        d = self._gen({
+            "nomock": {"ok": True, "inconclusive": False, "reason": ""},
+            "persistence": {"ok": False, "inconclusive": False,
+                            "reason": "not_persisted"},
+            "auth": {"ok": False, "inconclusive": False,
+                     "reason": "auth_not_enforced"},
+        })
+        fnc = self._fnc(d)
+        deg = {e["item"]: e for e in d["honesty"]["degraded"]}
+        self.assertEqual(fnc["persistence"]["state"], "gap")
+        self.assertEqual(fnc["auth"]["state"], "gap")
+        self.assertEqual(fnc["nomock"]["state"], "proven")
+        self.assertIn("functionality:persistence", deg,
+                      "a fresh ok:false axis must land in degraded[]")
+        self.assertIn("functionality:auth", deg)
+        self.assertEqual(deg["functionality:persistence"]["reason"],
+                         "not_persisted")
+        self.assertNotIn("functionality:nomock", deg)
+
+    def test_absent_file_and_absent_axis_are_not_checked(self):
+        # No evidence-gate-details.json at all.
+        loki_dir = os.path.join(self.tmp, "app2", ".loki")
+        out_dir = os.path.join(self.tmp, "out2")
+        os.makedirs(loki_dir)
+        os.makedirs(out_dir)
+        d = _run_generator(loki_dir, out_dir)
+        fnc = self._fnc(d)
+        for axis in ("nomock", "persistence", "auth"):
+            self.assertEqual(fnc[axis]["state"], "not_checked",
+                             "absent gate file -> nothing proven, nothing gap")
+        self.assertEqual(self._degraded_items(d) & {
+            "functionality:nomock", "functionality:persistence",
+            "functionality:auth"}, set())
+
+    def test_missing_ok_key_is_not_checked_not_proven(self):
+        # Honest floor: an axis dict with neither ok:true nor a clear ok:false
+        # (e.g. ok absent / null) must NOT be fabricated as proven.
+        d = self._gen({
+            "nomock": {"inconclusive": False, "reason": "malformed"},
+            "persistence": {"ok": None, "inconclusive": False},
+        })
+        fnc = self._fnc(d)
+        self.assertEqual(fnc["nomock"]["state"], "not_checked")
+        self.assertEqual(fnc["persistence"]["state"], "not_checked")
+
+
 if __name__ == "__main__":
     unittest.main()

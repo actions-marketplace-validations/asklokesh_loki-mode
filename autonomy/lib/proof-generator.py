@@ -584,6 +584,53 @@ def _collect_evidence_gate(loki_dir):
     return out
 
 
+def _classify_func_axis(raw):
+    """Map one recorded functional axis {ok, inconclusive, reason} to an HONEST
+    tri-state. This is the trust-critical rule -- get it wrong and the receipt
+    fabricates a green:
+
+      - PROVEN   iff ok is True AND NOT inconclusive (a fresh positive proof:
+                 the record survived / the 401 was observed / the scan was clean).
+      - GAP      iff ok is False AND NOT inconclusive (freshly disproven).
+      - NOT_CHECKED otherwise (inconclusive, or absent). Never a green, never a
+                 gap -- it was not proven and it was not disproven.
+
+    inconclusive DOMINATES ok: an axis flagged inconclusive is never proven even
+    if ok happens to be true (the gate writes ok:true as its non-blocking default
+    when it could not run, so ok alone is not evidence)."""
+    if not isinstance(raw, dict):
+        return "not_checked", ""
+    reason = str(raw.get("reason") or "")
+    if raw.get("inconclusive") is True:
+        return "not_checked", reason
+    if raw.get("ok") is True:
+        return "proven", reason
+    if raw.get("ok") is False:
+        return "gap", reason
+    return "not_checked", reason
+
+
+def _collect_functionality(loki_dir):
+    """Read the nomock/persistence/auth axes from evidence-gate-details.json and
+    surface each as an HONEST proof fact. Deterministic + re-derivable: the values
+    come straight from the recorded axes, no LLM opinion.
+
+    Shape (per axis): {state: proven|gap|not_checked, reason}. Only `proven` is a
+    green receipt row; `gap` is an honest disproven row (lands in degraded[]);
+    `not_checked` is omitted from the receipt's green rows entirely. Absent file
+    or absent axis -> not_checked (the gate did not record it -> nothing proven)."""
+    raw = _read_json(
+        os.path.join(loki_dir, "council", "evidence-gate-details.json"),
+        default=None,
+    )
+    axes = raw if isinstance(raw, dict) else {}
+    out = {}
+    for axis in ("nomock", "persistence", "auth"):
+        state, reason = _classify_func_axis(axes.get(axis))
+        out[axis] = {"state": state, "reason": reason}
+    return out
+
+
 def _diff_sha256(files_changed):
     """sha256 of the canonical diff stat (count/insertions/deletions/files).
 
@@ -837,6 +884,7 @@ def _build_proof(args, loki_dir, target_dir, repo_root):
     functional = _collect_functional(loki_dir)  # FV-2 record-half: descriptive only
     healthcheck = _collect_healthcheck(loki_dir)  # Evidence Receipt record-half
     evidence_gate = _collect_evidence_gate(loki_dir)
+    functionality = _collect_functionality(loki_dir)  # func axes as HONEST facts
 
     deployed_url = os.environ.get("LOKI_DEPLOYED_URL") or None
 
@@ -878,6 +926,14 @@ def _build_proof(args, loki_dir, target_dir, repo_root):
         # _compute_degraded, so it does not (yet) change the verdict. Wiring it into
         # the green headline is the founder-gated trust-semantics decision.
         "functional": functional,
+        # Functionality-proving axes (nomock / persistence / auth), surfaced as
+        # HONEST facts straight from the recorded evidence-gate axes. Each is
+        # {state: proven|gap|not_checked, reason}. ONLY `proven` (a fresh ok:true)
+        # is a green receipt row; `not_checked` (inconclusive/absent) is never a
+        # green and never a gap; `gap` (a fresh ok:false) is a disproven row and
+        # ALSO lands in degraded[] (below), so it forces VERIFIED WITH GAPS and can
+        # never hide behind a green headline. Deterministic + re-derivable.
+        "functionality": functionality,
         # Evidence Receipt (record half): did the built app come up + respond?
         # Descriptive; NOT read by _compute_headline (gating is founder-gated).
         "healthcheck": healthcheck,
@@ -1018,6 +1074,19 @@ def _compute_degraded(facts):
     if not (git.get("diff") or {}).get("count"):
         out.append({"item": "git.diff", "status": "not_run",
                     "reason": "no file changes detected"})
+    # Functionality axes: ONLY a freshly-disproven axis (state == gap, i.e. the
+    # gate ran and the axis FAILED -- a record did not survive, auth was NOT
+    # enforced, the diff shipped mock data) is a gap in the proof of done. A
+    # `not_checked` axis (inconclusive / not attempted) is deliberately NOT a gap:
+    # the honesty rule is that not-proven is not the same as disproven, and the
+    # gate already passes those through. Surfacing them here would spam the ledger
+    # with "we didn't check X" for every axis the driver could not exercise.
+    fnc = facts.get("functionality") or {}
+    for axis in ("nomock", "persistence", "auth"):
+        rec = fnc.get(axis) or {}
+        if rec.get("state") == "gap":
+            out.append({"item": "functionality:%s" % axis, "status": "failed",
+                        "reason": rec.get("reason") or "axis disproven"})
     return out
 
 
