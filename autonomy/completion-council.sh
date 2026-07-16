@@ -147,6 +147,31 @@ _council_effective_min_iter() {
     fi
     printf '%s' "${COUNCIL_MIN_ITERATIONS}"
 }
+
+# _loki_auto_tune_interval: OPT-IN auto-tune of the council CHECK interval by
+# complexity. Env: LOKI_AUTO_TUNE (default 0 = OFF; stock runs are unchanged).
+# Pure function of $1 (complexity tier) so it is unit-testable in isolation.
+# When LOKI_AUTO_TUNE!=1 -> echoes the current COUNCIL_CHECK_INTERVAL verbatim
+# (no behavior change). When ON: simple -> 3 (converge faster on trivial builds,
+# fewer idle iterations before the council MAY evaluate); standard/complex/unknown
+# -> COUNCIL_CHECK_INTERVAL (unchanged, default 5).
+#
+# This only changes WHEN the council is allowed to evaluate, never WHETHER a gate
+# passes: MIN_ITERATIONS floor, hard gate, evidence gate and the aggregate vote
+# are all unchanged. Explicit LOKI_COUNCIL_CHECK_INTERVAL still wins because
+# COUNCIL_CHECK_INTERVAL already carries it as the base value.
+_loki_auto_tune_interval() {
+    local complexity="${1:-}"
+    local base="${COUNCIL_CHECK_INTERVAL:-5}"
+    if [ "${LOKI_AUTO_TUNE:-0}" != "1" ]; then
+        printf '%s' "$base"
+        return 0
+    fi
+    case "$complexity" in
+        simple) printf '%s' 3 ;;
+        *)      printf '%s' "$base" ;;
+    esac
+}
 COUNCIL_CONVERGENCE_WINDOW=${LOKI_COUNCIL_CONVERGENCE_WINDOW:-3}
 COUNCIL_STAGNATION_LIMIT=${LOKI_COUNCIL_STAGNATION_LIMIT:-5}
 COUNCIL_DONE_SIGNAL_LIMIT=${LOKI_COUNCIL_DONE_SIGNAL_LIMIT:-10}
@@ -3894,7 +3919,12 @@ _council_should_check_now() {
     local circuit_triggered="${1:-false}"
     local completion_claimed="${2:-false}"
     local iter="${ITERATION_COUNT:-0}"
-    local interval="${COUNCIL_CHECK_INTERVAL:-5}"
+    # LOKI_AUTO_TUNE (default 0): when on, converge faster on simple builds by
+    # lowering the check interval (simple -> 3). No-op when off. Resolved here (not
+    # at source time) because DETECTED_COMPLEXITY is populated after this file is
+    # sourced -- same reason _council_effective_min_iter is resolved at run time.
+    local interval
+    interval="$(_loki_auto_tune_interval "${DETECTED_COMPLEXITY:-}")"
     # SaaS #122: tier-aware effective floor (simple->1) so the no-claim early
     # check can also fire at iteration 1 on a genuinely-done simple app.
     local min_iter

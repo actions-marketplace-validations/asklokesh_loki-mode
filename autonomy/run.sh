@@ -1242,6 +1242,51 @@ _loki_classify_iteration_error() {
     return 0
 }
 
+# _loki_build_self_heal_hint (SLICE 6c): route the PRIOR iteration's classified
+# error signature into the NEXT iteration's prompt so the loop fixes forward.
+# Reads .loki/state/LAST_ERROR.json (written by _loki_write_last_error on a
+# failed iteration), emits a concise structured heal hint naming the error_class
+# + brief on stdout, then ARCHIVES-then-CLEARS the record so the hint injects
+# exactly ONCE (reuses the existing archive-then-clear pattern; it does not
+# repeat forever). Best-effort: any failure emits nothing and never crashes the
+# build.
+#
+# Gated by the caller on LOKI_SELF_HEAL (default 0 -- opt-in, stock runs
+# unaffected). "unknown" is treated as NOT actionable (no specific class to
+# target), so an unclassified failure produces no hint.
+# Usage: _loki_build_self_heal_hint  (echoes hint or nothing)
+_loki_build_self_heal_hint() {
+    local loki_dir="${TARGET_DIR:-.}/.loki"
+    local src="$loki_dir/state/LAST_ERROR.json"
+    [ -f "$src" ] || return 0
+    local hint
+    hint="$(_LOKI_SH_SRC="$src" python3 -c "
+import json, os
+try:
+    with open(os.environ['_LOKI_SH_SRC']) as f:
+        rec = json.load(f)
+    if not isinstance(rec, dict):
+        raise SystemExit
+    ec = str(rec.get('error_class', '') or '').strip()
+    if ec in ('', 'unknown'):
+        raise SystemExit
+    brief = str(rec.get('brief', '') or '').strip()
+    it = rec.get('iteration', '?')
+    print('SELF_HEAL_HINT: the previous iteration (#%s) failed with error_class=%s. %s Address this specific failure FIRST before any new work.' % (it, ec, brief))
+except SystemExit:
+    pass
+except Exception:
+    pass
+" 2>/dev/null || true)"
+    [ -n "$hint" ] || return 0
+    # Archive-then-clear so it injects once (LEARN-FORWARD: the lesson still
+    # lands in failure-history.jsonl before the single record is removed).
+    _loki_archive_last_error "$src" "$loki_dir/state/failure-history.jsonl" 2>/dev/null || true
+    rm -f "$src" 2>/dev/null || true
+    printf '%s' "$hint"
+    return 0
+}
+
 # _loki_terminal_record (T2.6, SAFE SUBSET): on an untrapped exit where the
 # persisted run status is still "running" (a true mid-provider-call crash on a
 # trappable signal -- SIGTERM/SIGINT/SIGHUP via the lock-release trap), leave a
@@ -15139,6 +15184,18 @@ if d.get('blocked'):
         gate_failure_context="${gate_failure_context}FIX THESE ISSUES BEFORE PROCEEDING WITH NEW WORK."
     fi
 
+    # SLICE 6c self-heal: route the prior iteration's classified error signature
+    # into this iteration's prompt so the loop fixes forward. Opt-in via
+    # LOKI_SELF_HEAL (default 0 -- stock runs are unaffected). Consumes (archives
+    # then clears) LAST_ERROR.json so the hint injects exactly once. A separate
+    # dynamic var (NOT part of gate_failure_context) so it surfaces even when no
+    # gate wrote gate-failures.txt (a provider_empty_output / rate_limited /
+    # auth_error iteration failure leaves LAST_ERROR but no gate token).
+    local self_heal_context=""
+    if [ "${LOKI_SELF_HEAL:-0}" = "1" ]; then
+        self_heal_context="$(_loki_build_self_heal_hint)"
+    fi
+
     # P1-3: surface specific semantic test-authenticity findings (which fake test,
     # which line) when the opt-in gate (LOKI_GATE_SEMANTIC_TESTS) wrote them, so a
     # block converges: the agent gets the exact files/lines to fix rather than a
@@ -15549,6 +15606,7 @@ except Exception:
     fi
     [ -n "$human_directive" ] && printf '%s\n' "$human_directive"
     [ -n "$gate_failure_context" ] && printf '%s\n' "$gate_failure_context"
+    [ -n "$self_heal_context" ] && printf '%s\n' "$self_heal_context"
     [ -n "$assumption_context" ] && printf '%s\n' "$assumption_context"
     [ -n "$queue_tasks" ] && printf '%s\n' "$queue_tasks"
     [ -n "$bmad_context" ] && printf '%s\n' "$bmad_context"

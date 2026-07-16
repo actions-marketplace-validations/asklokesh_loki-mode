@@ -33,6 +33,7 @@ import {
   effortForTier,
   remainingBudget,
   fallbackForPrimary,
+  tierRouteModel,
 } from "../providers/claude_flags.ts";
 import { mcpConfigPath } from "../providers/mcp_config.ts";
 import { consumeSdkStream, type StreamMsg } from "./sdk_stream_parser.ts";
@@ -261,7 +262,11 @@ export function claudeProvider(): ProviderInvoker {
   return {
     async invoke(call: ProviderInvocation): Promise<ProviderResult> {
       const baseModel = claudeTierToModel(call.tier);
-      let model = applyMaxTierCeiling(call.tier, baseModel);
+      // Complexity-aware routing (opt-in LOKI_TIER_ROUTING=1). Applied after base
+      // resolution and BEFORE the max-tier ceiling, byte-mirroring claude.sh
+      // resolve_model_for_tier (route then clamp).
+      const routedModel = tierRouteModel(call.tier, baseModel);
+      let model = applyMaxTierCeiling(call.tier, routedModel);
 
       // Phase I (v7.5.25): when ANTHROPIC_BASE_URL is set, the user is
       // routing Claude Code to an alt-provider (OpenRouter, Ollama,
@@ -441,7 +446,10 @@ export function sdkQueryProvider(): ProviderInvoker {
 
       // Model resolution is shared with claudeProvider (do NOT fork it).
       const baseModel = claudeTierToModel(call.tier);
-      let model = applyMaxTierCeiling(call.tier, baseModel);
+      // Complexity-aware routing (opt-in LOKI_TIER_ROUTING=1), route then clamp,
+      // byte-mirroring claude.sh resolve_model_for_tier.
+      const routedModel = tierRouteModel(call.tier, baseModel);
+      let model = applyMaxTierCeiling(call.tier, routedModel);
       if (process.env["ANTHROPIC_BASE_URL"] && process.env["LOKI_MODEL_OVERRIDE"]) {
         model = process.env["LOKI_MODEL_OVERRIDE"];
       }
@@ -473,6 +481,13 @@ export function sdkQueryProvider(): ProviderInvoker {
           allowHaiku: process.env["LOKI_ALLOW_HAIKU"] === "true",
         });
 
+        // SLICE 6b note: the Agent SDK query() prompt contract is a plain
+        // string (or a stream of SDKUserMessage objects), NOT raw content
+        // blocks, so the sdk_invoker buildUserContent([CACHE_BREAKPOINT]) split
+        // does not apply here. The Agent SDK/CLI already applies prompt caching
+        // to the system prompt and conversation history internally. Explicit
+        // per-block cache_control is only wired on the raw-SDK judge path
+        // (sdk_invoker.ts) where messages.create accepts content blocks.
         const q = query({
           prompt: call.prompt,
           options: {

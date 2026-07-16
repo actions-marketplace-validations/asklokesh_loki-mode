@@ -19,6 +19,43 @@ import { oauthDevEnabled, readFreshOauthToken, OAUTH_BETA_HEADER } from "./oauth
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
+// The marker build_prompt() emits between the static <loki_system> prefix and
+// the volatile <dynamic_context> tail (build_prompt.ts:1375, run.sh:15404). On
+// the SDK route (in-process) we can split on it and mark the prefix as a cache
+// breakpoint so multi-iteration runs re-read cached prefix tokens instead of
+// re-billing them. The bash route shells out per iteration, so its copy of this
+// marker is inert there.
+const CACHE_BREAKPOINT = "[CACHE_BREAKPOINT]";
+
+// SLICE 6b: REAL prompt caching on the SDK route.
+// Env var: LOKI_SDK_PROMPT_CACHE. Default 0 (unset/"0"/"false" -> current
+// single-string behavior, no regression on a stock run). Set to 1/true to
+// opt in.
+function promptCacheEnabled(): boolean {
+  const v = (process.env["LOKI_SDK_PROMPT_CACHE"] ?? "").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes" || v === "on";
+}
+
+// Shape the messages.create `content` field for a user turn.
+//   - flag OFF, or the [CACHE_BREAKPOINT] marker absent: return the prompt
+//     unchanged (a plain string) -- byte-identical to prior behavior.
+//   - flag ON and marker present: split ONCE on the marker into a 2-block array
+//     [ static-prefix (cache_control ephemeral), dynamic-tail (plain) ]. The
+//     marker line itself is dropped from both blocks (it is a documentation
+//     anchor, not model-facing content).
+// Exported for the hermetic unit test; no network, pure string work.
+export function buildUserContent(prompt: string): string | Anthropic.TextBlockParam[] {
+  if (!promptCacheEnabled()) return prompt;
+  const idx = prompt.indexOf(CACHE_BREAKPOINT);
+  if (idx === -1) return prompt;
+  const prefix = prompt.slice(0, idx);
+  const tail = prompt.slice(idx + CACHE_BREAKPOINT.length);
+  return [
+    { type: "text", text: prefix, cache_control: { type: "ephemeral" } },
+    { type: "text", text: tail },
+  ];
+}
+
 export interface JudgeParams {
   prompt: string;
   schema: Record<string, unknown>; // JSON Schema (draft-07); Loki's loki-ts/data/*.json
@@ -112,7 +149,7 @@ export async function judgeJson(params: JudgeParams): Promise<Record<string, unk
         model,
         max_tokens: maxTokens,
         ...(system ? { system } : {}),
-        messages: [{ role: "user", content: prompt }],
+        messages: [{ role: "user", content: buildUserContent(prompt) }],
         output_config: {
           ...(effort ? { effort } : {}),
           format: { type: "json_schema", schema },
@@ -165,7 +202,7 @@ export async function judgeText(params: TextParams): Promise<string | null> {
         model,
         max_tokens: maxTokens,
         ...(system ? { system } : {}),
-        messages: [{ role: "user", content: prompt }],
+        messages: [{ role: "user", content: buildUserContent(prompt) }],
         // No output_config.format: a plain text turn. effort still applies.
         ...(effort ? { output_config: { effort } } : {}),
       },

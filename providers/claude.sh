@@ -380,6 +380,54 @@ loki_apply_max_tier_clamp() {
     printf '%s' "$model"
 }
 
+# Complexity-aware MODEL routing (net-new; effort routing already exists in
+# loki_effort_for_tier). ENV VAR: LOKI_TIER_ROUTING (DEFAULT "0" = OFF = current
+# flat resolution, zero change to stock runs). When LOKI_TIER_ROUTING=1 the
+# resolved model is nudged by the auto-detected project complexity signal
+# (LOKI_COMPLEXITY: simple|standard|complex):
+#   complex + planning -> opus  (deeper reasoning for hard architecture)
+#   simple  + fast     -> haiku ONLY when LOKI_ALLOW_HAIKU=true (support gate);
+#                         else stay put (never route to an unavailable model)
+#   standard, or the development/ACT tier -> UNCHANGED.
+# HARD GUARD: the development/ACT tier is NEVER routed below sonnet regardless of
+# complexity (implementation stays >= sonnet). "explicit override wins": we skip
+# the nudge whenever the operator pinned that tier via LOKI_CLAUDE_MODEL_PLANNING
+# / LOKI_MODEL_PLANNING (or the _FAST pair), so a deliberate pin is never
+# overridden. Byte-mirrored by loki_tier_route_model in loki-ts claude_flags.ts.
+loki_tier_route_model() {
+    local tier="$1"
+    local model="$2"
+    # Default OFF: only the explicit "1" opt-in engages routing.
+    [ "${LOKI_TIER_ROUTING:-0}" = "1" ] || { printf '%s' "$model"; return; }
+    local complexity="${LOKI_COMPLEXITY:-standard}"
+    case "$tier" in
+        planning)
+            # Bump to opus for complex work, but only when the operator did NOT
+            # pin planning explicitly (an explicit override always wins, even if
+            # they pinned it back to the flat default).
+            if [ "$complexity" = "complex" ] \
+               && [ -z "${LOKI_CLAUDE_MODEL_PLANNING:-}" ] \
+               && [ -z "${LOKI_MODEL_PLANNING:-}" ]; then
+                model="opus"
+            fi
+            ;;
+        fast)
+            # Drop to haiku for trivial verify work, gated on haiku availability
+            # and on the operator not having pinned fast explicitly.
+            if [ "$complexity" = "simple" ] \
+               && [ "${LOKI_ALLOW_HAIKU:-false}" = "true" ] \
+               && [ -z "${LOKI_CLAUDE_MODEL_FAST:-}" ] \
+               && [ -z "${LOKI_MODEL_FAST:-}" ]; then
+                model="haiku"
+            fi
+            ;;
+        # development/ACT and every other tier: unchanged. HARD GUARD -- never
+        # route implementation below sonnet, so this arm deliberately does nothing.
+        *) ;;
+    esac
+    printf '%s' "$model"
+}
+
 # Dynamic model resolution (v6.0.0)
 # Resolves a capability tier to a concrete model name at runtime.
 # Respects LOKI_MAX_TIER to cap cost via loki_apply_max_tier_clamp. NOTE the
@@ -431,6 +479,11 @@ resolve_model_for_tier() {
     # run.sh sets CURRENT_TIER=fable for that one iteration, which lands on the
     # `fable)` arm above. Keeping the decision in run.sh is the only place that
     # has ITERATION_COUNT, so the scoping is honest.
+
+    # Complexity-aware MODEL routing (opt-in). Applied AFTER base resolution and
+    # BEFORE the max-tier clamp, so the ceiling still bounds any bump-up. Byte-
+    # mirrored by loki_tier_route_model in loki-ts claude_flags.ts.
+    model="$(loki_tier_route_model "$tier" "$model")"
 
     # Apply the shared LOKI_MAX_TIER ceiling (same clamp the run.sh override path
     # uses, so the cost ceiling is enforced byte-identically on both paths).

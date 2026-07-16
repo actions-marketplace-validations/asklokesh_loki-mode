@@ -27,8 +27,16 @@
 //   - autonomy/run.sh:8823 load_queue_tasks()
 //   - loki-ts/docs/phase4-research/build_prompt.md
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  writeFileSync,
+  renameSync,
+  rmSync,
+} from "node:fs";
+import { resolve, dirname } from "node:path";
 import { runInline } from "../util/python.ts";
 import { detectComplexity } from "./rarv.ts";
 
@@ -753,6 +761,73 @@ async function buildGateFailureContext(cwd: string): Promise<string> {
   return ctx;
 }
 
+// ---------------------------------------------------------------------------
+// SLICE 6c self-heal (mirror of run.sh _loki_build_self_heal_hint).
+// ---------------------------------------------------------------------------
+// Route the prior iteration's classified error signature into this iteration's
+// prompt so the loop fixes forward. Opt-in via LOKI_SELF_HEAL (default 0 --
+// stock runs are byte-identical). Reads .loki/state/LAST_ERROR.json, emits the
+// same hint string as bash, then archives-then-clears the record so the hint
+// injects exactly ONCE. "unknown"/empty error_class is NOT actionable -> no
+// hint. Best-effort; any failure returns "".
+function buildSelfHealContext(cwd: string): string {
+  if (process.env["LOKI_SELF_HEAL"] !== "1") return "";
+  const src = resolve(cwd, ".loki/state/LAST_ERROR.json");
+  const raw = safeReadLocal(src);
+  if (raw === null) return "";
+  let rec: unknown;
+  try {
+    rec = JSON.parse(raw);
+  } catch {
+    return "";
+  }
+  if (rec === null || typeof rec !== "object") return "";
+  const r = rec as Record<string, unknown>;
+  const ec = String(r["error_class"] ?? "").trim();
+  if (ec === "" || ec === "unknown") return "";
+  const brief = String(r["brief"] ?? "").trim();
+  const it = r["iteration"] ?? "?";
+  const hint =
+    `SELF_HEAL_HINT: the previous iteration (#${it}) failed with error_class=${ec}. ` +
+    `${brief} Address this specific failure FIRST before any new work.`;
+  // Archive-then-clear so it injects once (LEARN-FORWARD parity with bash
+  // _loki_archive_last_error, run.sh:1180): the record lands in
+  // failure-history.jsonl before the single file is removed. Mirror bash EXACTLY:
+  // read the existing history, append this record, keep only the most recent 50
+  // entries (bounded -- never grows unbounded), and write atomically via a
+  // temp file + rename (no partial-write window on a concurrent reader).
+  try {
+    const hist = resolve(cwd, ".loki/state/failure-history.jsonl");
+    let lines: string[] = [];
+    const prev = safeReadLocal(hist);
+    if (prev !== null) {
+      lines = prev.split("\n").filter((ln) => ln.trim() !== "");
+    }
+    lines.push(JSON.stringify(rec));
+    lines = lines.slice(-50);
+    const tmp = resolve(dirname(hist), `.failure-history.${process.pid}.tmp`);
+    writeFileSync(tmp, lines.join("\n") + "\n");
+    renameSync(tmp, hist);
+  } catch {
+    /* best-effort */
+  }
+  try {
+    rmSync(src, { force: true });
+  } catch {
+    /* best-effort */
+  }
+  return hint;
+}
+
+function safeReadLocal(path: string): string | null {
+  try {
+    if (!existsSync(path)) return null;
+    return readFileSync(path, "utf-8");
+  } catch {
+    return null;
+  }
+}
+
 // P1-3 helper: surface the specific semantic test-authenticity findings
 // (which fake test, which line) that quality_gates.ts wrote to
 // .loki/quality/semantic-findings.txt. Byte-for-byte mirror of
@@ -1217,6 +1292,7 @@ function buildChecklistStatus(
 interface ResolvedSections {
   contextSection: string;
   gateFailureContext: string;
+  selfHealContext: string;
   humanDirective: string;
   queueTasks: string;
   appRunnerInfo: string;
@@ -1270,6 +1346,7 @@ async function resolveDynamicSections(
   return {
     contextSection,
     gateFailureContext: await buildGateFailureContext(ctx.cwd),
+    selfHealContext: buildSelfHealContext(ctx.cwd),
     humanDirective,
     queueTasks,
     appRunnerInfo: buildAppRunnerInfo(ctx.cwd),
@@ -1384,6 +1461,7 @@ export async function buildPrompt(opts: BuildPromptOpts): Promise<string> {
   }
   if (sections.humanDirective.length > 0) lines.push(sections.humanDirective);
   if (sections.gateFailureContext.length > 0) lines.push(sections.gateFailureContext);
+  if (sections.selfHealContext.length > 0) lines.push(sections.selfHealContext);
   if (sections.queueTasks.length > 0) lines.push(sections.queueTasks);
   if (sections.bmadContext.length > 0) lines.push(sections.bmadContext);
   if (sections.openspecContext.length > 0) lines.push(sections.openspecContext);
@@ -1555,6 +1633,7 @@ export const _internals = {
   buildMirofishContext,
   buildMagicContext,
   buildChecklistStatus,
+  buildSelfHealContext,
 };
 
 // ---------------------------------------------------------------------------

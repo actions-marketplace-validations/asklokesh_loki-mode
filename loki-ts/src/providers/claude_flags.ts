@@ -59,6 +59,54 @@ export function effortForTier(tier: string | undefined, complexity?: string): Ef
   return effort;
 }
 
+// Complexity-aware MODEL routing (net-new; effort routing already exists in
+// effortForTier). ENV VAR: LOKI_TIER_ROUTING (DEFAULT "0" = OFF = current flat
+// resolution, zero change to stock runs). Byte-mirror of loki_tier_route_model in
+// providers/claude.sh. When LOKI_TIER_ROUTING=1 the resolved model is nudged by
+// the auto-detected complexity signal (LOKI_COMPLEXITY: simple|standard|complex):
+//   complex + planning -> opus
+//   simple  + fast     -> haiku ONLY when LOKI_ALLOW_HAIKU=true (support gate)
+//   standard, or development/ACT tier -> UNCHANGED.
+// HARD GUARD: the development/ACT tier is NEVER routed below sonnet (the switch
+// has no development arm, so it falls through unchanged). "explicit override
+// wins": we skip the nudge whenever the operator pinned that tier via
+// LOKI_CLAUDE_MODEL_PLANNING / LOKI_MODEL_PLANNING (or the _FAST pair), so a
+// deliberate pin is never overridden -- byte-mirroring the bash arm's env checks.
+function envPinned(...names: string[]): boolean {
+  return names.some((n) => {
+    const v = process.env[n];
+    return v !== undefined && v !== "";
+  });
+}
+
+export function tierRouteModel(tier: string, model: string): string {
+  if (process.env["LOKI_TIER_ROUTING"] !== "1") return model;
+  const complexity = process.env["LOKI_COMPLEXITY"] ?? "standard";
+  switch (tier) {
+    case "planning":
+      if (
+        complexity === "complex" &&
+        !envPinned("LOKI_CLAUDE_MODEL_PLANNING", "LOKI_MODEL_PLANNING")
+      ) {
+        return "opus";
+      }
+      return model;
+    case "fast":
+      if (
+        complexity === "simple" &&
+        process.env["LOKI_ALLOW_HAIKU"] === "true" &&
+        !envPinned("LOKI_CLAUDE_MODEL_FAST", "LOKI_MODEL_FAST")
+      ) {
+        return "haiku";
+      }
+      return model;
+    // development/ACT and every other tier: unchanged. HARD GUARD -- never route
+    // implementation below sonnet, so no arm here touches it.
+    default:
+      return model;
+  }
+}
+
 // Mirror of loki_remaining_budget in autonomy/lib/claude-flags.sh.
 // Returns null when LOKI_BUDGET_LIMIT is unset or 0, OR when remaining <= 0.
 // Returns a string with 2 decimal places when positive remaining exists.
