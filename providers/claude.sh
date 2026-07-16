@@ -281,6 +281,28 @@ Commit hygiene still applies: git checkpoints are LOCAL only. Never push or forc
 
 This precedence override is narrow. It does NOT relax any safety rule. Every safety prohibition in CLAUDE.md or memory still fully binds: anything genuinely destructive or irreversible remains out of scope unless the task explicitly calls for it. This includes (not limited to) force-pushing, deleting or overwriting the user's data, dropping or truncating databases, publishing or releasing, rotating or exfiltrating secrets, touching production systems, and anything a CLAUDE.md safety rule explicitly forbids. When in doubt about whether an action is destructive, treat it as destructive and do not do it.
 LOKI_AUTONOMY_EOF
+
+    # First-pass excellence directive (v8): front-load intelligence into
+    # iteration 1 so a single informed pass lands the COMPLETE, working solution
+    # instead of a rough draft the loop then spends iterations correcting. This
+    # is the mechanism behind "a cheap model in one pass matches a strong model":
+    # the iteration count is a proxy for how much the first pass missed, so a
+    # more directive first prompt is the lever, not more loops. Iteration-1-only
+    # (ITERATION_COUNT<=1) and gated on LOKI_FIRST_PASS_EXCELLENCE (default ON;
+    # set to 0 to disable). Grounded in the user-research directives: nail the
+    # first working preview, WIRE the backend (a form that does nothing is the #1
+    # churn), do not defer/stub, escape the AI-slop defaults.
+    if [ "${LOKI_FIRST_PASS_EXCELLENCE:-1}" != "0" ] && [ "${ITERATION_COUNT:-1}" -le 1 ] 2>/dev/null; then
+        cat <<'LOKI_FIRSTPASS_EOF'
+
+[FIRST-PASS EXCELLENCE] Treat THIS pass as your one shot to ship a complete, working, verified solution. Do not produce a rough draft to refine later; the loop exists as a safety net, not a plan. Before you finish this iteration:
+1. BUILD IT FULLY. Implement every requirement end to end. No stubs, no TODOs, no "coming soon", no placeholder or hardcoded/mock data where real logic belongs. If the spec implies a backend (auth, persistence, a form that submits, a list that saves), WIRE IT so it actually works and persists -- a beautiful UI whose buttons do nothing is the single most common failure, not a draft. Every list/table must trace to a real query, never an inline mock array.
+2. SELF-VERIFY BY RUNNING, not by reading. Run the build and the tests yourself; for each acceptance criterion, DRIVE the actual path and observe the result (submit the form, then reload and confirm the record persisted; hit a protected route logged-out and confirm it is rejected). Fix what fails now, in this pass. Do not mark done on "looks right" or a self-claim -- observed behavior is the only proof.
+3. LOCK THE ARCHITECTURE on this pass so later edits are small and additive. Decide the data model, routes, and component structure up front and build to them; never rewrite whole files later to patch a small thing (that is the doom loop that breaks working features).
+4. DESIGN: commit to ONE named aesthetic direction up front (editorial, brutalist, luxury, retro-futuristic, soft/pastel, industrial, etc. -- chosen from the product domain) and hold it on every surface. Use real content (never lorem). AVOID the AI-slop tells that instantly read as machine-generated: NO indigo/blue-to-purple gradient (the #1 tell), NO Inter/Roboto/system-font headlines (pick a real display+body pairing), NO three-equal-rounded-cards-in-a-row skeleton, NO flat 1px gray card borders or colored left-border strips, NO untouched shadcn defaults, NO reflexive dark mode. Cap the palette at ~3 hues (60/30/10), tinted not pure #fff/#000, separate sections by whitespace then a slight background shift before any border. Aim for Linear/Stripe/Duolingo-tier taste: "this does not look AI-generated".
+Deliver the finished, self-verified, genuinely-designed result in THIS pass. Additional iterations should be the exception, not the plan.
+LOKI_FIRSTPASS_EOF
+    fi
 }
 
 # Invocation function (basic, no tier).

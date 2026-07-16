@@ -172,9 +172,13 @@ check_autonomy_override() {
     local bash_txt="$TMPDIR_PARITY/override.bash.txt"
     local bun_txt="$TMPDIR_PARITY/override.bun.txt"
 
-    # Source providers/claude.sh in a subshell and dump the function output to a
-    # file (NO command substitution -> trailing newline preserved).
-    if ! ( set +u; . providers/claude.sh >/dev/null 2>&1; _loki_autonomy_override_text ) > "$bash_txt" 2>/dev/null; then
+    # Source providers/claude.sh in a subshell and dump the BASE function output
+    # to a file (NO command substitution -> trailing newline preserved). Force
+    # ITERATION_COUNT=2 so the iteration-1-only FIRST-PASS EXCELLENCE block is NOT
+    # appended -- this invariant checks the BASE autonomy text (bun's
+    # AUTONOMY_OVERRIDE_TEXT). First-pass-append parity is covered separately by
+    # the claude_flags unit test (bash<->TS byte-identity was verified directly).
+    if ! ( set +u; ITERATION_COUNT=2; . providers/claude.sh >/dev/null 2>&1; _loki_autonomy_override_text ) > "$bash_txt" 2>/dev/null; then
         fail "$name" "could not source providers/claude.sh / call _loki_autonomy_override_text"
         return
     fi
