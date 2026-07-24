@@ -19,7 +19,7 @@
 // TS port can extend coverage without diverging):
 //   count >= GATE_PAUSE_LIMIT     -> write .loki/PAUSE + signals/GATE_ESCALATION
 //   count >= GATE_ESCALATE_LIMIT  -> write signals/GATE_ESCALATION (no pause)
-//   count >= GATE_CLEAR_LIMIT     -> log warning, treat as passing this round
+//   count >= GATE_CLEAR_LIMIT     -> retain failure and escalate repeated blocker
 //
 // Phase 5 status: runStaticAnalysis, runTestCoverage, runDocQualityGate,
 // runMagicDebateGate, and runCodeReview are real ports of the corresponding
@@ -69,17 +69,11 @@ function handoffModSync(): typeof import("./escalation_handoff.ts") | null {
 // --- Public types ----------------------------------------------------------
 
 export type GateOutcome = {
-  // Gate names that ran and passed (or were treated as passing under the
-  // CLEAR_LIMIT rule).
+  // Gate names that ran and passed.
   passed: string[];
   // Gate names that ran and failed this iteration.
   failed: string[];
-  // Wave B #2: gates pushed to `passed` by CLEAR_LIMIT but STILL failing. The
-  // completion decision treats a cleared always-on-refusing gate (code_review)
-  // as still-blocking, so a real unresolved BLOCK cannot ship during the clear
-  // window. Optional (empty/absent when nothing was cleared).
-  cleared?: string[];
-  // True when at least one gate failed and was not cleared by the CLEAR rule.
+  // True when at least one gate failed.
   blocked: boolean;
   // True when the PAUSE_LIMIT or ESCALATE_LIMIT was reached for any gate.
   // Caller (autonomous.ts) inspects this to decide whether to pause the loop.
@@ -116,7 +110,7 @@ export type GateResult = {
 // Escalation ladder limits, mirroring autonomy/run.sh:725-727. Read once at
 // gate-run time so tests can override via env without restarting the process.
 type EscalationLimits = {
-  clear: number;
+  repeat: number;
   escalate: number;
   pause: number;
 };
@@ -129,7 +123,9 @@ function readEscalationLimits(): EscalationLimits {
     return Number.isFinite(n) && n > 0 ? n : fallback;
   };
   return {
-    clear: parse("LOKI_GATE_CLEAR_LIMIT", 3),
+    // Keep the legacy env name for compatibility. It no longer clears a real
+    // blocker into a pass; it is the repeated-blocker escalation threshold.
+    repeat: parse("LOKI_GATE_CLEAR_LIMIT", 3),
     escalate: parse("LOKI_GATE_ESCALATE_LIMIT", 5),
     pause: parse("LOKI_GATE_PAUSE_LIMIT", 10),
   };
@@ -604,27 +600,55 @@ export async function runMockIntegrity(ctx?: RunnerContext): Promise<GateResult>
 }
 
 // Mirror of bash enforce_mutation_integrity -> tests/detect-test-mutations.sh.
-// Reads <lokiDir>/quality/mutation-findings.txt. Blocks ONLY on [HIGH] (we do
-// not use --strict, which over-blocks MED/LOW). Honors
-// LOKI_STUB_GATE_MUTATION_INTEGRITY for tests.
+// The detector honors LOKI_SCAN_DIR, so the Bun route runs it directly against
+// ctx.cwd and persists the same findings artifact as the shell route.
 export async function runMutationIntegrity(ctx?: RunnerContext): Promise<GateResult> {
   const stubKey = "LOKI_STUB_GATE_MUTATION_INTEGRITY";
   const stubVal = process.env[stubKey];
   if (stubVal === "fail" || stubVal === "pass") return stubResult("mutation_integrity");
 
+  const cwd = ctx?.cwd ?? process.cwd();
   const base = ctx?.lokiDir ?? lokiDir();
-  const body = readFindingsArtifact(base, "mutation-findings.txt");
-  if (body === null) {
-    return {
-      passed: true,
-      detail: "mutation_integrity: no mutation-findings.txt artifact -- gate did not run",
-    };
+  const findingsPath = join(base, "quality", "mutation-findings.txt");
+  const detector = join(REPO_ROOT, "tests", "detect-test-mutations.sh");
+  if (!existsSync(detector)) {
+    persistFindings(findingsPath, "# Test mutation detector failure", ["[HIGH] mutation detector unavailable"]);
+    return { passed: false, detail: "mutation_integrity: detector unavailable -- BLOCK (fail-closed)" };
   }
-  if (hasSeverityToken(body, "HIGH")) {
+
+  let exitCode: number;
+  let output: string;
+  try {
+    const result = await run(["bash", detector, "--block-high"], {
+      cwd,
+      env: { LOKI_SCAN_DIR: cwd },
+      timeoutMs: 300_000,
+    });
+    exitCode = result.exitCode;
+    output = `${result.stdout}${result.stderr}`;
+  } catch {
+    persistFindings(findingsPath, "# Test mutation detector failure", ["[HIGH] mutation detector spawn failed"]);
+    return { passed: false, detail: "mutation_integrity: detector spawn failed -- BLOCK (fail-closed)" };
+  }
+
+  const severities = grepSeverities(output, /\[(HIGH|MEDIUM|LOW)\]/);
+  if (exitCode === 2 || hasSeverityToken(output, "HIGH")) {
+    persistFindings(findingsPath, "# Test mutation findings (HIGH blocks this iteration)", severities);
     return {
       passed: false,
-      detail: "mutation_integrity: [HIGH] finding present -- possible test fitting",
+      detail: "mutation_integrity: [HIGH] harness or test mutation finding present -- BLOCK",
     };
+  }
+  if (exitCode !== 0) {
+    persistFindings(findingsPath, "# Test mutation detector failure", [`[HIGH] detector exited ${exitCode} without a valid verdict`]);
+    return { passed: false, detail: `mutation_integrity: detector exited ${exitCode} -- BLOCK (fail-closed)` };
+  }
+
+  const advisory = severities.filter((line) => /\[(MEDIUM|LOW)\]/.test(line));
+  if (advisory.length > 0) {
+    persistFindings(findingsPath, "# Test mutation advisory findings (MED/LOW, non-blocking)", advisory);
+  } else {
+    clearFindings(findingsPath);
   }
   return { passed: true, detail: "mutation_integrity: no high findings" };
 }
@@ -2511,24 +2535,11 @@ export async function runMagicDebateGate(ctx?: RunnerContext): Promise<GateResul
 //   warnings only / clean -> passed:true.
 // An LSP error never makes passed:false on the Bun route.
 //
-// SURFACING ASYMMETRY (honest, flagged to the integrator -- NOT closed here):
-// On bash the advisory arm appends the `lsp_diagnostics` token to gate_failures
-// (run.sh:15254), which build_prompt injects into the NEXT prompt WITHOUT
-// blocking, because bash's gate_failures string is informational injection
-// decoupled from the actual block decision. The Bun route's binary GateResult
-// model couples the two: a token in gate-failures.txt IS a block (persistFailureList
-// writes only failed[]; blocked = failed.length > 0). So to keep LSP non-blocking
-// we MUST return passed:true, which routes through passed[] + clearGateFailure --
-// the lsp_diagnostics token never reaches gate-failures.txt. Unlike semantic /
-// invariant (which surface via a dedicated findings file with a build_prompt
-// reader -- buildSemanticFindingsBlock / buildInvariantFindingsBlock), there is
-// NO build_prompt reader for lsp-diagnostics.json today (verified: zero hits in
-// build_prompt.ts). So on the Bun route the LSP advisory error is recorded to
-// the artifact + the gate detail/log, but is NOT yet injected into the next
-// prompt. The block decision is byte-identical (LSP never blocks on either
-// route); only the prompt-surfacing of the advisory differs. Full surfacing
-// parity needs a build_prompt.ts lsp-diagnostics reader (out of this file's
-// ownership -- integrator follow-up).
+// ADVISORY STORAGE: both routes keep LSP results out of gate-failures.txt,
+// because that file is the canonical blocker set consumed by proof generation.
+// The measured artifact and stage detail remain available as telemetry. A
+// future repair prompt may read the validated artifact through a dedicated
+// advisory channel without weakening the blocker-file invariant.
 //
 // HONESTY (never fabricate a verdict from absence):
 //   - Gate is DEFAULT-ON (surfacing-first), mirroring bash
@@ -2742,8 +2753,6 @@ function readToggles(): GateToggles {
 // outcome the orchestrator needs without touching the loop's mutable state
 // directly. Mirrors autonomy/run.sh:10904-10921.
 type EscalationOutcome = {
-  // True when the failure should be treated as passing (CLEAR_LIMIT rule).
-  cleared: boolean;
   // True when ESCALATE_LIMIT or PAUSE_LIMIT was hit.
   escalated: boolean;
   // True only when PAUSE_LIMIT was hit -- caller writes the PAUSE signal.
@@ -2759,6 +2768,10 @@ function applyEscalation(
   detail?: string,
 ): EscalationOutcome {
   const count = trackGateFailure(name, base);
+  const repeatThreshold = Math.min(limits.repeat, limits.escalate);
+  if (count >= repeatThreshold) {
+    writeEscalationGuidance(base, name, count, repeatThreshold, detail);
+  }
   if (count >= limits.pause) {
     ctx.log(
       `Gate escalation: ${name} failed ${count} times (>= ${limits.pause}) - forcing PAUSE`,
@@ -2791,22 +2804,58 @@ function applyEscalation(
       }
     }
     writePauseSignal(base, name, count);
-    return { cleared: false, escalated: true, pause: true, count };
+    return { escalated: true, pause: true, count };
   }
   if (count >= limits.escalate) {
     ctx.log(
       `Gate escalation: ${name} failed ${count} times (>= ${limits.escalate}) - escalating`,
     );
     writeEscalationSignal(base, name, count, "ESCALATE");
-    return { cleared: false, escalated: true, pause: false, count };
+    return { escalated: true, pause: false, count };
   }
-  if (count >= limits.clear) {
+  if (count >= limits.repeat) {
     ctx.log(
-      `Gate cleared: ${name} failed ${count} times (>= ${limits.clear}) - passing this iteration, counter continues`,
+      `Gate escalation: ${name} remains blocked after ${count} failures - escalating without converting failure to pass`,
     );
-    return { cleared: true, escalated: false, pause: false, count };
+    writeEscalationSignal(base, name, count, "ESCALATE");
+    return { escalated: true, pause: false, count };
   }
-  return { cleared: false, escalated: false, pause: false, count };
+  return { escalated: false, pause: false, count };
+}
+
+function writeEscalationGuidance(
+  base: string,
+  gate: GateName,
+  count: number,
+  threshold: number,
+  detail?: string,
+): void {
+  let latestArtifact: string | null = null;
+  if (gate === "code_review") {
+    const reviewId = detail?.match(/\((review-[A-Za-z0-9_-]+)\)\s*$/)?.[1];
+    if (reviewId) {
+      const reviewDir = join(base, "quality", "reviews", reviewId);
+      if (existsSync(reviewDir)) latestArtifact = reviewDir;
+    }
+  } else {
+    const files: Partial<Record<GateName, string>> = {
+      mutation_integrity: "mutation-findings.txt",
+      mock_integrity: "mock-findings.txt",
+      test_coverage: "test-results.json",
+      semantic_tests: "semantic-findings.txt",
+      invariants: "invariant-findings.txt",
+    };
+    const file = files[gate];
+    if (file) {
+      const candidate = join(base, "quality", file);
+      if (existsSync(candidate)) latestArtifact = candidate;
+    }
+  }
+  const target = join(base, "signals", "GATE_ESCALATION.json");
+  atomicWriteText(
+    target,
+    `${JSON.stringify({ action: "escalate", gate, count, threshold, latest_artifact: latestArtifact }, null, 2)}\n`,
+  );
 }
 
 // Match autonomy/run.sh:10906-10908. Two-line file: action then reason.
@@ -2854,11 +2903,6 @@ export async function runQualityGates(ctx: RunnerContext): Promise<GateOutcome> 
   const toggles = readToggles();
   const passed: string[] = [];
   const failed: string[] = [];
-  // RUN-25 iter 7 (Wave B #2): gates that hit CLEAR_LIMIT this iteration (pushed
-  // to `passed` to suppress prompt double-warn) but are STILL failing. The
-  // completion decision treats a cleared always-on-refusing gate (code_review)
-  // as still-blocking so a real unresolved BLOCK cannot ship during the window.
-  const cleared: string[] = [];
   let escalated = false;
 
   // Soft-gates path matches autonomy/run.sh:10957-10961: only code_review runs
@@ -2966,21 +3010,7 @@ export async function runQualityGates(ctx: RunnerContext): Promise<GateOutcome> 
         ctx.log(`auto-learnings write failed (non-fatal): ${(err as Error).message}`);
       }
     }
-    if (esc.cleared) {
-      // Per bash CLEAR_LIMIT semantics the gate is treated as passing this
-      // iteration even though the counter keeps climbing. Surface it under
-      // `passed` so the caller's prompt-injection logic does not double-warn.
-      passed.push(gate.name);
-      // RUN-25 iter 7 (Wave B #2): but CLEAR is a prompt-noise suppressor, NOT a
-      // completion authorization. A cleared-but-still-FAILING code_review (or any
-      // always-on completion-refusing gate) must STILL refuse completion -- else
-      // a real unresolved Critical/High review ships "done" during the clear
-      // window. Record it in `cleared` so completionRefusalReason can keep
-      // treating it as blocking even though it is not in `failed`.
-      cleared.push(gate.name);
-    } else {
-      failed.push(gate.name);
-    }
+    failed.push(gate.name);
     if (esc.pause) {
       // PAUSE signal already written; stop running further gates so the
       // operator inspects state from a deterministic point. Matches the
@@ -2991,15 +3021,10 @@ export async function runQualityGates(ctx: RunnerContext): Promise<GateOutcome> 
   }
 
   persistFailureList(base, failed);
-  // Only a cleared ALWAYS-ON completion-refusing gate (code_review) forces
-  // blocked (Wave B #2): a cleared advisory gate (static_analysis, ...) never
-  // refuses completion, so clearing it must stay non-blocking exactly as before.
-  const clearedRefusing = cleared.includes("code_review");
   return {
     passed,
     failed,
-    cleared,
-    blocked: failed.length > 0 || clearedRefusing,
+    blocked: failed.length > 0,
     escalated,
   };
 }

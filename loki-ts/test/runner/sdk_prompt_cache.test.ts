@@ -15,6 +15,20 @@ import { buildUserContent } from "../../src/runner/sdk_invoker.ts";
 const MARKER = "[CACHE_BREAKPOINT]";
 const savedFlag = process.env["LOKI_SDK_PROMPT_CACHE"];
 
+type Block = { text: string; [k: string]: unknown };
+
+// buildUserContent returns `string | TextBlockParam[]`. These tests exercise the
+// SPLIT path, where it is always a TWO-block array. Narrow once, loudly:
+// throwing here fails the test outright rather than letting a surprise shape
+// slip through as `undefined` block reads. Returning a fixed 2-tuple keeps
+// blocks[0]/blocks[1] non-optional under noUncheckedIndexedAccess without
+// per-read `!` assertions.
+function blocksOf(out: string | unknown[]): [Block, Block] {
+  if (!Array.isArray(out)) throw new Error(`expected split blocks, got a plain string: ${out}`);
+  if (out.length !== 2) throw new Error(`expected exactly 2 blocks, got ${out.length}`);
+  return out as [Block, Block];
+}
+
 beforeEach(() => {
   delete process.env["LOKI_SDK_PROMPT_CACHE"];
 });
@@ -41,7 +55,7 @@ describe("buildUserContent (SDK prompt cache split)", () => {
     const out = buildUserContent(prompt);
 
     expect(Array.isArray(out)).toBe(true);
-    const blocks = out as Array<Record<string, unknown>>;
+    const blocks = blocksOf(out);
     expect(blocks.length).toBe(2);
 
     // Block 0: static prefix, ephemeral cache_control.
@@ -61,7 +75,7 @@ describe("buildUserContent (SDK prompt cache split)", () => {
   test("flag ON, marker consumed: reassembled blocks minus the marker equal the original sans marker", () => {
     process.env["LOKI_SDK_PROMPT_CACHE"] = "true";
     const prompt = `PREFIX${MARKER}TAIL`;
-    const blocks = buildUserContent(prompt) as Array<{ text: string }>;
+    const blocks = blocksOf(buildUserContent(prompt));
     expect(blocks[0].text + blocks[1].text).toBe("PREFIXTAIL");
     // The marker itself must NOT appear in either block.
     expect(blocks[0].text.includes(MARKER)).toBe(false);
@@ -77,7 +91,7 @@ describe("buildUserContent (SDK prompt cache split)", () => {
   test("splits on the FIRST marker only (single breakpoint)", () => {
     process.env["LOKI_SDK_PROMPT_CACHE"] = "1";
     const prompt = `A${MARKER}B${MARKER}C`;
-    const blocks = buildUserContent(prompt) as Array<{ text: string }>;
+    const blocks = blocksOf(buildUserContent(prompt));
     expect(blocks.length).toBe(2);
     expect(blocks[0].text).toBe("A");
     // Second marker stays literal in the tail (only one breakpoint is honored).

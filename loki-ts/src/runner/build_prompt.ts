@@ -320,14 +320,17 @@ function resetWorkflowDisclosure(): void {
 function maybeDiscloseWorkflowAnalysis(
   env: Readonly<Record<string, string | undefined>>,
   targetDir?: string,
+  writeError?: (message: string) => void,
 ): void {
   if (workflowDisclosed) return;
   if (!workflowAnalysisDecision(env, targetDir).autonomous) return;
   workflowDisclosed = true;
-  // eslint-disable-next-line no-console
-  console.error(
-    "Loki: no PRD found and this repo looks complex (complexity=complex), so the codebase-analysis pass is dispatching a Claude Code Dynamic Workflow (parallel fan-out). Workflows are more thorough but cost meaningfully more than the default three-pass analysis. Set LOKI_USE_CLAUDE_WORKFLOWS=0 to keep the cheaper three-pass pass.",
-  );
+  const message = "Loki: no PRD found and this repo looks complex (complexity=complex), so the codebase-analysis pass is dispatching a Claude Code Dynamic Workflow (parallel fan-out). Workflows are more thorough but cost meaningfully more than the default three-pass analysis. Set LOKI_USE_CLAUDE_WORKFLOWS=0 to keep the cheaper three-pass pass.";
+  if (writeError) writeError(message);
+  else {
+    // eslint-disable-next-line no-console
+    console.error(message);
+  }
 }
 
 // The analysis instruction, optionally workflow-prefixed. Default (three-pass)
@@ -759,6 +762,40 @@ async function buildGateFailureContext(cwd: string): Promise<string> {
   ctx += buildInvariantFindingsBlock(cwd);
 
   return ctx;
+}
+
+function buildGateEscalationContext(cwd: string): string {
+  const raw = safeReadLocal(resolve(cwd, ".loki/signals/GATE_ESCALATION.json"));
+  if (raw === null) return "";
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return "";
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return "";
+  const data = parsed as Record<string, unknown>;
+  if (data["action"] !== "escalate") return "";
+
+  const gate = data["gate"];
+  const count = data["count"];
+  const threshold = data["threshold"];
+  const artifact = data["latest_artifact"];
+  if (typeof gate !== "string" || !/^[A-Za-z0-9_.-]+$/.test(gate)) return "";
+  if (typeof count !== "number" || !Number.isInteger(count) || count < 1) return "";
+  if (typeof threshold !== "number" || !Number.isInteger(threshold) || threshold < 1) return "";
+  if (artifact !== null && artifact !== undefined && typeof artifact !== "string") return "";
+
+  const artifactText =
+    typeof artifact === "string" && artifact.length > 0
+      ? `Inspect latest artifact: ${artifact}.`
+      : "No latest artifact was recorded.";
+  return (
+    `REPEATED_GATE_BLOCKER (PRIORITY): action=escalate gate=${gate} count=${count} threshold=${threshold}. ` +
+    `Change implementation strategy on this attempt. ${artifactText} Resolve the root blocker before new work. ` +
+    "Do not suppress or filter console errors or React act warnings, mock those signals, or weaken tests or assertions."
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1292,6 +1329,7 @@ function buildChecklistStatus(
 interface ResolvedSections {
   contextSection: string;
   gateFailureContext: string;
+  gateEscalationContext: string;
   selfHealContext: string;
   humanDirective: string;
   queueTasks: string;
@@ -1343,9 +1381,12 @@ async function resolveDynamicSections(
       ? `QUEUED_TASKS (PRIORITY): ${rawQueue}. Execute these tasks BEFORE finding new improvements.`
       : "";
 
+  const gateEscalationContext = buildGateEscalationContext(ctx.cwd);
+
   return {
     contextSection,
     gateFailureContext: await buildGateFailureContext(ctx.cwd),
+    gateEscalationContext,
     selfHealContext: buildSelfHealContext(ctx.cwd),
     humanDirective,
     queueTasks,
@@ -1461,6 +1502,7 @@ export async function buildPrompt(opts: BuildPromptOpts): Promise<string> {
   }
   if (sections.humanDirective.length > 0) lines.push(sections.humanDirective);
   if (sections.gateFailureContext.length > 0) lines.push(sections.gateFailureContext);
+  if (sections.gateEscalationContext.length > 0) lines.push(sections.gateEscalationContext);
   if (sections.selfHealContext.length > 0) lines.push(sections.selfHealContext);
   if (sections.queueTasks.length > 0) lines.push(sections.queueTasks);
   if (sections.bmadContext.length > 0) lines.push(sections.bmadContext);
@@ -1516,6 +1558,7 @@ function buildStaticFirstDegraded(
   lines.push("[CACHE_BREAKPOINT]");
   lines.push(`<dynamic_context iteration="${iteration}" retry="${retry}">`);
   if (sections.humanDirective.length > 0) lines.push(`Priority: ${sections.humanDirective}`);
+  if (sections.gateEscalationContext.length > 0) lines.push(sections.gateEscalationContext);
   if (sections.queueTasks.length > 0) lines.push(`Tasks: ${sections.queueTasks}`);
   if (prd !== null && prd.length > 0) lines.push(`PRD contents: ${prdContent}`);
   lines.push("</dynamic_context>");
@@ -1540,11 +1583,14 @@ interface LegacyFullParts {
 function buildLegacyFull(opts: BuildPromptOpts, p: LegacyFullParts): string {
   const { prd, retry, iteration } = opts;
   const s = p.sections;
+  const combinedGateContext = [s.gateFailureContext, s.gateEscalationContext]
+    .filter((part) => part.length > 0)
+    .join(" ");
   // Order from run.sh:9273-9281. Empty optional sections are emitted as empty
   // strings between two spaces, exactly as bash's "$var $var" expansion does.
   const tail = [
     s.humanDirective,
-    s.gateFailureContext,
+    combinedGateContext,
     s.queueTasks,
     s.bmadContext,
     s.openspecContext,
@@ -1583,7 +1629,10 @@ function buildLegacyDegraded(
   }
   // bash `${var:+prefix $var}` -- if var is non-empty, output `prefix $var`,
   // else nothing. Exactly two spaces around each segment in bash's echo.
-  const human = sections.humanDirective.length > 0 ? `Priority: ${sections.humanDirective}` : "";
+  const priorityContext = [sections.humanDirective, sections.gateEscalationContext]
+    .filter((part) => part.length > 0)
+    .join(" ");
+  const human = priorityContext.length > 0 ? `Priority: ${priorityContext}` : "";
   const tasks = sections.queueTasks.length > 0 ? `Tasks: ${sections.queueTasks}` : "";
 
   if (retry === 0) {
@@ -1626,6 +1675,7 @@ export const _internals = {
   loadStartupLearnings,
   loadQueueTasks,
   buildGateFailureContext,
+  buildGateEscalationContext,
   buildAppRunnerInfo,
   buildPlaywrightInfo,
   buildBmadContext,

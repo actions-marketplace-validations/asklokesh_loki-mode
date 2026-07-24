@@ -20,11 +20,13 @@
 // discoverable "STUB: Phase 5" marker so failures surface loudly instead
 // of silently degrading (BUG-22 stub-discipline rule).
 
-import { mkdirSync, existsSync, readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { mkdirSync, existsSync, readFileSync, realpathSync } from "node:fs";
+import { delimiter, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { run as shellRun } from "../util/shell.ts";
+import { REPO_ROOT } from "../util/paths.ts";
 import {
   buildAutoFlags,
+  claudeFlagSupported,
   ensureClaudeHelpCache,
   sessionStampArgv,
   sessionResumeArgv,
@@ -55,6 +57,10 @@ import type {
 export async function resolveProvider(
   name: ProviderName,
 ): Promise<ProviderInvoker> {
+  const guardCwd = process.env["LOKI_TARGET_DIR"] ?? process.cwd();
+  if (name !== "claude" && hostGuardRequired(guardCwd)) {
+    throw new Error(`host command guard is required, but provider '${name}' has no enforced PreToolUse hook`);
+  }
   switch (name) {
     case "claude":
       // v8 Phase 4: when LOKI_SDK_LOOP is on, the main RARV loop runs on the
@@ -231,6 +237,48 @@ function ensureParentDir(path: string): void {
   mkdirSync(parent, { recursive: true });
 }
 
+function physicalPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function hostGuardRequired(cwd: string): boolean {
+  if (truthy(process.env["LOKI_HOST_GUARD"])) return true;
+  const target = process.env["LOKI_TARGET_DIR"];
+  const roots = process.env["LOKI_WORKSPACE_ROOTS"];
+  if (!target || !roots || physicalPath(target) !== physicalPath(cwd)) return false;
+  const candidate = physicalPath(cwd);
+  return roots.split(delimiter).some((root) => {
+    if (!root) return false;
+    const fromRoot = relative(physicalPath(root), candidate);
+    return fromRoot === "" || (
+      fromRoot !== ".." &&
+      !fromRoot.startsWith(`..${sep}`) &&
+      !isAbsolute(fromRoot)
+    );
+  });
+}
+
+function hostGuardSettingsJson(): string {
+  const hookPath = resolve(REPO_ROOT, "autonomy", "hooks", "validate-bash.sh");
+  if (!existsSync(hookPath)) throw new Error(`host command guard hook is missing: ${hookPath}`);
+  return JSON.stringify({
+    hooks: {
+      PreToolUse: [{
+        matcher: "Bash",
+        hooks: [{ type: "command", command: `bash ${shellQuote(hookPath)}` }],
+      }],
+    },
+  });
+}
+
 // Write captured output to disk. Used by every provider to honor the
 // `iterationOutputPath` contract from types.ts:87 -- the runner reads the
 // captured file for completion-promise / rate-limit detection.
@@ -283,6 +331,12 @@ export function claudeProvider(): ProviderInvoker {
       // the auto-derived flag set. ensureClaudeHelpCache is idempotent --
       // first call populates, subsequent calls return immediately.
       await ensureClaudeHelpCache();
+      const hostGuard = hostGuardRequired(call.cwd);
+      if (hostGuard && !claudeFlagSupported("--settings")) {
+        const message = "host command guard requires Claude CLI --settings support";
+        await writeCaptured(call.iterationOutputPath, "", message);
+        return { exitCode: 1, capturedOutputPath: call.iterationOutputPath };
+      }
       const autoFlags = buildAutoFlags({
         tier: call.tier,
         complexity: process.env["LOKI_COMPLEXITY"] ?? "standard",
@@ -321,6 +375,7 @@ export function claudeProvider(): ProviderInvoker {
         model,
         ...autoFlags,
         ...sessionArgv,
+        ...(hostGuard ? ["--settings", hostGuardSettingsJson()] : []),
         // claude.sh:32 PROVIDER_PROMPT_FLAG
         "-p",
         call.prompt,
@@ -436,6 +491,49 @@ export function buildSdkLoopOptions(args: {
   return out;
 }
 
+function hostGuardDecision(reason: string) {
+  return {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse" as const,
+      permissionDecision: "deny" as const,
+      permissionDecisionReason: reason,
+    },
+  };
+}
+
+async function runSdkHostGuard(input: unknown, cwd: string) {
+  const hookPath = resolve(REPO_ROOT, "autonomy", "hooks", "validate-bash.sh");
+  try {
+    const proc = Bun.spawn({
+      cmd: ["bash", hookPath],
+      cwd,
+      env: {
+        ...process.env,
+        LOKI_HOST_GUARD: "1",
+        LOKI_TARGET_DIR: cwd,
+      },
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    proc.stdin.write(JSON.stringify(input));
+    proc.stdin.end();
+    const [stdout, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      proc.exited,
+    ]);
+    const parsed = JSON.parse(stdout) as {
+      hookSpecificOutput?: { permissionDecision?: string };
+    };
+    const decision = parsed.hookSpecificOutput?.permissionDecision;
+    if (exitCode === 0 && decision === "allow") return parsed;
+    if (exitCode !== 0 && decision === "deny") return parsed;
+    return hostGuardDecision("LOKI_HOST_GUARD: invalid hook verdict was denied.");
+  } catch {
+    return hostGuardDecision("LOKI_HOST_GUARD: hook execution failed, so the Bash command was denied.");
+  }
+}
+
 export function sdkQueryProvider(): ProviderInvoker {
   return {
     async invoke(call: ProviderInvocation): Promise<ProviderResult> {
@@ -499,6 +597,16 @@ export function sdkQueryProvider(): ProviderInvoker {
             allowDangerouslySkipPermissions: true,
             includePartialMessages: true, // live delta streaming
             includeHookEvents: true, // hooks arrive as system messages (parser)
+            ...(hostGuardRequired(call.cwd)
+              ? {
+                  hooks: {
+                    PreToolUse: [{
+                      matcher: "Bash",
+                      hooks: [(input: unknown) => runSdkHostGuard(input, call.cwd)],
+                    }],
+                  },
+                }
+              : {}),
             // build_prompt owns ALL injection; use the claude_code preset with no
             // append so system-prompt behavior matches `claude -p`.
             systemPrompt: { type: "preset", preset: "claude_code" },

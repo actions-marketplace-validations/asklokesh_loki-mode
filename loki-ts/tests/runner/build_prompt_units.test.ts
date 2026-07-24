@@ -270,6 +270,46 @@ describe("buildGateFailureContext", () => {
   });
 });
 
+describe("buildGateEscalationContext", () => {
+  it("injects repeated-blocker strategy guidance into the next prompt", async () => {
+    const signals = mkLoki("signals");
+    const latestArtifact = resolve(workDir, ".loki/quality/reviews/review-0003");
+    writeFileSync(
+      resolve(signals, "GATE_ESCALATION.json"),
+      JSON.stringify({
+        action: "escalate",
+        gate: "code_review",
+        count: 3,
+        threshold: 3,
+        latest_artifact: latestArtifact,
+      }),
+    );
+    const expected =
+      `REPEATED_GATE_BLOCKER (PRIORITY): action=escalate gate=code_review count=3 threshold=3. ` +
+      `Change implementation strategy on this attempt. Inspect latest artifact: ${latestArtifact}. ` +
+      `Resolve the root blocker before new work. Do not suppress or filter console errors or React act warnings, ` +
+      `mock those signals, or weaken tests or assertions.`;
+
+    expect(_internals.buildGateEscalationContext(workDir)).toBe(expected);
+    const prompt = await buildPrompt({
+      retry: 0,
+      prd: null,
+      iteration: 4,
+      ctx: { cwd: workDir, env: emptyEnv() },
+    });
+    expect(prompt).toContain(expected);
+  });
+
+  it("ignores malformed or non-escalation guidance", () => {
+    const signals = mkLoki("signals");
+    const file = resolve(signals, "GATE_ESCALATION.json");
+    writeFileSync(file, "not json");
+    expect(_internals.buildGateEscalationContext(workDir)).toBe("");
+    writeFileSync(file, JSON.stringify({ action: "pass", gate: "code_review", count: 3, threshold: 3 }));
+    expect(_internals.buildGateEscalationContext(workDir)).toBe("");
+  });
+});
+
 describe("buildAppRunnerInfo", () => {
   it("emits APP_RUNNING_AT for running state", () => {
     mkLoki("app-runner");
@@ -681,39 +721,35 @@ describe("buildPrompt v7.40.0 autonomous complexity-gated ultracode analysis", (
   });
 
   it("disclosure fires once on the autonomous-workflow case, to stderr, and NOT on three-pass", () => {
-    const orig = console.error;
     const calls: string[] = [];
-    console.error = (...args: unknown[]) => {
-      calls.push(args.map(String).join(" "));
-    };
+    const capture = (message: string) => calls.push(message);
     try {
       // three-pass (simple): no disclosure
       _internals.resetWorkflowDisclosure();
       _internals.maybeDiscloseWorkflowAnalysis({
         LOKI_PROVIDER: "claude",
         DETECTED_COMPLEXITY: "simple",
-      });
+      }, undefined, capture);
       expect(calls.length).toBe(0);
 
       // forced =1: workflow but not autonomous -> no disclosure
       _internals.maybeDiscloseWorkflowAnalysis({
         LOKI_PROVIDER: "claude",
         LOKI_USE_CLAUDE_WORKFLOWS: "1",
-      });
+      }, undefined, capture);
       expect(calls.length).toBe(0);
 
       // autonomous workflow: discloses once even when called repeatedly
       _internals.resetWorkflowDisclosure();
       const autoEnv = { LOKI_PROVIDER: "claude", DETECTED_COMPLEXITY: "complex" };
-      _internals.maybeDiscloseWorkflowAnalysis(autoEnv);
-      _internals.maybeDiscloseWorkflowAnalysis(autoEnv);
-      _internals.maybeDiscloseWorkflowAnalysis(autoEnv);
+      _internals.maybeDiscloseWorkflowAnalysis(autoEnv, undefined, capture);
+      _internals.maybeDiscloseWorkflowAnalysis(autoEnv, undefined, capture);
+      _internals.maybeDiscloseWorkflowAnalysis(autoEnv, undefined, capture);
       expect(calls.length).toBe(1);
       expect(calls[0]).toContain("complexity=complex");
       expect(calls[0]).toContain("LOKI_USE_CLAUDE_WORKFLOWS=0");
       expect(calls[0]).toContain("cost meaningfully more");
     } finally {
-      console.error = orig;
       _internals.resetWorkflowDisclosure();
     }
   });

@@ -227,16 +227,26 @@ describe("escalation ladder boundaries", () => {
     expect(getGateFailureCount("static_analysis", scratch)).toBe(2);
   });
 
-  it("treats failures at CLEAR_LIMIT as passing (counter still climbs)", async () => {
+  it("keeps the exact third repeated failure blocking and emits structured escalation", async () => {
     const ctx = makeCtx();
     await runQualityGates(ctx); // 1
     await runQualityGates(ctx); // 2
-    const r3 = await runQualityGates(ctx); // 3 -- CLEAR_LIMIT
-    expect(r3.passed).toEqual(["static_analysis"]);
-    expect(r3.failed).toEqual([]);
-    expect(r3.blocked).toBe(false);
-    expect(r3.escalated).toBe(false);
+    const r3 = await runQualityGates(ctx); // 3, repeated-blocker threshold
+    expect(r3.passed).toEqual([]);
+    expect(r3.failed).toEqual(["static_analysis"]);
+    expect(r3.blocked).toBe(true);
+    expect(r3.escalated).toBe(true);
     expect(getGateFailureCount("static_analysis", scratch)).toBe(3);
+    const guidance = JSON.parse(
+      readFileSync(join(scratch, "signals", "GATE_ESCALATION.json"), "utf-8"),
+    ) as Record<string, unknown>;
+    expect(guidance).toEqual({
+      action: "escalate",
+      gate: "static_analysis",
+      count: 3,
+      threshold: 3,
+      latest_artifact: null,
+    });
   });
 
   it("escalates at ESCALATE_LIMIT and writes signals/GATE_ESCALATION", async () => {

@@ -93,9 +93,6 @@ type CompletionMod = {
 type GateOutcomeShape = {
   passed: string[];
   failed: string[];
-  // Gates that hit CLEAR_LIMIT this iteration but are still failing (Wave B #2).
-  // Optional so an older/injected outcome without it still type-checks.
-  cleared?: string[];
   blocked: boolean;
   escalated: boolean;
 };
@@ -129,12 +126,24 @@ export function completionRefusalReason(
   if (gatesThrew) {
     return "quality-gate battery crashed -- refusing completion this iteration (fail-closed)";
   }
-  // code_review is the always-on completion-refusing gate. Refuse when it is in
-  // failed[] OR in cleared[] (Wave B #2): CLEAR_LIMIT suppresses the prompt
-  // double-warn but must NOT authorize completion -- a cleared-but-still-failing
-  // review is still an unresolved Critical/High BLOCK.
-  const cleared = gateOutcome.cleared ?? [];
-  if (gateOutcome.blocked && (gateOutcome.failed.includes("code_review") || cleared.includes("code_review"))) {
+  // code_review is the always-on completion-refusing gate. Repeated failures
+  // remain in failed[] and can never be converted into a passing outcome.
+  //
+  // `cleared` is read defensively; no producer emits it today. Bash
+  // gate_failure_disposition returns pause|escalate|block and never removes a
+  // gate from the failed list (run.sh:1272-1274, "A blocking gate is never
+  // cleared into a pass merely because it repeated"), and the TS ladder mirrors
+  // that (quality_gates.ts:126-128). But a blocked outcome reporting code_review
+  // as *cleared* rather than *failed* is precisely the CLEAR_LIMIT loophole this
+  // arm exists to close, so refuse on it too rather than trust a future producer
+  // to preserve the invariant.
+  //   ponytail: only the always-on code_review arm reads cleared; the opt-in
+  //   _BLOCK gates below mirror bash, which has no cleared concept at all.
+  if (
+    gateOutcome.blocked &&
+    (gateOutcome.failed.includes("code_review") ||
+      (gateOutcome.cleared ?? []).includes("code_review"))
+  ) {
     return "code_review BLOCK -- refusing completion this iteration";
   }
   if (
@@ -784,8 +793,7 @@ async function runAutonomousCore(
       //   - gatesThrew: the gate battery crashed -> gate signal unverifiable ->
       //     refuse (parity with bash run.sh:18702-18708, "fail open is unsafe").
       //   - code_review BLOCK (parity run.sh:16868-16930): the one always-on
-      //     completion-refusing gate. blocked+failed.includes("code_review"); a
-      //     cleared code_review lands in passed[], so it does NOT refuse.
+      //     completion-refusing gate. Repeated blockers remain in failed[].
       //   - semantic_tests / invariants: opt-in _BLOCK arms (run.sh:17482/17499),
       //     each requiring blocked + in failed[] + its _BLOCK toggle on, so a
       //     surfaced-but-advisory finding never over-blocks a clean run.

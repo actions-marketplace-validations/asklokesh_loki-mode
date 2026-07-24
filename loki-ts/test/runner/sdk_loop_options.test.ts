@@ -34,8 +34,9 @@ describe("buildSdkLoopOptions: MCP tools", () => {
     // mcpConfigPath writes the bundle idempotently; the loki-mode server must be present.
     expect(o.mcpServers).toBeDefined();
     expect(o.strictMcpConfig).toBe(true);
-    const firstMap = (o.mcpServers as Array<Record<string, unknown>>)[0];
-    expect(Object.keys(firstMap)).toContain("loki-mode");
+    const servers = o.mcpServers as Array<Record<string, unknown>>;
+    expect(servers.length).toBeGreaterThan(0);
+    expect(Object.keys(servers[0]!)).toContain("loki-mode");
   });
 
   test("settingSources are set (parity with claude_code preset)", () => {
@@ -46,10 +47,15 @@ describe("buildSdkLoopOptions: MCP tools", () => {
 
 describe("buildSdkLoopOptions: effort tier", () => {
   test("effort derives from the tier (same mapping as the shell route)", () => {
+    // effort is optional on the options type, so assert it is actually SET
+    // before the membership check -- an unset effort must fail the test, not
+    // pass vacuously.
     const dev = buildSdkLoopOptions({ tier: "development", model: "claude-sonnet-5", cwd: scratch });
-    expect(["low", "medium", "high", "xhigh", "max"]).toContain(dev.effort);
+    expect(dev.effort).toBeDefined();
+    expect(["low", "medium", "high", "xhigh", "max"]).toContain(dev.effort!);
     const plan = buildSdkLoopOptions({ tier: "planning", model: "claude-opus-4-8", cwd: scratch });
-    expect(["low", "medium", "high", "xhigh", "max"]).toContain(plan.effort);
+    expect(plan.effort).toBeDefined();
+    expect(["low", "medium", "high", "xhigh", "max"]).toContain(plan.effort!);
   });
 });
 

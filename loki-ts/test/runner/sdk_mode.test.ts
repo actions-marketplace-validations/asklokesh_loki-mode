@@ -15,7 +15,7 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = JSON.parse(
   readFileSync(join(HERE, "../fixtures/sdk-mode-table.json"), "utf8"),
-) as { modes: Record<string, Record<string, string>> };
+) as { modes: Record<"off" | "judges" | "full", Record<string, string>> };
 
 const ALL_VARS = [
   "LOKI_SDK_DONE_RECOG",

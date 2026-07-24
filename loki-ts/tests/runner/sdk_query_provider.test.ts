@@ -38,19 +38,24 @@ function call(overrides: Partial<ProviderInvocation> = {}): ProviderInvocation {
 }
 
 let prevClaudeCli: string | undefined;
+let prevHostGuard: string | undefined;
 beforeEach(() => {
   scratch = mkdtempSync(join(tmpdir(), "loki-sdkprov-"));
   // Never spawn the real claude CLI in these hermetic tests: any path that
   // delegates to claudeProvider (mainLoop:false, or the default-off gate) would
   // otherwise hang on a live CLI. `true` exits 0 immediately for any argv.
   prevClaudeCli = process.env["LOKI_CLAUDE_CLI"];
+  prevHostGuard = process.env["LOKI_HOST_GUARD"];
   process.env["LOKI_CLAUDE_CLI"] = "true";
+  delete process.env["LOKI_HOST_GUARD"];
 });
 afterEach(() => {
   mock.restore(); // undo the module mock so it never leaks to other files
   rmSync(scratch, { recursive: true, force: true });
   if (prevClaudeCli === undefined) delete process.env["LOKI_CLAUDE_CLI"];
   else process.env["LOKI_CLAUDE_CLI"] = prevClaudeCli;
+  if (prevHostGuard === undefined) delete process.env["LOKI_HOST_GUARD"];
+  else process.env["LOKI_HOST_GUARD"] = prevHostGuard;
 });
 
 describe("sdkQueryProvider (hermetic, stubbed query)", () => {
@@ -116,6 +121,28 @@ describe("sdkQueryProvider (hermetic, stubbed query)", () => {
     expect(opts["permissionMode"]).toBe("bypassPermissions");
     expect(opts["allowDangerouslySkipPermissions"]).toBe(true);
     expect(opts["includeHookEvents"]).toBe(true);
+  });
+
+  it("hosted SDK loop denies Docker through the trusted Bash hook", async () => {
+    process.env["LOKI_HOST_GUARD"] = "1";
+    stubQuery([{ type: "result", is_error: false, total_cost_usd: 0.01, usage: {} }]);
+    const { sdkQueryProvider } = await import("../../src/runner/providers.ts");
+    await sdkQueryProvider().invoke(call());
+    const hooks = lastQueryArgs?.options?.["hooks"] as {
+      PreToolUse: Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }>;
+    };
+    const callback = hooks.PreToolUse[0]?.hooks[0];
+    expect(callback).toBeTruthy();
+    const verdict = await callback!({
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "docker stop autonomi-postgres-1" },
+      cwd: scratch,
+      session_id: "test-session",
+      transcript_path: join(scratch, "transcript.jsonl"),
+      tool_use_id: "test-tool",
+    }) as { hookSpecificOutput?: { permissionDecision?: string } };
+    expect(verdict.hookSpecificOutput?.permissionDecision).toBe("deny");
   });
 
   it("mainLoop:false delegates to the CLI path (query is NOT called)", async () => {
