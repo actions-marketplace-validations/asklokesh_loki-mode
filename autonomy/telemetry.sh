@@ -190,3 +190,55 @@ print(json.dumps(d))
         -d "$payload" >/dev/null 2>&1 &) 2>/dev/null
     return 0
 }
+
+# _loki_analytics_enabled: STRICTER, second-layer gate for opt-in build-outcome
+# analytics. Sits BELOW the telemetry gate: build_verified fires ONLY when
+#   1. telemetry is enabled at all (_loki_telemetry_enabled -- so every opt-out
+#      that kills telemetry also kills analytics), AND
+#   2. the user EXPLICITLY turned analytics on (LOKI_ANALYTICS/LOKI_POSTHOG=on or
+#      ~/.loki/config: ANALYTICS_ENABLED=true).
+# Default OFF even for diagnostics-on users: anonymous crash diagnostics are one
+# thing, per-build outcome metrics are a separate, explicit consent. Zero-egress-
+# by-default is a moat, so this stays strictly opt-in. Only already-computed proof
+# scalars are ever sent (see _loki_proof_analytics_props) -- never code, spec text,
+# paths, or file names.
+_loki_analytics_enabled() {
+    _loki_telemetry_enabled || return 1
+    local _lower
+    _lower="$(printf '%s' "${LOKI_ANALYTICS:-${LOKI_POSTHOG:-}}" | tr '[:upper:]' '[:lower:]')"
+    [ "$_lower" = "on" ] && return 0
+    [ "$_lower" = "1" ] && return 0
+    if [ -f "${HOME}/.loki/config" ] && grep -q "^ANALYTICS_ENABLED=true" "${HOME}/.loki/config" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+# loki_emit_build_verified <proof.json path>: fire ONE build_verified event
+# carrying a FIXED ALLOWLIST of already-computed scalars from a finished
+# proof.json. Trust-core untouched -- reads the receipt after it is written,
+# never influences the verdict. Fires only under the strict analytics gate.
+# The allowlist is enforced in Python (below); anything not named is never read,
+# so a schema change cannot silently start leaking a new field. Free-text-shaped
+# fields are excluded on purpose: headline is a bounded enum (VERIFIED / VERIFIED
+# WITH GAPS / NOT VERIFIED), never spec/project text; files_changed is a COUNT,
+# never paths.
+loki_emit_build_verified() {
+    _loki_analytics_enabled || return 0
+    local _proof="$1"
+    [ -f "$_proof" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    local _reader="${SCRIPT_DIR:-${SKILL_DIR:-}}/lib/proof-analytics-props.py"
+    [ -f "$_reader" ] || return 0
+    local _props
+    _props=$(python3 "$_reader" "$_proof" 2>/dev/null) || return 0
+    [ -n "$_props" ] || return 0
+    # Feed the allowlisted key=value pairs into loki_telemetry (which re-checks
+    # the base gate and owns the injection-safe payload build).
+    local _args=()
+    while IFS= read -r _line; do
+        [ -n "$_line" ] && _args+=("$_line")
+    done <<< "$_props"
+    loki_telemetry "build_verified" "${_args[@]}"
+    return 0
+}

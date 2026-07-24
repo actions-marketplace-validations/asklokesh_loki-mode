@@ -324,6 +324,14 @@ run_test "Branch Lifecycle (default-on, base!=main, commit, advisory no-push)" "
 # endpoint points at an unroutable local sink, never the real PostHog host.
 run_test "Telemetry Disclosure PTY (TTY signal + no covert egress)" "$SCRIPT_DIR/test-telemetry-disclosure-pty.sh"
 
+# Opt-in build-outcome analytics (Build A). The build_verified event sits behind
+# a STRICT second-layer gate (LOKI_ANALYTICS/LOKI_POSTHOG=on) below base
+# telemetry, default OFF even for diagnostics-on users. Asserts the gate
+# precedence (default off, opt-in fires, every opt-out kills it) and that the
+# FIXED allowlist (autonomy/lib/proof-analytics-props.py) emits only already-
+# computed scalars -- never spec/PRD text or file paths. Hermetic: curl stubbed.
+run_test "Build Analytics Opt-In (strict gate + allowlist, no leak)" "$SCRIPT_DIR/test-build-analytics-optin.sh"
+
 # Deploy Advisory (FEAT-DEPLOY): `loki deploy` detects project type + CI/CD
 # pipeline and PRINTS the deploy command(s); print-only (NEVER runs a cloud CLI,
 # NEVER git push). Drives the real binary with fake cloud-CLI stubs; headline

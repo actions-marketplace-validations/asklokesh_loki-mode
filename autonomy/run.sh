@@ -7019,6 +7019,12 @@ generate_proof_of_run() {
         if printf '%s' "$_rid" > "${_id_file}.tmp" 2>/dev/null; then
             mv -f "${_id_file}.tmp" "$_id_file" 2>/dev/null || rm -f "${_id_file}.tmp" 2>/dev/null || true
         fi
+        # Opt-in build-outcome analytics (default OFF; strict second-layer gate in
+        # telemetry.sh). Reads the just-written receipt's allowlisted scalars only;
+        # trust-core untouched. Fire-and-forget, never fails the session.
+        if declare -f loki_emit_build_verified >/dev/null 2>&1; then
+            loki_emit_build_verified "$loki_dir/proofs/$_rid/proof.json" 2>/dev/null || true
+        fi
         return 0
     fi
 
