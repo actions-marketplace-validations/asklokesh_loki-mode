@@ -15,7 +15,8 @@
 #
 #   The only detector check that produces a [HIGH] finding is Check 5
 #   (assertion value mutations in git commits): a commit that changes BOTH an
-#   implementation file and more than 2 assertion lines in a test file. This
+#   implementation file and more than 2 existing assertion values in a test
+#   file. New test files are coverage, not mutations. This
 #   test builds a real git-fixture project with exactly that commit shape (a
 #   HIGH fixture) and a clean sibling project with no such commit (a clean
 #   fixture), and drives the actual detector through the actual gate wrapper --
@@ -138,6 +139,32 @@ EOF
 )
 
 # ---------------------------------------------------------------------------
+# Fixture C (greenfield): implementation and a brand-new test file land in the
+# same commit. Added assertions have no prior expectations to weaken, so this
+# must pass even when the new suite contains many assertions.
+# ---------------------------------------------------------------------------
+GREENFIELD_PROJ="$WORK/greenfield-fixture"
+mkdir -p "$GREENFIELD_PROJ/src"
+( cd "$GREENFIELD_PROJ" && git init -q && git_id
+  echo "greenfield" > README.md
+  git add README.md && git commit -q -m "initial"
+  mkdir -p tests
+  cat > src/calc.js <<'EOF'
+function add(a, b) { return a + b; }
+module.exports = { add };
+EOF
+  cat > tests/calc.test.js <<'EOF'
+const { add } = require('../src/calc');
+test('add 1+1', () => { expect(add(1,1)).toBe(2); });
+test('add 2+2', () => { expect(add(2,2)).toBe(4); });
+test('add 3+3', () => { expect(add(3,3)).toBe(6); });
+test('add 4+4', () => { expect(add(4,4)).toBe(8); });
+EOF
+  git add src/calc.js tests/calc.test.js
+  git commit -q -m "add implementation with first tests"
+)
+
+# ---------------------------------------------------------------------------
 # Case 1: HIGH fixture -> gate BLOCKS (rc 1), findings file records it.
 # ---------------------------------------------------------------------------
 TARGET_DIR="$HIGH_PROJ"
@@ -169,6 +196,23 @@ if [ ! -f "$FINDINGS_B" ]; then
     ok "clean fixture -> no findings file left behind"
 else
     bad "clean fixture -> no findings file left behind" "unexpected file: $FINDINGS_B"
+fi
+
+# ---------------------------------------------------------------------------
+# Case 3: greenfield implementation plus new tests -> gate PASSES.
+# ---------------------------------------------------------------------------
+TARGET_DIR="$GREENFIELD_PROJ"
+rc=0; enforce_mutation_integrity || rc=$?
+if [ "$rc" -eq 0 ]; then
+    ok "greenfield implementation with new tests -> gate PASSES (rc 0)"
+else
+    bad "greenfield implementation with new tests -> gate PASSES (rc 0)" "got rc=$rc"
+fi
+FINDINGS_C="$GREENFIELD_PROJ/.loki/quality/mutation-findings.txt"
+if [ ! -f "$FINDINGS_C" ]; then
+    ok "greenfield fixture -> no findings file left behind"
+else
+    bad "greenfield fixture -> no findings file left behind" "unexpected file: $FINDINGS_C"
 fi
 
 # ---------------------------------------------------------------------------

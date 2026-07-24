@@ -23,7 +23,7 @@ check() { # check <desc> <expected> <actual>
 # REAL code (not a copy). We pull the helper function and the PHASE_* assignment
 # block, then evaluate them in a clean subshell with a controlled environment.
 extract() {
-    awk '/^loki_apply_build_profile\(\) \{/,/^loki_apply_build_profile$/' "$RUN_SH"
+    awk '/^loki_is_supervised_simple_web\(\)/,/^loki_apply_build_profile$/' "$RUN_SH"
     awk '/^PHASE_UNIT_TESTS=/,/^PHASE_UAT=/' "$RUN_SH"
 }
 PROFILE_CODE="$(extract)"
@@ -64,13 +64,13 @@ check "simple-web: ACCESSIBILITY kept" "true" "$(val "$R" PHASE_ACCESSIBILITY)"
 # Unit tests are not dropped by the profile (default stays true).
 check "simple-web: UNIT_TESTS untouched" "true" "$(val "$R" PHASE_UNIT_TESTS)"
 
-# COUNCIL is not a PHASE_* var; the helper must never touch it. Confirm the
-# helper body contains no COUNCIL reference (the moat stays).
-if grep -q 'loki_apply_build_profile' "$RUN_SH" && \
-   awk '/^loki_apply_build_profile\(\) \{/,/^\}/' "$RUN_SH" | grep -qi 'council'; then
-    FAIL=$((FAIL + 1)); echo "FAIL: helper references COUNCIL (must not)"
-else
+# Ordinary simple-web does not enter the exact supervised policy branch, so it
+# must leave an operator council value unchanged.
+R="$(resolve 'export LOKI_BUILD_PROFILE=simple-web; export LOKI_COUNCIL_ENABLED=operator; echo LOKI_COUNCIL_ENABLED=$LOKI_COUNCIL_ENABLED')"
+if grep -q '^LOKI_COUNCIL_ENABLED=operator$' <<<"$R"; then
     PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1)); echo "FAIL: ordinary simple-web mutated council policy"
 fi
 
 # --- 3. operator override wins (pre-set LOKI_PHASE_API_TESTS=true kept) --------

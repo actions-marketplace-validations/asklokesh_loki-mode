@@ -84,6 +84,9 @@ run_cell() {
   # env -i-free: set only our vars on top of the inherited env; run.sh's adapter
   # merges os.environ so these reach the real loki start.
   # Clear any stray lever vars from a prior cell first, then set this cell's.
+  # shellcheck disable=SC2046,SC2086  # model_env/cfg_env emit several VAR=val
+  # pairs; the word splitting is exactly what hands them to env as separate
+  # assignments. Quoting would pass one string and break every cell.
   env -u LOKI_MAX_ITERATIONS -u LOKI_COUNCIL_ENABLED -u LOKI_PHASE_CODE_REVIEW \
       -u LOKI_SELF_HEAL -u LOKI_TIER_ROUTING -u LOKI_AUTO_TUNE \
       -u LOKI_SESSION_MODEL -u LOKI_ALLOW_HAIKU \

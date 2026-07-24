@@ -85,6 +85,8 @@ run_test "v8 SDK text bridge (grill + prd-enrich)" "$SCRIPT_DIR/test-sdk-text-br
 run_test "v8 SDK council VOTE (member + contrarian, trust core)" "$SCRIPT_DIR/test-sdk-council-vote.sh"
 run_test "v8 SDK voter-agents council (Epic C, finding schema)" "$SCRIPT_DIR/test-sdk-voter-agents.sh"
 run_test "v8 SDK-loop start routing (LOKI_SDK_LOOP gate, default-off)" "$SCRIPT_DIR/test-sdk-loop-routing.sh"
+run_test "v8 Structured Review Self-Copy Asset Resolution" "$SCRIPT_DIR/test-code-review-self-copy.sh"
+run_test "Review deadline, requirements, and speculative assurance tail" "$SCRIPT_DIR/test-review-assurance-tail.sh"
 
 # Completion-council effective threshold (operator tighten-only floor + size guard)
 run_test "Council Threshold Tests" "$SCRIPT_DIR/test-council-threshold.sh"
@@ -94,6 +96,7 @@ run_test "Healing Test Gate Tests" "$SCRIPT_DIR/test-healing-test-gate.sh"
 run_test "RARV mode-aware + PARALLEL_TOOL_CALLS build_prompt (rank 16+8)" "$SCRIPT_DIR/test-rarv-parallel-build-prompt.sh"
 run_test "Mergeability reviewer + quality score (rank 9 run_code_review)" "$SCRIPT_DIR/test-mergeability-review.sh"
 run_test "Code-review gitignore filter + oversized-diff loud-fail (client fix)" "$SCRIPT_DIR/test-review-gitignore-filter.sh"
+run_test "Code-review compact lockfile context and explicit size rejection" "$SCRIPT_DIR/test-review-lockfile-context.sh"
 run_test "Council Convergence Floor (rank 15 no-claim early check)" "$SCRIPT_DIR/test-council-convergence-floor.sh"
 run_test "Acceptance-oracle source-grounded (rank 2 routes/LSP-symbols/invariant)" "$SCRIPT_DIR/test-oracle-source-grounded.sh"
 
@@ -113,6 +116,7 @@ run_test "Heal Assess Readiness Triage Tests (rank 13)" "$SCRIPT_DIR/test-heal-a
 
 # Process Supervisor Tests
 run_test "Process Supervisor Tests" "$SCRIPT_DIR/test-process-supervisor.sh"
+run_test "Supervised Signal Finalization and Honest Proof" "$SCRIPT_DIR/test-supervised-signal-finalization.sh"
 
 # Orphan wrapper reaper (loki-mode #92: liveness-gated self-reaping, nohup-safe)
 run_test "Orphan Wrapper Reaper (#92 liveness predicate)" "$SCRIPT_DIR/test-orphan-wrapper-reaper.sh"
@@ -120,6 +124,7 @@ run_test "Orphan Wrapper Reaper (#92 liveness predicate)" "$SCRIPT_DIR/test-orph
 # Quality Gates
 run_test "Mock Detector (Gate #8)" "$SCRIPT_DIR/detect-mock-problems.sh"
 run_test "Test Mutation Detector (Gate #9)" "$SCRIPT_DIR/detect-test-mutations.sh"
+run_test "Harness False-Green Regression and Mutation" "$SCRIPT_DIR/test-harness-false-green.sh"
 
 # Sentrux Gate (v7.5.14) -- unit tests only; uses fake on-PATH binary so safe
 # on every CI host (Linux/macOS). The real-binary integration test lives at
@@ -167,6 +172,7 @@ fi
 # truth table. Skips gracefully when git/python3 are unavailable or the gate
 # is not yet defined.
 run_test "Evidence Gate (verified completion)" "$SCRIPT_DIR/test-evidence-gate.sh"
+run_test "No-mock data-render classification" "$SCRIPT_DIR/test-nomock-data-render.sh"
 
 # State baseline lifecycle: a fresh run after a terminal status (success,
 # failure, or crash) must reset ITERATION_COUNT so the evidence-gate baseline

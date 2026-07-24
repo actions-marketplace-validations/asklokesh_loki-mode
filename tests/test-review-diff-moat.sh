@@ -84,14 +84,22 @@ cat > "$STUB_BIN/claude" <<'STUB'
 # file-stub mechanism as body.txt, just keyed by name for the mixed case.
 self_dir="$(dirname "$0")"
 empty_name="$(cat "$self_dir/empty_reviewer.txt" 2>/dev/null)"
+prompt=""
+prev=""
+for arg in "$@"; do
+    if [ "$prev" = "-p" ]; then
+        case "$arg" in
+            --*) ;;
+            *) prompt="$arg" ;;
+        esac
+    fi
+    prev="$arg"
+done
+[ -n "$prompt" ] || prompt="$(cat)"
 if [ -n "$empty_name" ]; then
-    prev=""
-    for arg in "$@"; do
-        if [ "$prev" = "-p" ] && printf '%s' "$arg" | grep -q "^You are ${empty_name}\."; then
-            exit 0
-        fi
-        prev="$arg"
-    done
+    if printf '%s' "$prompt" | grep -q "^You are ${empty_name}\."; then
+        exit 0
+    fi
 fi
 cat "$self_dir/body.txt"
 STUB
@@ -175,18 +183,21 @@ case2_no_output() {
             run_code_review >/dev/null 2>&1
         rc=$?
         agg="$(find "$dir/.loki/quality/reviews" -name aggregate.json 2>/dev/null | head -1)"
-        local inconclusive="?" real="?"
+        local inconclusive="?" real="?" score="?"
         if [ -n "$agg" ] && [ -f "$agg" ]; then
             inconclusive="$(python3 -c "import json,sys;print(json.load(open('$agg')).get('inconclusive'))" 2>/dev/null)"
             real="$(python3 -c "import json,sys;print(json.load(open('$agg')).get('real_verdict_count'))" 2>/dev/null)"
+            score="$(python3 -c "import json,sys;print(json.load(open('$agg')).get('quality_score'))" 2>/dev/null)"
         fi
-        echo "rc=$rc inconclusive=$inconclusive real=$real"
+        echo "rc=$rc inconclusive=$inconclusive real=$real score=$score"
     ) > "$dir/result.txt" 2>/dev/null
     local r; r="$(cat "$dir/result.txt" 2>/dev/null)"
     if echo "$r" | grep -q "rc=0 "; then
         bad "A2: all-NO_OUTPUT review PASSED the gate (rc=0)" "$r"
-    elif echo "$r" | grep -q "inconclusive=True" && echo "$r" | grep -q "real=0"; then
-        ok "A2: all-NO_OUTPUT review BLOCKED (rc!=0, inconclusive=True, real_verdict_count=0)"
+    elif echo "$r" | grep -q "inconclusive=True" \
+         && echo "$r" | grep -q "real=0" \
+         && echo "$r" | grep -q "score=0"; then
+        ok "A2: all-NO_OUTPUT review BLOCKED with quality_score=0"
     else
         bad "A2: unexpected aggregate state" "$r"
     fi
@@ -360,6 +371,67 @@ case3_optout() {
 }
 
 # ===========================================================================
+# Case 4 - reviewers receive unchanged function context plus recorded checks.
+# ===========================================================================
+case4_grounded_context() {
+    local dir; dir="$(mktemp -d "${TMPDIR:-/tmp}/loki-reviewdiff-c4.XXXXXX")"
+    setup_repo "$dir"
+    (
+        cd "$dir" || exit 1
+        mkdir -p src .loki/quality
+        cat > src/App.tsx <<'EOF'
+import { useState } from "react";
+
+export default function App() {
+  const [status, setStatus] = useState("");
+  const submit = () => setStatus("Saved");
+  return (
+    <>
+      <a href="#main-content">Skip to content</a>
+      <main id="main-content">
+        <h1>Original title</h1>
+        <form onSubmit={submit}><button>Save</button></form>
+        <p aria-live="polite">{status}</p>
+      </main>
+    </>
+  );
+}
+EOF
+        git add src/App.tsx && git commit -qm baseline
+        sed -i.bak 's/Original title/Improved title/' src/App.tsx
+        rm -f src/App.tsx.bak
+        printf '%s\n' '{"status":"verified","pass":true,"runner":"vitest","command":"vitest","exit_code":0,"passed_count":3,"failed_count":0}' > .loki/quality/test-results.json
+        printf '%s\n' '{"status":"verified","ran":true,"command":"npm run build","exit_code":0,"applicable":true}' > .loki/quality/build-results.json
+
+        set_review_body $'VERDICT: PASS\nFINDINGS:\n- None'
+        TARGET_DIR="$dir" PROVIDER_NAME=claude ITERATION_COUNT=1 \
+        LOKI_REVIEW_RETRY=0 run_code_review >/dev/null 2>&1 || true
+
+        local review_root diff_file prompt_file
+        review_root="$(find "$dir/.loki/quality/reviews" -mindepth 1 -maxdepth 1 -type d | head -1)"
+        diff_file="$review_root/diff.txt"
+        prompt_file="$(find "$review_root" -name '*-prompt.txt' | head -1)"
+        if [ -f "$diff_file" ] && [ -f "$prompt_file" ] \
+           && grep -q 'useState' "$diff_file" \
+           && grep -q 'onSubmit' "$diff_file" \
+           && grep -q 'Skip to content' "$diff_file" \
+           && grep -q '"exit_code": 0' "$prompt_file" \
+           && grep -q '"runner": "vitest"' "$prompt_file"; then
+            echo "GROUNDED"
+        else
+            echo "MISSING_CONTEXT"
+        fi
+    ) > "$dir/result.txt" 2>/dev/null
+    local r; r="$(cat "$dir/result.txt" 2>/dev/null)"
+    if [ "$r" = "GROUNDED" ]; then
+        ok "C: review prompt includes unchanged function context and passing check evidence"
+    else
+        bad "C: review prompt lacks current implementation or check evidence" "$r"
+    fi
+    rm -rf "$dir"
+}
+
+# ===========================================================================
 # Case 2c -- regression guard for FIX A2: a NON-"PASS" acceptance token still
 # counts as a real, passing verdict (the gate keys on the PRESENCE of a VERDICT
 # line + non-FAIL, NOT on the literal token "PASS"). A reviewer that drifts to
@@ -402,6 +474,7 @@ case2_verbose_pass
 case2_partial_no_output
 case3_test_capture
 case3_optout
+case4_grounded_context
 
 rm -rf "$STUB_BIN" 2>/dev/null || true
 

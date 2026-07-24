@@ -4,8 +4,9 @@
 # by an OBSERVED artifact, each fail-closed, all web-app-only.
 #
 # Drives the REAL council_evidence_gate (sourced) with synthetic functional-proof
-# .json + nomock-scan.json fixtures, isolating each axis by making diff + tests +
-# boot + secret PASS. Boot passes AFFIRMATIVELY (serveable+healthy) so the two
+# JSON plus matching current source fixtures. The nomock receipt is audit-only,
+# so the council must derive that verdict from source on every invocation. Diff,
+# tests, boot, and secret are made to PASS. Boot passes affirmatively so the two
 # dynamic axes see serveable=true and are actually evaluated. Hermetic, zero
 # token cost, no real browser. No emojis. No em dashes.
 
@@ -34,6 +35,30 @@ type council_evidence_gate >/dev/null 2>&1 || { echo "FATAL: council_evidence_ga
 SERVEABLE_STATE='{"status":"running","primary_service":"web","url":"http://localhost:3000"}'
 HEALTH_OK='{"ok": true, "checked_at": "t"}'
 
+materialize_nomock_source() {
+    local fixture="$1"
+    case "$fixture" in
+        *'"hit":true'*|*'"hit": true'*)
+            mkdir -p src
+            cat > src/List.tsx <<'TSX'
+const orders = [{ id: 'ord-1', customer: 'Acme', status: 'Paid', total: 149 }];
+export function Orders() {
+  return <table><tbody>{orders.map((order) => <tr key={order.id}><td>{order.customer}</td></tr>)}</tbody></table>;
+}
+TSX
+            ;;
+        *'"hit":false'*|*'"hit": false'*)
+            mkdir -p src
+            cat > src/List.tsx <<'TSX'
+const features = [{ title: 'Private' }, { title: 'Fast' }];
+export function Features() {
+  return <section>{features.map((feature) => <article key={feature.title}>{feature.title}</article>)}</section>;
+}
+TSX
+            ;;
+    esac
+}
+
 # gate_proof <proof-json|""> <nomock-json|""> [state-override|""] [extra-env...]:
 # run the gate in a temp repo where diff+tests+boot+secret are made to PASS, so
 # ONLY the proof axes can block. echo PASS if the gate returns 0 else BLOCK.
@@ -52,6 +77,7 @@ gate_proof() {
         printf '%s\n' "$HEALTH_OK" > .loki/app-runner/health.json
         [ -n "$proof" ] && printf '%s\n' "$proof" > .loki/verification/functional-proof.json
         [ -n "$nomock" ] && printf '%s\n' "$nomock" > .loki/verification/nomock-scan.json
+        materialize_nomock_source "$nomock"
         COUNCIL_STATE_DIR="$d/.loki/council"
         if council_evidence_gate; then echo "PASS"; else echo "BLOCK"; fi
         rm -rf "$d"
@@ -203,6 +229,7 @@ attr_check() {
     printf '%s\n' "$HEALTH_OK" > .loki/app-runner/health.json
     [ -n "$proof" ] && printf '%s\n' "$proof" > .loki/verification/functional-proof.json
     [ -n "$nomock" ] && printf '%s\n' "$nomock" > .loki/verification/nomock-scan.json
+    materialize_nomock_source "$nomock"
     COUNCIL_STATE_DIR="$d/.loki/council"
     council_evidence_gate >/dev/null 2>&1 || true
     _AXIS="$axis" python3 -c "import sys,json,os; d=json.load(open('$d/.loki/council/evidence-block.json')); sys.exit(0 if d['checks'][os.environ['_AXIS']]['ok'] is False else 1)" 2>/dev/null

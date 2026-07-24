@@ -510,6 +510,7 @@ run_check "tests/test-tier-routing.sh (Task6: complexity->model routing, dev-tie
 run_check "tests/test-auto-tune-interval.sh (Task6: council interval auto-tune by complexity)" "bash tests/test-auto-tune-interval.sh 2>&1 | tail -3"
 run_check "tests/test-self-heal-injection.sh (Task6: LAST_ERROR heal hint injected once + archived)" "bash tests/test-self-heal-injection.sh 2>&1 | tail -3"
 run_check "tests/test-review-diff-moat.sh (review diff exclusion + partial NO_OUTPUT block)" "bash tests/test-review-diff-moat.sh 2>&1 | tail -3"
+run_check "tests/test-review-assurance-tail.sh (deadline, requirements, speculative DA)" "bash tests/test-review-assurance-tail.sh 2>&1 | tail -3"
 run_check "tests/test-evidence-gate-rc.sh (evidence-gate rc propagation, fail-closed)" "bash tests/test-evidence-gate-rc.sh 2>&1 | tail -3"
 run_check "tests/test-playwright-verify-as-evidence.sh (playwright pass/fail distinction)" "bash tests/test-playwright-verify-as-evidence.sh 2>&1 | tail -3"
 run_check "tests/test-enforce-mutation-integrity.sh (mutation-integrity HIGH block)" "bash tests/test-enforce-mutation-integrity.sh 2>&1 | tail -3"
@@ -712,6 +713,7 @@ run_check "tests/test-spec.sh (living spec lock/status/sync + drift finding)" "b
 # disclosure lifecycle) and the deterministic `loki verify` pipeline. Wired in
 # v7.28.0 after a council reviewer caught both suites missing from local-ci.
 run_check "tests/test-evidence-gate.sh (evidence gate + inconclusive lifecycle)" "bash tests/test-evidence-gate.sh 2>&1 | tail -3"
+run_check "tests/test-nomock-data-render.sh (static catalogs pass, operational mocks block)" "bash tests/test-nomock-data-render.sh 2>&1 | tail -3"
 run_check "tests/test-evidence-gate-no-tests.sh (P1-1 no-tests not affirmative)" "bash tests/test-evidence-gate-no-tests.sh 2>&1 | tail -3"
 run_check "tests/test-verify.sh (loki verify deterministic gates)" "bash tests/test-verify.sh 2>&1 | tail -3"
 run_check "tests/test-verify-scope-record.sh (rank 10 locality scope record, advisory-first)" "bash tests/test-verify-scope-record.sh 2>&1 | tail -3"
@@ -1019,7 +1021,9 @@ run_check "npm audit (production deps, high+)" "
   trap 'rm -rf \$AUDIT_TMP' EXIT
   cp package.json \$AUDIT_TMP/
   cd \$AUDIT_TMP && npm install --silent --no-audit --no-fund >/dev/null 2>&1
-  npm audit --omit=dev --audit-level=high
+  # audit-check.sh mirrors --audit-level=high but waives documented, not-reachable
+  # advisories (see the script header). A NEW high advisory still fails the gate.
+  bash \"$REPO_ROOT/scripts/audit-check.sh\"
 "
 
 # ---------------------------------------------------------------------------
