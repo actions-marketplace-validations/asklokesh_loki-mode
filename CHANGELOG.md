@@ -5,6 +5,24 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v7.129.5
+
+### Fixed: corrupt Evidence Receipt when a test runner emits colored output
+
+`enforce_test_coverage` embedded a test runner's raw output into the receipt's
+`test-results.json` after stripping only quotes and newlines. jest, vitest and
+other runners colorize output by default, so the `details`/`summary` field
+carried ANSI escape sequences and other C0 control characters. Those are invalid
+inside a JSON string, so `json.load` on the receipt raised "Invalid control
+character" -- and every downstream reader that swallows the parse error saw the
+field (and often the whole receipt) as empty. A silently corrupt Evidence
+Receipt is worse than none: it is the honesty core reading as blank.
+
+The sanitizer now also deletes every remaining control character (`\000-\037`,
+including ESC) after converting newlines to spaces, so the receipt is always
+valid JSON regardless of runner coloring. Affects any jest/vitest/colored-output
+project; present since the receipt was introduced.
+
 ## v7.129.4
 
 ### Fixed: auto-doc-gen re-firing every iteration after a timeout

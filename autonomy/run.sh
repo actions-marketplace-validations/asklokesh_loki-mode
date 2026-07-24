@@ -9794,8 +9794,13 @@ TREOF
         return 0
     fi
 
-    # Sanitize details for JSON
-    details=$(echo "$details" | tr '"' "'" | tr '\n' ' ' | head -c 500)
+    # Sanitize details for JSON. A test runner's output can carry ANSI color
+    # escapes and other C0 control characters (jest/vitest colorize by default);
+    # embedding them raw produces an INVALID receipt (json.load -> "Invalid
+    # control character"), which reads downstream as an empty/absent field -- a
+    # corrupt Evidence Receipt, worse than none. Convert newlines to spaces
+    # first, then delete every remaining control char (\000-\037, incl. ESC).
+    details=$(echo "$details" | tr '"' "'" | tr '\n' ' ' | tr -d '\000-\037' | head -c 500)
 
     # Evidence Receipt provenance (v7.85.0): record the deterministic FACTS a
     # non-forgeable receipt needs -- the command that ran, its exit code, and a
