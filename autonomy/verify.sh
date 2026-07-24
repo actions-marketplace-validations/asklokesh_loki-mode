@@ -730,27 +730,30 @@ verify_gate_static() {
 # Gate: NO-MOCK data render (Proof-of-Function, static half).
 #
 # WHAT IS SCANNED:
-#   Only net-new PR-diff UI/data-render modules (VERIFY_DIFF_NAMES, same set as
-#   verify_gate_static). A list/table/dashboard whose backing data traces to an
-#   inline mock array / faker / placeholder literal instead of a real
-#   fetch/query is the disproof: a fake app that only looks done.
+#   The changed-file union identifies the trust boundary. The shared scanner may
+#   follow a named relative import into an unchanged source module, but it only
+#   blocks when either the render module or backing declaration changed. A
+#   rendered operational collection backed by an inline mock array, faker, or
+#   placeholder literal is the disproof: a fake app that only looks done.
 #
 # ARTIFACT:
-#   Writes .loki/verification/nomock-scan.json {scanned, hit, file, line,
-#   snippet} -- the loki-verify receipt half that council_evidence_gate reads.
-#   On a hit, also emits a High finding so `loki verify` blocks (block-on
-#   critical,high). This is a REAL observation of shipped source, not a guess.
+#   Writes .loki/verification/nomock-scan.json as an audit receipt. Completion
+#   never trusts this mutable file and independently reruns the engine-owned
+#   scanner over current source. On a hit, verify also emits a High finding so
+#   `loki verify` blocks. This is an observation of shipped source, not a guess.
 #
 # FAIL-CLOSED / FALSE-POSITIVE TUNING:
-#   Requires the collection to actually feed a rendered table/list/grid AND the
-#   same module to lack any real data source. Excludes test/story/mock/fixture/
-#   msw paths and .d.ts. High-confidence only; anything else -> pass/skip (never
-#   false-block a design-system demo, empty state, or seed file). Under-detect
-#   over false-block (spec risk #1).
+#   Binds the rendered symbol to its declaration and exempts static content such
+#   as features, pricing, comparisons, and stories. Excludes test, story, mock,
+#   fixture, MSW, generated, and declaration paths. High-confidence only;
+#   anything else passes or skips to avoid blocking design-system demos, empty
+#   states, or seed files.
 # ---------------------------------------------------------------------------
 verify_gate_nomock() {
     local tree="$1"
     local changed="$VERIFY_DIFF_NAMES"
+    local PYTHONPATH="" PYTHONNOUSERSITE=1
+    export PYTHONPATH PYTHONNOUSERSITE
 
     if [ "${LOKI_PROOF_NOMOCK:-1}" = "0" ]; then
         _verify_add_gate "nomock" "skipped" "" "nomock gate disabled (LOKI_PROOF_NOMOCK=0)" "true"
@@ -771,93 +774,32 @@ verify_gate_nomock() {
 
     # The scan runs in $tree over the changed files, writes the receipt JSON, and
     # prints its status line (FAIL:<file>:<line>:<snippet> | PASS:<n> | SKIP:0).
+    local scanner
+    scanner="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/no_mock_scan.py"
+    if [ ! -f "$scanner" ]; then
+        _verify_add_gate "nomock" "inconclusive" "" "no-mock scanner unavailable" "true"
+        return 0
+    fi
     local status_line
-    status_line=$(_NM_FILES="$changed" _NM_TREE="$tree" _NM_OUT="$scan_file" _NM_BASE="${VERIFY_MERGE_BASE:-}" python3 <<'PYEOF' 2>/dev/null || echo "INCONCLUSIVE:detector_error"
-import os, re, sys, json
-
-tree = os.environ.get('_NM_TREE', '.')
-out = os.environ.get('_NM_OUT', '')
-base_sha = os.environ.get('_NM_BASE', '')
-files = [f for f in os.environ.get('_NM_FILES', '').splitlines() if f.strip()]
-
-UI_EXT = re.compile(r'\.(jsx?|tsx?|vue|svelte)$')
-EXCLUDE = re.compile(
-    r'(^|/)(node_modules|\.loki|__mocks__|__tests__|__fixtures__|fixtures?|mocks?|stories|storybook)(/|$)'
-    r'|\.(test|spec|stories|story|mock|fixture)\.'
-    r'|\.d\.ts$'
-    r'|(^|/)msw|(^|/)setup', re.IGNORECASE)
-REAL_SRC = re.compile(
-    r'\b(fetch|axios|useQuery|useSWR|useSWRInfinite|useLoaderData|createResource'
-    r'|prisma|supabase|firebase|firestore|db\.|knex|mongoose|sequelize|drizzle'
-    r'|graphql|useMutation|getServerSideProps|getStaticProps|createClient'
-    r'|XMLHttpRequest|\.query\(|\.get\(|\.post\(|api\.)', re.IGNORECASE)
-FAKER = re.compile(r'\bfaker\s*\.', re.IGNORECASE)
-PLACEHOLDER = re.compile(r'(lorem ipsum|john doe|jane doe|placeholder|dummy data|example@example)', re.IGNORECASE)
-INLINE_ARR = re.compile(r'(const|let|var)\s+\w+\s*(:[^=]+)?=\s*\[\s*\{', re.MULTILINE)
-RENDERS_LIST = re.compile(r'\.map\s*\(', re.IGNORECASE)
-LIST_TAG = re.compile(r'<(table|ul|ol|tbody|Table|List|Grid|DataGrid|thead)\b|role=["\']list["\']|className=["\'][^"\']*(list|table|grid|card)', re.IGNORECASE)
-
-scanned = 0
-hit = None
-for f in files:
-    if not UI_EXT.search(f) or EXCLUDE.search(f):
-        continue
-    path = os.path.join(tree, f)
-    if not os.path.isfile(path):
-        continue
-    try:
-        src = open(path, encoding='utf-8', errors='replace').read()
-    except Exception:
-        continue
-    scanned += 1
-    if not (RENDERS_LIST.search(src) and LIST_TAG.search(src)):
-        continue
-    if REAL_SRC.search(src):
-        continue
-    m = FAKER.search(src) or PLACEHOLDER.search(src) or INLINE_ARR.search(src)
-    if m:
-        line = src.count('\n', 0, m.start()) + 1
-        hit = {"file": f, "line": line, "snippet": m.group(0)[:80]}
-        break
-
-receipt = {
-    "scanned": scanned,
-    "hit": hit is not None,
-    "file": hit["file"] if hit else "",
-    "line": hit["line"] if hit else 0,
-    "snippet": hit["snippet"] if hit else "",
-    # Freshness stamp: the diff base this scan was taken against. The council gate
-    # only trusts a receipt whose base matches the current diff; otherwise it
-    # re-runs the scan inline over the CURRENT diff (never trusts a stale scan).
-    "base_sha": base_sha,
-}
-if out:
-    try:
-        tmp = out + ".tmp"
-        with open(tmp, "w") as fh:
-            json.dump(receipt, fh, indent=2)
-        os.replace(tmp, out)
-    except Exception:
-        pass
-if hit:
-    print("FAIL:%s:%d:%s" % (hit["file"], hit["line"], hit["snippet"]))
-elif scanned == 0:
-    print("SKIP:0")
-else:
-    print("PASS:%d" % scanned)
-PYEOF
-)
+    status_line=$(
+        _NM_FILES="$changed" \
+        _NM_TREE="$tree" \
+        _NM_OUT="$scan_file" \
+        _NM_BASE="${VERIFY_MERGE_BASE:-}" \
+        python3 -I "$scanner" 2>/dev/null \
+            || echo "INCONCLUSIVE:detector_error"
+    )
 
     case "$status_line" in
         FAIL:*)
             local rest="${status_line#FAIL:}"
             local hit_file="${rest%%:*}"
-            _verify_add_gate "nomock" "fail" "static-scan" "data render backed by mock/placeholder, no real query/fetch: $rest" "true"
+            _verify_add_gate "nomock" "fail" "static-scan" "rendered operational collection resolves to inline, faker, or placeholder-backed data: $rest" "true"
             _verify_add_finding "High" "functionality" "deterministic:nomock-scan" "$hit_file" "null" \
-                "Mock-backed data render: a list/table/dashboard in $hit_file renders from an inline mock array / faker / placeholder literal with no real fetch/query in the module. Wire it to a real data source. ($rest)"
+                "Mock-backed data render: a list, table, or dashboard in $hit_file resolves to an inline mock array, faker value, or placeholder literal. Wire the rendered collection to a real data source. ($rest)"
             ;;
         PASS:*)
-            _verify_add_gate "nomock" "pass" "static-scan" "${status_line#PASS:} UI module(s) scanned, real data sources present" "true"
+            _verify_add_gate "nomock" "pass" "static-scan" "${status_line#PASS:} UI module(s) scanned, no high-confidence rendered operational mock detected" "true"
             ;;
         SKIP:*)
             _verify_add_gate "nomock" "skipped" "" "no scannable UI/data-render files in diff" "true"

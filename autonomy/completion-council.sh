@@ -1812,6 +1812,12 @@ council_evidence_gate() {
     # Knob first: opt-out is exact-as-today, before any file read or write.
     [ "${LOKI_EVIDENCE_GATE:-1}" = "0" ] && return 0
 
+    # Every Python helper in this trust boundary inherits a sanitized import
+    # environment. A project-controlled sitecustomize.py must never execute
+    # while the engine decides whether completion evidence is credible.
+    local PYTHONPATH="" PYTHONNOUSERSITE=1
+    export PYTHONPATH PYTHONNOUSERSITE
+
     # The gate may run even when the completion council is disabled
     # (LOKI_COUNCIL_ENABLED=false leaves COUNCIL_STATE_DIR unset by council_init),
     # because it now also guards the default completion-promise route. Default
@@ -2233,63 +2239,19 @@ PYEOF
     local auth_fails="false" auth_inconclusive="false" auth_inconclusive_reason=""
     local authz_fails="false" authz_inconclusive="false" authz_inconclusive_reason=""
     local _proof_file=".loki/verification/functional-proof.json"
-    local _nomock_scan=".loki/verification/nomock-scan.json"
 
     # --- Evidence check (e): NO-MOCK (static, cheap, runs first) ---
     # A list/table/dashboard whose backing data traces to an inline mock array /
     # faker / placeholder literal instead of a real fetch/query is a fake app.
     # This is the ONLY axis that can run without the app up. Consumer of
-    # verify.sh's nomock-scan.json; if that file is absent (verify did not run),
-    # re-run the identical detector inline over the changed-files union.
-    # BUG 2 / concern 4: a receipt is trustworthy only if it was scanned against
-    # the CURRENT diff base. A receipt stamped with a different base_sha is stale
-    # (a scan of a different diff); prefer a fresh current-diff scan over it. An
-    # un-stamped receipt (older format, no base_sha) is trusted for back-compat.
-    local _nomock_fresh="false"
-    if [ -f "$_nomock_scan" ] && command -v python3 >/dev/null 2>&1; then
-        if _NM="$_nomock_scan" _BASE="$base_sha" python3 -c "
-import json, os, sys
-try:
-    d = json.load(open(os.environ['_NM']))
-except Exception:
-    sys.exit(1)
-stamp = d.get('base_sha', '')
-cur = os.environ.get('_BASE', '')
-# fresh if no stamp (back-compat) or stamp matches the current diff base.
-sys.exit(0 if (not stamp or stamp == cur) else 1)
-" 2>/dev/null; then
-            _nomock_fresh="true"
-        fi
-    fi
-
+    # verify.sh writes nomock-scan.json as an audit artifact. Completion never
+    # trusts that mutable cache, even when its base SHA matches: the run base is
+    # constant across iterations while source bytes can keep changing. Re-run
+    # the engine-owned scanner over the current changed-file union every time.
     if [ "$_proof_gate" = "0" ] || [ "${LOKI_PROOF_NOMOCK:-1}" = "0" ]; then
         nomock_inconclusive="true"
         nomock_inconclusive_reason="nomock_gate_disabled"
-    elif [ -f "$_nomock_scan" ] && [ "$_nomock_fresh" = "true" ] && command -v python3 >/dev/null 2>&1; then
-        # Read the verify-produced receipt: hit==true -> positive mock evidence.
-        local _nm_status
-        _nm_status=$(_NM="$_nomock_scan" python3 <<'PYEOF' 2>/dev/null || echo "INCONCLUSIVE:parse_error"
-import json, os
-try:
-    d = json.load(open(os.environ['_NM']))
-except Exception:
-    print("INCONCLUSIVE:parse_error"); raise SystemExit
-if d.get("hit") is True:
-    print("FAIL")
-elif d.get("scanned", 0) == 0:
-    print("INCONCLUSIVE:no_ui_files")
-else:
-    print("PASS")
-PYEOF
-)
-        case "$_nm_status" in
-            FAIL) nomock_fails="true" ;;
-            PASS) : ;;
-            INCONCLUSIVE:*) nomock_inconclusive="true"; nomock_inconclusive_reason="${_nm_status#INCONCLUSIVE:}" ;;
-            *) nomock_inconclusive="true"; nomock_inconclusive_reason="unknown" ;;
-        esac
     elif command -v python3 >/dev/null 2>&1; then
-        # No verify receipt -> re-run the detector inline over the changed union.
         local _nm_files
         _nm_files=$(
             {
@@ -2299,74 +2261,23 @@ PYEOF
                 git ls-files --others --exclude-standard 2>/dev/null
             } | grep -v '^$' | grep -vE '^\.loki/' | sort -u
         )
-        local _nm_status
-        _nm_status=$(_NM_FILES="$_nm_files" python3 <<'PYEOF' 2>/dev/null || echo "INCONCLUSIVE:detector_error"
-import os, re, sys
-files = [f for f in os.environ.get('_NM_FILES','').splitlines() if f.strip()]
-
-# Scope: shipped UI/data-render modules. Exclude test/story/mock/fixture paths.
-UI_EXT = re.compile(r'\.(jsx?|tsx?|vue|svelte)$')
-EXCLUDE = re.compile(
-    r'(^|/)(node_modules|\.loki|__mocks__|__tests__|__fixtures__|fixtures?|mocks?|stories|storybook)(/|$)'
-    r'|\.(test|spec|stories|story|mock|fixture)\.'
-    r'|\.d\.ts$'
-    r'|(^|/)msw|(^|/)setup', re.IGNORECASE)
-
-# A real data source in the same module.
-REAL_SRC = re.compile(
-    r'\b(fetch|axios|useQuery|useSWR|useSWRInfinite|useLoaderData|createResource'
-    r'|prisma|supabase|firebase|firestore|db\.|knex|mongoose|sequelize|drizzle'
-    r'|graphql|useMutation|getServerSideProps|getStaticProps|createClient'
-    r'|XMLHttpRequest|\.query\(|\.get\(|\.post\(|api\.)', re.IGNORECASE)
-
-# Mock/placeholder data sources.
-FAKER = re.compile(r'\bfaker\s*\.', re.IGNORECASE)
-PLACEHOLDER = re.compile(r'(lorem ipsum|john doe|jane doe|placeholder|dummy data|example@example)', re.IGNORECASE)
-# An inline array literal of objects assigned to a const/let/var (mock dataset).
-INLINE_ARR = re.compile(r'(const|let|var)\s+\w+\s*(:[^=]+)?=\s*\[\s*\{', re.MULTILINE)
-# A collection actually feeding a render: .map(...) near a list/table/grid tag.
-RENDERS_LIST = re.compile(r'\.map\s*\(', re.IGNORECASE)
-LIST_TAG = re.compile(r'<(table|ul|ol|tbody|Table|List|Grid|DataGrid|thead)\b|role=["\']list["\']|className=["\'][^"\']*(list|table|grid|card)', re.IGNORECASE)
-
-scanned = 0
-hit = None  # (file, snippet)
-for f in files:
-    if not UI_EXT.search(f) or EXCLUDE.search(f):
-        continue
-    if not os.path.isfile(f):
-        continue
-    try:
-        src = open(f, encoding='utf-8', errors='replace').read()
-    except Exception:
-        continue
-    scanned += 1
-    # Must actually render a collection into a list/table/grid.
-    if not (RENDERS_LIST.search(src) and LIST_TAG.search(src)):
-        continue
-    has_real = bool(REAL_SRC.search(src))
-    has_mock = bool(FAKER.search(src) or PLACEHOLDER.search(src) or INLINE_ARR.search(src))
-    # High-confidence: renders a collection, HAS a mock/inline source, and has
-    # NO real data source in the same module. Absence of a fetch/query in a
-    # list-rendering module is the disproof (fail-closed), exactly as a red
-    # test runner is treated by the tests axis.
-    if has_mock and not has_real:
-        m = FAKER.search(src) or PLACEHOLDER.search(src) or INLINE_ARR.search(src)
-        snippet = (m.group(0)[:60] if m else 'inline mock data')
-        hit = (f, snippet)
-        break
-
-if hit:
-    print("FAIL")
-    sys.stderr.write(hit[0] + " :: " + hit[1] + "\n")
-elif scanned == 0:
-    print("INCONCLUSIVE:no_ui_files")
-else:
-    print("PASS")
-PYEOF
-)
+        local _nm_status _nm_scanner _nm_cc_dir
+        _nm_cc_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-}")" 2>/dev/null && pwd || true)"
+        _nm_scanner="$_nm_cc_dir/lib/no_mock_scan.py"
+        if [ -z "$_nm_cc_dir" ] || [ ! -f "$_nm_scanner" ]; then
+            _nm_status="INCONCLUSIVE:scanner_unavailable"
+        else
+            _nm_status=$(
+                _NM_FILES="$_nm_files" \
+                _NM_TREE="." \
+                python3 -I "$_nm_scanner" 2>/dev/null \
+                    || echo "INCONCLUSIVE:detector_error"
+            )
+        fi
         case "$_nm_status" in
-            FAIL) nomock_fails="true" ;;
-            PASS) : ;;
+            FAIL:*) nomock_fails="true" ;;
+            PASS:*) : ;;
+            SKIP:*) nomock_inconclusive="true"; nomock_inconclusive_reason="no_ui_files" ;;
             INCONCLUSIVE:*) nomock_inconclusive="true"; nomock_inconclusive_reason="${_nm_status#INCONCLUSIVE:}" ;;
             *) nomock_inconclusive="true"; nomock_inconclusive_reason="unknown" ;;
         esac
@@ -2744,15 +2655,14 @@ PYEOF
         log_warn "[Council] Evidence gate BLOCKED: a secret/credential was detected in the changed files"
     fi
     if [ "$nomock_fails" = "true" ]; then
-        # PoF #1: a list/table/dashboard renders from an inline mock array /
-        # faker / placeholder literal with NO real fetch/query in the module -- a
-        # fake app that only looks done. Opt out: LOKI_PROOF_NOMOCK=0.
+        # PoF #1: a list, table, or dashboard resolves to an inline mock array,
+        # faker value, or placeholder literal. Opt out: LOKI_PROOF_NOMOCK=0.
         if [ -n "$failures" ]; then
-            failures="${failures}|a data render is backed by mock/placeholder data, not a real query/fetch (set LOKI_PROOF_NOMOCK=0 to opt out)"
+            failures="${failures}|a rendered operational collection resolves to inline, faker, or placeholder-backed data (set LOKI_PROOF_NOMOCK=0 to opt out)"
         else
-            failures="a data render is backed by mock/placeholder data, not a real query/fetch (set LOKI_PROOF_NOMOCK=0 to opt out)"
+            failures="a rendered operational collection resolves to inline, faker, or placeholder-backed data (set LOKI_PROOF_NOMOCK=0 to opt out)"
         fi
-        log_warn "[Council] Evidence gate BLOCKED: a data render is backed by mock/placeholder data (no real query/fetch). Opt out: LOKI_PROOF_NOMOCK=0"
+        log_warn "[Council] Evidence gate BLOCKED: a rendered operational collection resolves to inline, faker, or placeholder-backed data. Opt out: LOKI_PROOF_NOMOCK=0"
     fi
     if [ "$persist_fails" = "true" ]; then
         # PoF #2: a create path was FRESHLY driven this iteration and the record
