@@ -5,15 +5,68 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v8.1.0 (unreleased -- feature branch)
+## v8.0.0 (unreleased -- feature branch)
 
-### One-switch SDK activation + rollback + packaging gate (MINOR, default-off)
+Loki's first 8.x. No 8.x has ever been published (npm latest is 7.129.x), so
+everything below ships together as ONE major release. The sections previously
+drafted under a separate "v8.1.0" heading are folded in here: they were never
+released independently, and shipping a first-ever 8.x as 8.1.0 with a phantom
+8.0.0 beneath it would describe a release history that does not exist.
 
-v8 shipped the Anthropic SDK route behind eight per-site `LOKI_SDK_*` flags. v8.1
-makes it operable at scale without learning eight flags, adds the rollback that
-must exist before the loop can ever default-on, and proves the SDK judge ships in
-the packed artifact. Everything remains OPT-IN and DEFAULT-OFF: with nothing set,
-the engine is byte-identical to v8 (which is byte-identical to v7).
+**Default-off posture (the whole release).** With no `LOKI_*` flag set, the
+engine behaves byte-identically to v7: the bash `claude` path runs and none of
+the SDK code loads. Every new capability below is opt-in or additive, and the
+SDK RARV loop specifically remains DEFAULT-OFF pending its acceptance tests.
+
+### v8 harness intelligence (jcode-informed)
+
+Four measured-harness disciplines, adopted onto the existing trust core rather
+than bolted beside it. None of them can weaken a gate.
+
+- **Prompt-cache discipline.** Already present and verified, not rebuilt: the
+  prompt is split into a cache-stable `<loki_system>` prefix and a volatile
+  `<dynamic_context>` tail at an explicit `[CACHE_BREAKPOINT]`, which
+  `sdk_invoker.ts` uses to apply `cache_control`. Every new instruction added in
+  this release was placed in the prefix to preserve that property.
+- **Confidence-spike re-check.** A jump to near-maximal self-reported confidence
+  forces ONE extra verification before the done-signal valve force-stops a run.
+  Strictly additive: a spike can only ADD a verification pass, never skip or
+  satisfy a gate. It cannot delay the stagnation valve, and the delay is
+  one-shot so a re-spiking run cannot postpone the valve indefinitely.
+- **Hill-climbable goal scoring.** A `COMPLETION_PROMISE` with no measurable
+  target (no number, comparator, named metric, or verifiable artifact) gets an
+  advisory asking for a checkable success condition. Advisory only -- it never
+  blocks a build or rewrites the goal. Suppressed for an absent goal and in
+  perpetual mode, where open-endedness is the chosen configuration.
+  Byte-mirrored across the bash and TypeScript routes.
+- **Smart retry.** Positively-identified permanent failures (bad credentials,
+  unknown model, exhausted quota) stop early instead of burning the retry
+  budget on guaranteed-identical failures. Fail-safe by construction: an
+  unrecognized error stays TRANSIENT and keeps retrying exactly as before, and
+  rate limits are explicitly excluded from the permanent set.
+
+### Operational observability
+
+- **SDK capability-degradation event.** An SDK load or stream failure now emits
+  a structured `capability_degraded` record onto the existing
+  `.loki/events.jsonl` stream instead of existing only as prose in the captured
+  output, so an unattended operator can distinguish "the SDK could not load"
+  from "the model did poor work". No new env var.
+- **Time to first preview.** The elapsed seconds from run start to the app first
+  serving is recorded once per run. Write-once, so a restart cannot overwrite a
+  genuine slow first preview with a flattering warm-start number, and skipped
+  entirely rather than guessed when no baseline exists.
+- **Opt-in build analytics + otel 2.x.** Build-outcome analytics behind a strict
+  second gate (default off even when telemetry is on, allowlist-only fields),
+  and the OpenTelemetry 2.x bump that clears GHSA-45rx-2jwx-cxfr at source.
+
+### One-switch SDK activation + rollback + packaging gate (default-off)
+
+The SDK route is reachable through eight per-site `LOKI_SDK_*` flags. This makes
+it operable at scale without learning all eight, adds the rollback that must
+exist before the loop can ever default-on, and proves the SDK judge ships in the
+packed artifact. Everything remains OPT-IN and DEFAULT-OFF: with nothing set,
+the engine is byte-identical to v7.
 
 **One-switch mode (`LOKI_SDK_MODE`).** A single operator switch sets the default
 for all eight per-site flags at once via a write-once resolver, mirrored
@@ -54,13 +107,11 @@ under the SDK route, while stating explicitly that code-execution ISOLATION is
 RETAINED (in-process SDK runs at host privilege, so isolation matters more, not
 less). No behavior change, no removal; opt out `LOKI_SANDBOX_DEPRECATION_QUIET=1`.
 
-**Not in v8.1 (deliberate, YAGNI).** The Message Batches API judge fan-out was
+**Not in v8 (deliberate, YAGNI).** The Message Batches API judge fan-out was
 scoped out after a codebase-wide audit: every judge fan-out is either a single
 inlined call or on the RARV critical path, where the Batch API's minutes-of-async
 polling is a latency regression, not a win. No batch-appropriate site exists
 today; revisit if a latency-tolerant bulk-judge site is introduced.
-
-## v8.0.0
 
 ### The Anthropic SDK transformation (MAJOR)
 
