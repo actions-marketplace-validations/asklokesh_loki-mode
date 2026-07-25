@@ -382,6 +382,12 @@ run_check "tests/test-cli-commands.sh (LOKI_LEGACY_BASH=1)" "LOKI_LEGACY_BASH=1 
 run_check "tests/cli/test-alias-forwarding.sh (Bun route)" "LOKI_ROUTE=bun bash tests/cli/test-alias-forwarding.sh 2>&1 | tail -3"
 run_check "tests/cli/test-alias-forwarding.sh (bash route)" "LOKI_ROUTE=bash bash tests/cli/test-alias-forwarding.sh 2>&1 | tail -3"
 
+# Export overwrite guard: the prompt must never block a non-interactive run.
+# This gate exists because an unguarded "Overwrite? [y/N]" read wedged local-ci
+# for 40+ minutes (runner at 0.0% CPU in state S). Every case runs under
+# `timeout`, so a re-introduced hang fails loudly instead of stalling the lane.
+run_check "tests/test-export-overwrite-noninteractive.sh (prompt never hangs)" "bash tests/test-export-overwrite-noninteractive.sh 2>&1 | tail -3"
+
 # P4-2: AUTOMATED bash<->Bun runtime parity. Extracts the load-bearing
 # invariants from BOTH routes (autonomy-override text, PHASE_KEYS, effort-per-tier,
 # model-fallback, LOKI_GATE_* toggle set) and asserts equality, failing with a

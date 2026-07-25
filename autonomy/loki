@@ -9471,14 +9471,40 @@ cmd_assets() {
     esac
 }
 
-# Guard: check if output file exists and warn before overwriting
+# Guard: check if output file exists and warn before overwriting.
+#
+# NON-INTERACTIVE SAFETY: this is the single chokepoint every export format
+# (_export_json / _export_markdown / _export_csv / _export_timeline) routes
+# through, so the guard lives here once rather than in four callers. Without it
+# the prompt BLOCKS FOREVER whenever stdin is not closed and not answerable -- a
+# CI lane, a pipeline, or a test harness that leaves stdin attached. That wedged
+# local-ci for 40+ minutes at tests/cli/test-alias-forwarding.sh (the runner sat
+# at 0.0% CPU in state S waiting on a read that could never be satisfied).
+#
+# Semantics mirror the established precedent at the BMAD prompt (search
+# LOKI_AUTO_CONFIRM): LOKI_AUTO_CONFIRM=true (falling back to CI) means ANSWER
+# YES, and echoes an auditable "y (auto-confirmed)" line. A non-interactive
+# shell WITHOUT that opt-in FAILS CLOSED: it refuses the overwrite and names the
+# env var, because silently clobbering a user's file in CI is the worse failure.
+# `read` is `|| reply=""` guarded so an EOF cannot abort a `set -e` caller.
 _export_check_overwrite() {
     local output="$1"
     if [ -n "$output" ] && [ -f "$output" ]; then
         echo -e "${YELLOW}Warning: File already exists: $output${NC}"
+        local _auto="${LOKI_AUTO_CONFIRM:-${CI:-false}}"
+        if [ "$_auto" = "true" ]; then
+            echo -n "Overwrite? [y/N] "
+            echo "y (auto-confirmed)"
+            return 0
+        fi
+        if [ ! -t 0 ]; then
+            echo "Export cancelled (non-interactive: refusing to overwrite '$output'." >&2
+            echo "Set LOKI_AUTO_CONFIRM=true to overwrite, or choose a new output path.)" >&2
+            return 1
+        fi
         echo -n "Overwrite? [y/N] "
         local reply
-        read -r reply
+        read -r reply || reply=""
         case "$reply" in
             [yY]|[yY][eE][sS]) return 0 ;;
             *) echo "Export cancelled."; return 1 ;;
@@ -10143,7 +10169,18 @@ cmd_config_edit() {
 
     if [ -z "$config_file" ]; then
         echo -e "${YELLOW}No config file found.${NC}"
-        read -p "Create one? [Y/n]: " create
+        # Non-interactive safety (same class as _export_check_overwrite): a bare
+        # `read` here blocks forever when stdin is attached but unanswerable.
+        # This prompt DEFAULTS TO YES, so auto-confirm and non-interactive both
+        # take the create path; only the explicit interactive "n" declines.
+        local create=""
+        local _auto="${LOKI_AUTO_CONFIRM:-${CI:-false}}"
+        if [ "$_auto" = "true" ] || [ ! -t 0 ]; then
+            echo "Create one? [Y/n]: Y (non-interactive default; run 'loki config init' to control this)"
+            create="Y"
+        else
+            read -r -p "Create one? [Y/n]: " create || create=""
+        fi
         create="${create:-Y}"
         if [[ "$create" =~ ^[Yy] ]]; then
             cmd_config_init
