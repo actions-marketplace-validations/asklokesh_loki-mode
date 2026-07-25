@@ -192,6 +192,115 @@ def _trial_has_proof(trial: Dict[str, Any]) -> Optional[bool]:
     return None
 
 
+def _declared_complete_normalized(trial: Dict[str, Any]) -> Optional[bool]:
+    """Did the tool CLAIM this task was complete, under the ONE rule applied to
+    EVERY tool including Loki?
+
+    Rule (founder decision 2026-07-24): declared complete == the tool terminated
+    without error AND produced a non-empty diff.
+
+    Why deliberately ignore Loki's richer structured verdict here: Loki emits a
+    proof.json honesty.headline; claude_code and aider emit nothing comparable,
+    only a process exit status. Scoring Loki's strict self-report against a
+    competitor's loose inferred one would bias the false-green number IN LOKI'S
+    FAVOUR, and that is the first thing a skeptical reviewer would attack. So
+    the headline metric handicaps our own signal on purpose, and the structured
+    verdict is reported separately (see _declared_complete_structured).
+
+    Returns None when the trial does not record enough to judge, so an
+    unmeasurable trial is excluded from the denominator rather than silently
+    counted as a success or a failure.
+    """
+    ad = trial.get("adapter")
+    if not isinstance(ad, dict):
+        return None
+
+    status = ad.get("exit_status")
+    if status is None:
+        return None
+    # exit_status is the adapter's own terminated-cleanly signal. Accept the
+    # common spellings rather than assuming one adapter's convention.
+    if isinstance(status, bool):
+        terminated_ok = status
+    elif isinstance(status, (int, float)) and not isinstance(status, bool):
+        terminated_ok = int(status) == 0
+    elif isinstance(status, str):
+        terminated_ok = status.strip().lower() in ("ok", "success", "completed", "0")
+    else:
+        return None
+    if not terminated_ok:
+        return False
+
+    # Non-empty diff. A tool that exits 0 having changed nothing has not
+    # claimed completion in any meaningful sense (this is the same principle as
+    # the engine's own empty-diff evidence gate).
+    prov = ad.get("provenance") if isinstance(ad.get("provenance"), dict) else {}
+    for key in ("files_changed", "diff_lines", "lines_changed"):
+        v = ad.get(key, prov.get(key))
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return int(v) > 0
+    for key in ("diff_sha256", "diff_hash"):
+        v = ad.get(key, prov.get(key))
+        if isinstance(v, str) and v.strip():
+            return True
+    # Terminated cleanly but the adapter recorded no diff evidence either way.
+    return None
+
+
+def _declared_complete_structured(trial: Dict[str, Any]) -> Optional[bool]:
+    """Loki-only secondary signal: the receipt's own honesty headline.
+
+    Reported ALONGSIDE the normalized axis, never in place of it. Tools with no
+    structured verdict return None and stay out of this axis entirely (rather
+    than being scored 0, which would read as "never claimed done").
+    """
+    ad = trial.get("adapter")
+    if not isinstance(ad, dict):
+        return None
+    prov = ad.get("provenance")
+    if not isinstance(prov, dict):
+        return None
+    verdict = prov.get("verify_verdict")
+    if not isinstance(verdict, str) or not verdict.strip():
+        return None
+    return verdict.strip().upper() == "VERIFIED"
+
+
+def _false_green(rows: List[Dict[str, Any]], declared_fn) -> Any:
+    """FALSE-GREEN RATE: of the trials where the tool CLAIMED completion, the
+    fraction the held-out grader says did NOT actually pass.
+
+    This is the metric the whole benchmark exists for. `success` comes from the
+    grader ONLY (a held-out acceptance command the agent could not edit), and
+    the claim comes from `declared_fn`. Their disagreement is the moat measured
+    rather than asserted.
+
+    Denominator is CLAIMED trials, not all trials: "when this tool tells you it
+    is done, how often is it wrong" is the question a user actually has.
+    Returns "not_captured" when nothing is measurable, never 0.0 -- a silent 0
+    would read as a perfect score.
+    """
+    claimed = 0
+    false_green = 0
+    for row in rows:
+        for t in row.get("trials", []) or []:
+            if not isinstance(t, dict):
+                continue
+            declared = declared_fn(t)
+            if declared is not True:
+                continue
+            claimed += 1
+            if not t.get("success"):
+                false_green += 1
+    if claimed == 0:
+        return "not_captured"
+    return {
+        "n_claimed": claimed,
+        "n_false_green": false_green,
+        "rate": round(false_green / claimed, 4),
+    }
+
+
 def cell_axes(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Aggregate the per-axis stats for one (model,config) cell (>=1 row).
 
@@ -235,8 +344,23 @@ def cell_axes(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             "wilson_high": None if hi is None else round(hi, 4),
         },
         "honesty": honesty,
+        # false_green is the HEADLINE competitive metric (one normalization rule,
+        # every tool, Loki included). false_green_structured is Loki's own
+        # receipt verdict, reported as a secondary column and never as the
+        # headline -- see _declared_complete_normalized for why.
+        "false_green": _false_green(rows, _declared_complete_normalized),
+        "false_green_structured": _false_green(rows, _declared_complete_structured),
         "design": "not_captured",
         "cost_usd_median": _median(costs),
+        # COST PER VERIFIED TASK: total spend divided by GRADER-CONFIRMED
+        # successes, not by attempts. Cost per attempt flatters a tool that
+        # fails cheaply and often; the question a buyer actually has is what a
+        # working result costs. null (never 0) when nothing was solved or no
+        # cost was recorded, so an unmeasured cell cannot read as "free".
+        "cost_usd_per_verified": (
+            round(sum(costs) / successes, 4)
+            if costs and successes > 0 else None
+        ),
         "duration_s_median": _median(durations),
         "obs": obs,
     }
@@ -367,6 +491,18 @@ def _fmt_rate(cx: Dict[str, Any]) -> str:
             % (sr, cx["correctness"]["wilson_low"], cx["correctness"]["wilson_high"]))
 
 
+def _fmt_false_green(v) -> str:
+    """Render the false-green axis for the grid.
+
+    Always shows the DENOMINATOR alongside the rate: "0.25 (1/4)" tells a reader
+    the sample size, where a bare "0.25" invites over-reading a 4-trial cell.
+    A cell with nothing measurable renders as not_captured, never as 0.
+    """
+    if not isinstance(v, dict):
+        return "not_captured"
+    return "%.2f (%d/%d)" % (v["rate"], v["n_false_green"], v["n_claimed"])
+
+
 def _fmt_usd(v) -> str:
     return "not recorded" if v is None else ("$%.4f" % v).rstrip("0").rstrip(".")
 
@@ -387,14 +523,15 @@ def render_markdown(report: Dict[str, Any]) -> str:
     # (a) model x config grid.
     lines.append("## Grid: success_rate + Wilson 95% CI")
     lines.append("")
-    lines.append("| cell | N | success_rate [CI] | honesty | design | cost_median | dur_median |")
-    lines.append("|---|---|---|---|---|---|---|")
+    lines.append("| cell | N | success_rate [CI] | false_green | honesty | design | cost_median | dur_median |")
+    lines.append("|---|---|---|---|---|---|---|---|")
     for key in sorted(report["cells"]):
         cx = report["cells"][key]
         dur = ("not recorded" if cx["duration_s_median"] is None
                else "%.1fs" % cx["duration_s_median"])
-        lines.append("| %s | %d | %s | %s | %s | %s | %s |" % (
-            key, cx["n_trials"], _fmt_rate(cx), cx["honesty"], cx["design"],
+        lines.append("| %s | %d | %s | %s | %s | %s | %s | %s |" % (
+            key, cx["n_trials"], _fmt_rate(cx), _fmt_false_green(cx.get("false_green")),
+            cx["honesty"], cx["design"],
             _fmt_usd(cx["cost_usd_median"]), dur))
     lines.append("")
 

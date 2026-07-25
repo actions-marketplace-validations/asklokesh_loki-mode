@@ -18,7 +18,7 @@ discordance rate", plus one genuinely-open normalization decision (section 4).
 | GRADER verdict (ground truth) | **EXISTS** | `trial.success` = held-out acceptance exit == 0. Set ONLY by `runner.grade`. Held-out integrity via `acceptance.overlay` copied in AFTER the agent finishes (the SWE-bench test-patch pattern), so the agent cannot edit the test that grades it. `SCHEMA-result.md:8-19`. |
 | Grader actually discriminates | **EXISTS, PROVEN** | `benchmarks/bench/tests/test_grader_discrimination.py` drives `runner.grade()` against a correct and a missing artifact, asserting True vs False, with no billable agent call. Without this the numbers would mean nothing. |
 | DECLARED verdict (the agent's own claim) | **EXISTS for Loki** | `adapters/loki.py:107 _read_verify_verdict()` reads `.loki/proofs/<run_id>/proof.json` -> `honesty.headline` ("VERIFIED" / "NOT VERIFIED") and exposes it as `provenance.verify_verdict`. |
-| The cross-product (false-green) | **MISSING** | Nothing anywhere computes `verify_verdict == VERIFIED AND success == False`. This is the entire remaining gap. |
+| The cross-product (false-green) | **IMPLEMENTED 2026-07-24** | `equivalence_report.py` now exposes two axes per cell: `false_green` (the headline, one normalization rule applied to every tool) and `false_green_structured` (Loki's receipt verdict, secondary). Denominator is CLAIMED trials, so the published number answers "when this tool says it is done, how often is it wrong". Guarded by `tests/test_bench_false_green.py` (12 tests, proven non-vacuous: 11 fail without the implementation). |
 
 ### The near-miss worth noting
 
@@ -89,7 +89,26 @@ will say so immediately, and they would be right. Publishing that comparison
 without resolving this would reproduce exactly the credibility gap the benchmark
 exists to close.
 
-Two defensible options, founder-gated:
+### RESOLVED 2026-07-24 (founder decision): option (b), one rule for all tools
+
+**Normalization rule:** `declared complete = the tool terminated without error
+AND produced a non-empty diff`, applied IDENTICALLY to every tool including
+Loki. Loki's richer structured verdict (`proof.json` -> `honesty.headline`) is
+DELIBERATELY IGNORED for the comparison and reported as a separate secondary
+column.
+
+Rationale: this deliberately handicaps our own advantage, which is the posture a
+skeptic cannot attack, and it measures what a user actually experiences (the
+tool stopped and implied success). A comparison that let Loki use a stricter
+self-report than its comparators would be the biased number a reviewer rejects
+on sight, reproducing the credibility gap this benchmark exists to close.
+
+Implementation consequence: the false_green axis needs TWO measures per tool -
+`false_green_normalized` (the headline, one rule, all tools) and, for Loki only,
+`false_green_structured` (using honesty.headline). Publish both, lead with the
+normalized one.
+
+The original options, retained for the record:
 
 - **(a) Loki-only first publication.** Publish Loki's false-green rate alone,
   with comparators explicitly deferred and the reason stated. Honest, cheap,

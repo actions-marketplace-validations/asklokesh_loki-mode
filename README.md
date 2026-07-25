@@ -25,6 +25,47 @@ _The free, source-available autonomous coding agent by [Autonomi](https://www.au
 
 ---
 
+## The Evidence Receipt: don't trust the agent, check it
+
+Every coding agent tells you it finished. Loki hands you something you can
+check yourself.
+
+Each run writes a receipt to `.loki/proofs/<run_id>/` that separates
+**deterministic FACTS** (the git diff with base and head SHAs plus a
+`diff_sha256`, the test command and its exit code, the build command and its
+exit code, each gate verdict) from **AI ASSESSMENTS** (the council verdict,
+labeled as judgment, never as proof). The headline is computed from the facts
+alone:
+
+| Headline | Means |
+|---|---|
+| VERIFIED | tests ran a real command and exited 0, diff non-empty, nothing skipped |
+| VERIFIED WITH GAPS | each gap listed by name |
+| NOT VERIFIED | a check ran and failed |
+
+```bash
+loki proof list            # every receipt from this project
+loki proof show <id>       # the facts, the assessments, and the headline
+loki proof verify <id>     # re-hash the receipt and re-derive the diff
+```
+
+`loki proof verify` exits 0 clean, 1 on tamper or drift. Receipts are attached
+to pull requests automatically (`LOKI_PROVEN_PR=0` to opt out), so a reviewer
+sees the evidence next to the code.
+
+**What the receipt does NOT claim.** On the unsigned path the generator is
+trusted: someone who rewrites both the facts and the headline into a mutually
+consistent lie and recomputes the hash will still pass verification. That is
+defense-in-depth, not non-forgeability, and neutral non-forgeability needs the
+signed record. We tested for exactly this and locked the limitation into the
+suite (`tests/test-proof-forgery-defense.sh`), and in v7.111.0 we removed our
+own earlier "non-forgeable" claim once we found it was false on that path. An
+honest boundary you can verify beats a marketing claim you cannot.
+
+To close that gap, sign your receipts: `export LOKI_PROOF_GPG_KEY=<key-id>` and
+every receipt carries a detached GPG signature that any third party with your
+public key can verify offline. See [docs/SIGNED-RECEIPTS.md](docs/SIGNED-RECEIPTS.md).
+
 ## Why Loki Mode?
 
 - **Spec-driven, autonomous, with a built-in trust layer** -- Hand Loki a spec, walk away, come back to working code with tests. The full RARV-C closure loop (Reason - Act - Reflect - Verify - Close) runs until the work is actually done, not just attempted. The verified-completion evidence gate (`skills/quality-gates.md`) refuses any "done" claim on an empty git diff against the run-start commit, blocks completion when tests run red, and (v8.0.0) also blocks when a serveable app is confirmed unhealthy (runtime-boot axis, opt out `LOKI_EVIDENCE_BOOT_GATE=0`) or a credential is detected in the changed files (secret-leak axis, opt out `LOKI_EVIDENCE_SECRET_GATE=0`), so "complete" means proven, not promised.
