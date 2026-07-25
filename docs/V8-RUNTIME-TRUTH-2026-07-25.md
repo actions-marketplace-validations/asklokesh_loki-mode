@@ -9,8 +9,9 @@ primary docs (code.claude.com), not inferred.
 ## Executive summary
 
 The v8 SDK route is **better engineered than the competitive research assumed**
-on the two properties that matter most for trust, and has **one concrete,
-fixable gap** that genuinely blocks flipping it to default.
+on the two properties that matter most for trust. After the section-4 correction
+(2026-07-25) **no known capability regression blocks the flip** - what remains
+is three untested acceptance items. The gating work is TESTS, not a port.
 
 | Property | Status |
 |---|---|
@@ -20,7 +21,8 @@ fixable gap** that genuinely blocks flipping it to default.
 | Rollback escape hatch | **SOUND** |
 | Structured degradation event | **ADDED 2026-07-25** |
 | Stagnation / done-signal valves | **PORTED 2026-07-24** |
-| **Session continuity across iterations** | **GAP - blocks the flip** |
+| Session continuity across iterations | **NOT A GAP** (corrected 2026-07-25; opt-in recovery parity only) |
+| Acceptance #1 / #7 / #8 | **UNTESTED - the only thing left gating the flip** |
 
 ## 1. Route resolution (verified)
 
@@ -86,41 +88,66 @@ Guarded by `loki-ts/tests/runner/sdk_degradation_event.test.ts` (5 tests),
 including the load-bearing property that it NEVER throws - a diagnostic that
 breaks the run it describes is worse than no diagnostic.
 
-## 4. THE GAP: no session continuity on the SDK route
+## 4. Session continuity: an OPT-IN recovery gap, NOT a default regression
 
-**This is the finding that blocks the flip.**
+**CORRECTED 2026-07-25.** The first version of this section called this "THE GAP
+that blocks the flip" and claimed the default route "would silently lose
+cross-iteration context that the legacy route preserves." **That claim was
+false**, and it is recorded here rather than quietly deleted because the way it
+was wrong is the same trap this audit exists to catch: it asserted a parity gap
+without first checking whether the legacy side was even turned on.
 
-The legacy invoker stamps and resumes model sessions: `sessionResumeArgv()` /
-`sessionStampArgv()` emit `--session-id` on a fresh run, or `--resume <uuid>`
-(plus optional `--fork-session`) on a restarted run when `LOKI_RESUME_SESSION=1`
-(`providers.ts`, the resume-or-stamp decision mirroring run.sh).
+What the source actually says:
 
-The SDK `query()` path has **no equivalent**. A grep for
-`resume|session|continue` across the entire SDK invoker block returns nothing.
-Every RARV iteration is a fresh `query()` with no conversation continuity.
+- `sessionStampEnabled()` returns false unless `LOKI_SESSION_STAMP=1`
+  (`claude_flags.ts:378`). **Default OFF.**
+- `resumeSessionEnabled()` returns false unless `LOKI_RESUME_SESSION=1`
+  (`claude_flags.ts:452`). **Default OFF.**
+- No shipped default sets either to `1` (grep across `*.sh`, `*.ts`, `*.json`,
+  `Dockerfile*`, excluding tests: only definitions and comments).
+- Decisively: `sessionStampArgv()` emits
+  `claudeIterationSessionUuid()` = `uuidv5("${runId}:${iteration}")`
+  (`claude_flags.ts:363-372`) - **derived from the iteration number, so a
+  DISTINCT id every iteration.** `tests/test-cli-session-v734.sh:11` states the
+  same in its own words: "a PER-ITERATION DISTINCT" session id.
 
-**This is not a platform limitation.** Verified against the primary Agent SDK
-docs (code.claude.com/docs/en/agent-sdk/sessions): `query()` supports
-- `resume: <session_id>` - resume a specific past session,
-- `forkSession: true` - branch without losing the original,
-- `continue: true` - resume the most recent session in the cwd.
+A per-iteration distinct `--session-id` is **correlation/tracing metadata, not
+conversation continuity.** It gives each iteration its own session rather than
+threading one. And `sessionResumeArgv()` is documented at `claude_flags.ts:445`
+as "Recovery only, never a per-iteration chain" - one resume on the first call
+of a restarted run.
 
-Session IDs are readable from `SDKResultMessage.session_id` (and earlier from
-the init `SystemMessage`). Transcripts persist at
-`~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`, where `<encoded-cwd>` is
-the absolute cwd with every non-alphanumeric character replaced by `-`.
+**Therefore: on the default path the legacy `claude -p` route is ALSO stateless
+per iteration. The SDK route loses nothing by default, and flipping it does not
+regress cross-iteration context.**
 
-**Consequence if flipped as-is:** the default route would silently lose
-cross-iteration context that the legacy route preserves. The agent would
-re-derive prior analysis each iteration - worse results AND higher token spend,
-with no error to signal it. That is a quiet capability regression, the exact
-class this audit exists to prevent.
+The real, much smaller gap: **under opt-in `LOKI_RESUME_SESSION=1`, legacy
+performs one recovery resume after a restart and the SDK path does nothing.**
+That is opt-in recovery parity, not a default-path capability regression. It
+does not block the flip; it is a follow-up for anyone using that knob.
 
-**Note the cwd caveat** (docs, verbatim): if a `resume` call runs from a
-different directory the SDK looks in the wrong place and silently returns a
-FRESH session rather than erroring. Any port must pin cwd and assert the
-resumed session is actually the intended one, or it will appear to work while
-doing nothing.
+The platform supports it whenever that port is done. Per the primary Agent SDK
+docs (code.claude.com/docs/en/agent-sdk/sessions), `query()` accepts
+`resume: <session_id>`, `forkSession: true`, and `continue: true`; session ids
+are readable from `SDKResultMessage.session_id`.
+
+Two traps for that future port, both load-bearing:
+
+1. **Do not reuse `resumeSessionEnabled()` on the SDK path.** It ends in
+   `claudeFlagSupported("--resume")`, which probes the `claude` **binary**.
+   Acceptance #1 is "SDK-full works with the binary absent" - reusing that
+   predicate makes resume silently unavailable in precisely the scenario the SDK
+   exists for. The SDK path needs the env check WITHOUT the CLI probe.
+2. **Do not write an SDK `session_id` into `.loki/state/claude-session.json`.**
+   `resumeTargetUuid()` reads `claude_session_uuid` and regex-validates it as a
+   CLI-stamped uuid; an SDK session id is a different id space from a different
+   mechanism. Sharing the field lets a restart hand one route the other's id.
+
+**And the cwd caveat** (docs, verbatim): a `resume` call from a different
+directory looks in the wrong place and silently returns a FRESH session rather
+than erroring. Any port must pin cwd and assert the resumed id EQUALS the stored
+one - a test that only checks "the call did not throw" passes against a port
+that starts fresh every time.
 
 ## 5. Flip prerequisites (task #12)
 
@@ -131,14 +158,18 @@ recovery tests pass. Current state:
 |---|---|
 | Stagnation + done-signal valves on TS route | **DONE** (2026-07-24, 10 tests, 9 fail against the pre-port stub) |
 | No silent fallback | **DONE** (verified sound; degradation event added) |
-| Session continuity parity | **NOT DONE - blocker** |
+| Session continuity parity | **NOT A BLOCKER** (corrected - see section 4; both legacy knobs default OFF and the stamp is per-iteration distinct, so there is no default-path continuity to regress) |
 | Acceptance #1 (SDK-full works with `claude` binary absent) | Untested. No binary dependency found in the SDK path, but absence of a grep hit is not a test. |
 | Acceptance #7 (SIGKILL recoverable without corruption) | Untested |
-| Acceptance #8 (resume does not repeat irreversible actions) | Untested, and depends on session continuity landing first |
+| Acceptance #8 (resume does not repeat irreversible actions) | Untested. **Note the naming collision** flagged at `claude_flags.ts:438`: Loki's own checkpoint `--resume` is a different layer from the claude-CLI session resume. #8 reads as the CHECKPOINT layer, so it is testable now and was never downstream of session continuity. |
 
-**Recommendation: DO NOT FLIP.** Three of six prerequisites are unmet, and one
-is a genuine capability regression rather than a missing test. The flip is a
-one-line change whose safety is entirely supplied by the work around it.
+**Recommendation: DO NOT FLIP YET - but the remaining work is now entirely
+TESTS, not a port.** Every unmet prerequisite is an untested acceptance item;
+no known capability regression remains. This matches what the overnight plan
+already said #12's real content was: writing acceptance #1, #7, and #8, plus
+both-route parity. If those pass, flipping executes the founder's standing
+conditional authorization. The flip itself is a one-line change whose safety is
+entirely supplied by the tests around it.
 
 ## 6. What this audit deliberately does not claim
 

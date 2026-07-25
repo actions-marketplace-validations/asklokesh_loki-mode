@@ -394,6 +394,12 @@ run_check "tests/test-export-overwrite-noninteractive.sh (prompt never hangs)" "
 # absurd baseline.
 run_check "tests/test-first-preview-metric.sh (write-once, never invented)" "bash tests/test-first-preview-metric.sh 2>&1 | tail -3"
 
+# The v8 SDK-default-flip audit concluded there is no cross-iteration context to
+# regress BECAUSE these knobs ship OFF. If anything ever turns one on, that
+# conclusion silently becomes wrong -- so the fact is guarded, not just written
+# down in docs/V8-RUNTIME-TRUTH-2026-07-25.md.
+run_check "tests/test-session-knobs-default-off.sh (audit premise holds)" "bash tests/test-session-knobs-default-off.sh 2>&1 | tail -3"
+
 # P4-2: AUTOMATED bash<->Bun runtime parity. Extracts the load-bearing
 # invariants from BOTH routes (autonomy-override text, PHASE_KEYS, effort-per-tier,
 # model-fallback, LOKI_GATE_* toggle set) and asserts equality, failing with a
