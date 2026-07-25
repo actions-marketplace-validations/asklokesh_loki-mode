@@ -20,7 +20,7 @@
 // discoverable "STUB: Phase 5" marker so failures surface loudly instead
 // of silently degrading (BUG-22 stub-discipline rule).
 
-import { mkdirSync, existsSync, readFileSync, realpathSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync, realpathSync, appendFileSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { run as shellRun } from "../util/shell.ts";
 import { REPO_ROOT } from "../util/paths.ts";
@@ -411,6 +411,33 @@ export function claudeProvider(): ProviderInvoker {
 }
 
 // ---------------------------------------------------------------------------
+// Append a structured capability-degradation record to .loki/events.jsonl.
+//
+// Same {type, source, timestamp, payload} envelope the SDK hook events use
+// (sdk_stream_parser.ts), so existing consumers of that stream need no change.
+// Best-effort by design: diagnostics must NEVER be able to fail a build, so
+// every error here is swallowed exactly like the hook-event appender.
+//
+// Exported for the test that asserts the event actually lands.
+export function emitSdkDegradationEvent(
+  cwd: string,
+  payload: { reason: string; tier?: string; model?: string; iteration?: string },
+): void {
+  try {
+    const lokiRoot = process.env["LOKI_DIR"] ?? resolve(cwd, ".loki");
+    mkdirSync(lokiRoot, { recursive: true });
+    const record = {
+      type: "capability_degraded",
+      source: "sdk_loop",
+      timestamp: new Date().toISOString(),
+      payload: { capability: "sdk_query", fail_closed: true, ...payload },
+    };
+    appendFileSync(resolve(lokiRoot, "events.jsonl"), `${JSON.stringify(record)}\n`);
+  } catch {
+    // best-effort: a diagnostic must never break the run it is describing.
+  }
+}
+
 // SDK query() provider (v8 Phase 4) -- the RARV main loop on @anthropic-ai/
 // claude-agent-sdk instead of spawning the claude binary. Reached only when
 // LOKI_SDK_LOOP is truthy (see resolveProvider). No binary spawn: query() drives
@@ -636,6 +663,26 @@ export function sdkQueryProvider(): ProviderInvoker {
       } catch (e) {
         captured += `\n[sdk-loop error: ${(e as Error).message}]\n`;
         exitCode = 1;
+        // CAPABILITY DEGRADATION (structured, not just prose in the log).
+        //
+        // The SDK path is already fail-closed: there is NO silent downgrade to
+        // the claude CLI, and exitCode stays 1 so a failed iteration can never
+        // be counted as success. What was missing is OBSERVABILITY -- the
+        // failure existed only as text inside the captured output, so an
+        // operator running unattended had nothing to alert on and no way to
+        // distinguish "the SDK could not load" from "the model did poor work".
+        //
+        // Emitted onto the SAME append-only .loki/events.jsonl stream the hook
+        // events use, with the same {type, source, timestamp, payload} shape,
+        // so every existing consumer picks it up for free. Deliberately NO new
+        // env var: this is diagnostic signal an operator always wants, and a
+        // knob to enable your own error reporting is a knob nobody would find.
+        emitSdkDegradationEvent(call.cwd, {
+          reason: (e as Error).message,
+          tier: call.tier,
+          model,
+          iteration: process.env["LOKI_ITERATION"] ?? "0",
+        });
       }
 
       // Always write the captured text (even on a thrown query()) so the
