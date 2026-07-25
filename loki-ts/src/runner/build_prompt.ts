@@ -39,6 +39,7 @@ import {
 import { resolve, dirname } from "node:path";
 import { runInline } from "../util/python.ts";
 import { detectComplexity } from "./rarv.ts";
+import { goalSharpeningInstruction } from "./goal_score.ts";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -1481,6 +1482,21 @@ export async function buildPrompt(opts: BuildPromptOpts): Promise<string> {
   lines.push(COMPOSE_INSTRUCTION);
   lines.push(LSP_GROUNDING_INSTRUCTION);
   lines.push(AGENTS_MD_INSTRUCTION);
+  // v8 harness intelligence (3c): flag a goal the loop cannot hill-climb.
+  // Derived from COMPLETION_PROMISE, fixed for the run, so it is cache-stable
+  // and belongs here in the prefix (above [CACHE_BREAKPOINT]) rather than in
+  // <dynamic_context>, where it would bust the cache every iteration.
+  //
+  // Advisory ONLY: "" for a measurable goal (or when scoring is disabled), and
+  // it never blocks a build or edits the user's goal. Deliberately not added to
+  // the DEGRADED path below, which carries a minimal instruction set by design.
+  //
+  // SUPPRESSED IN PERPETUAL MODE. Perpetual runs are open-ended on purpose
+  // ("never ending improvement cycle"); an unbounded goal is the CONFIGURATION
+  // there, not a defect, so demanding a success threshold would be advice
+  // against the mode the user explicitly chose.
+  const goalSharpening = perpetual ? "" : goalSharpeningInstruction(completionPromise, env);
+  if (goalSharpening.length > 0) lines.push(goalSharpening);
   if (prd === null || prd.length === 0) {
     // v7.40.0 (#584): emit the autonomous-decision cost disclosure once per run
     // BEFORE pushing the (possibly workflow-prefixed) analysis instruction. The

@@ -18121,6 +18121,47 @@ build_prompt() {
     # same precedent as AUTONOMY_OVERRIDE_TEXT in providers/claude_flags.ts).
     local agents_md_instruction="Project conventions: read AGENTS.md in the repository root for build, test, and style conventions. If AGENTS.md is absent, read CLAUDE.md instead. The nearest such file to the code you are editing takes precedence."
 
+    # v8 harness intelligence (3c): GOAL MEASURABILITY.
+    #
+    # Flags a COMPLETION_PROMISE the loop cannot hill-climb (no number, no
+    # comparison threshold, no named metric, no verifiable artifact). An agent
+    # can only climb toward a goal it can MEASURE; an unmeasurable goal lets
+    # every iteration claim progress and lets none be checked.
+    #
+    # PARITY-LOCKED. This block MUST stay byte-identical to
+    # goalSharpeningInstruction() in loki-ts/src/runner/goal_score.ts, including
+    # the suppression rules, or the build_prompt parity fixtures diverge.
+    # Suppressed when: the goal is empty (perpetual runs set no promise by
+    # design), PERPETUAL/AUTONOMY_MODE=perpetual (open-endedness IS the chosen
+    # configuration there), or LOKI_GOAL_SCORING=0. Advisory only: it never
+    # blocks a build and never rewrites the user's goal.
+    local goal_sharpening_instruction=""
+    if [ -n "${COMPLETION_PROMISE:-}" ] \
+       && [ "${LOKI_GOAL_SCORING:-}" != "0" ] \
+       && [ "${AUTONOMY_MODE:-}" != "perpetual" ] \
+       && [ "${PERPETUAL_MODE:-}" != "true" ] && [ "${PERPETUAL_MODE:-}" != "1" ]; then
+        local _goal_lc _goal_dims
+        _goal_lc="$(printf '%s' "$COMPLETION_PROMISE" | tr '[:upper:]' '[:lower:]')"
+        _goal_dims=0
+        # Mirrors the four DIMENSIONS regexes in goal_score.ts, in the same order.
+        printf '%s' "$_goal_lc" | grep -qE '[0-9]+(\.[0-9]+)?[[:space:]]*(%|ms|s\b|sec|second|min|minute|hour|day|kb|mb|gb|rps|qps|req|x\b|users?|items?|rows?)' && _goal_dims=$((_goal_dims + 1))
+        printf '%s' "$_goal_lc" | grep -qE '\b(under|below|less than|no more than|at most|over|above|greater than|at least|within|between|<=?|>=?)\b' && _goal_dims=$((_goal_dims + 1))
+        printf '%s' "$_goal_lc" | grep -qE '\b(latency|throughput|p50|p95|p99|uptime|error rate|conversion|coverage|score|accuracy|precision|recall|bundle size|load time|response time|memory|cpu|cost)\b' && _goal_dims=$((_goal_dims + 1))
+        printf '%s' "$_goal_lc" | grep -qE '\b(tests? pass|builds? clean|endpoint|returns? [0-9]{3}|exit code|schema|migration|deploys?|renders?|compiles?)\b' && _goal_dims=$((_goal_dims + 1))
+        # Only a goal with ZERO measurable dimensions is flagged (score == 0),
+        # matching goalNeedsSharpening(). Flagging partially-measurable goals
+        # would cry wolf, and a scorer that cries wolf gets ignored.
+        if [ "$_goal_dims" -eq 0 ]; then
+            local _goal_rationale
+            if printf '%s' "$_goal_lc" | grep -qE '\b(fast|slow|good|bad|nice|clean|better|best|modern|beautiful|intuitive|robust|scalable|user-friendly|production-ready|polished|seamless)\b'; then
+                _goal_rationale="Subjective goal with no measurable target: every iteration can claim progress and none can be verified. Add a number, a comparison, or a concrete artifact to check."
+            else
+                _goal_rationale="No measurable target detected: the loop has no gradient to climb. Add an explicit success threshold."
+            fi
+            goal_sharpening_instruction="GOAL_MEASURABILITY: the stated goal is not currently hill-climbable. ${_goal_rationale} Before implementing, restate it with at least one checkable success condition (a number with a unit, a comparison threshold, or a concrete artifact such as a passing test or an endpoint returning a specific status), and record that restatement so each iteration can be measured against it. Do NOT silently substitute your own easier goal -- if the goal cannot be sharpened from the spec alone, say so explicitly and state the assumption you are proceeding under."
+        fi
+    fi
+
     # Compose-first instruction (v7.26.0): unconditional string with conditional
     # phrasing (YOU decide whether the app warrants compose, not a static grep).
     # When an app needs more than one running service (web + database and/or
@@ -18639,6 +18680,11 @@ except Exception:
     printf '%s\n' "$compose_instruction"
     printf '%s\n' "$lsp_grounding_instruction"
     printf '%s\n' "$agents_md_instruction"
+    # v8 (3c): goal-measurability advisory. Empty (and therefore not emitted at
+    # all) for a measurable goal, an absent goal, or perpetual mode. Sits in the
+    # static prefix because COMPLETION_PROMISE is fixed for the run, so it stays
+    # cache-stable. Position mirrors build_prompt.ts exactly.
+    [ -n "$goal_sharpening_instruction" ] && printf '%s\n' "$goal_sharpening_instruction"
     # For codebase-analysis mode (no PRD), analysis_instruction is part of the
     # static prefix so it remains cache-stable.
     if [ -z "$prd" ]; then
