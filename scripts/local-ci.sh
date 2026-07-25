@@ -388,6 +388,12 @@ run_check "tests/cli/test-alias-forwarding.sh (bash route)" "LOKI_ROUTE=bash bas
 # `timeout`, so a re-introduced hang fails loudly instead of stalling the lane.
 run_check "tests/test-export-overwrite-noninteractive.sh (prompt never hangs)" "bash tests/test-export-overwrite-noninteractive.sh 2>&1 | tail -3"
 
+# Time-to-first-preview: the number that most predicts whether someone keeps
+# using the product. Guards that it is write-once (a restart cannot overwrite a
+# real slow first preview with a fast one) and never invented from a missing or
+# absurd baseline.
+run_check "tests/test-first-preview-metric.sh (write-once, never invented)" "bash tests/test-first-preview-metric.sh 2>&1 | tail -3"
+
 # P4-2: AUTOMATED bash<->Bun runtime parity. Extracts the load-bearing
 # invariants from BOTH routes (autonomy-override text, PHASE_KEYS, effort-per-tier,
 # model-fallback, LOKI_GATE_* toggle set) and asserts equality, failing with a
