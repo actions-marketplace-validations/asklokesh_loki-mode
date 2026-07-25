@@ -124,6 +124,11 @@ export type CouncilState = {
   last_diff_hash?: string;
   files_changed?: number;
   last_track_iteration?: number;
+  // v8 harness intelligence (3b): confidence-spike re-check. Highest confidence
+  // asserted so far, and whether a spike is currently pending re-verification.
+  last_confidence?: number;
+  confidence_spike_pending?: boolean;
+  confidence_spikes_total?: number;
 };
 
 export async function councilInit(prdPath: string | undefined): Promise<void> {
@@ -195,6 +200,70 @@ function diffFingerprint(cwd: string): string {
   return `${part(["diff", "--stat", "HEAD"])}-${part(["diff", "--cached", "--stat"])}-${commit}`;
 }
 
+// ---------------------------------------------------------------------------
+// v8 harness intelligence (3b): CONFIDENCE-SPIKE RE-CHECK.
+//
+// jcode's measured finding: an agent asserting maximal confidence is NOT
+// evidence the work is done. A confidence jump to ~100 correlates with the
+// agent having stopped looking, not with correctness. Loki already refuses to
+// take a self-report as a gate (the whole council exists for that), so this
+// adds the cheap complement: notice the spike and force ONE extra verification.
+//
+// STRICTLY ADDITIVE -- this is the load-bearing safety property. A confidence
+// spike can only ever ADD a verification pass. There is deliberately no branch
+// anywhere below that lets high confidence SKIP, shorten, or satisfy a gate:
+// that would be a false-green vector, the exact class the trust core exists to
+// prevent. High confidence makes the engine look HARDER, never less hard.
+//
+// Default ON but effectively inert unless the agent actually emits a
+// confidence figure; no new required knob. Tune with
+// LOKI_CONFIDENCE_SPIKE_DELTA (default 40) / _MIN (default 90), or disable
+// entirely with LOKI_CONFIDENCE_SPIKE=0.
+// ---------------------------------------------------------------------------
+
+// Confidence self-reports the agent may emit, e.g. "confidence: 95",
+// "confidence 100%", "I am 98% confident". Deliberately narrow: a loose pattern
+// would match unrelated percentages (coverage, progress) and force pointless
+// re-verification. Returns the HIGHEST value seen in the sampled tail, since a
+// single maximal claim is the signal even if hedged elsewhere.
+const CONFIDENCE_RE = /confiden(?:ce|t)\D{0,12}(\d{1,3})\s*%?|(\d{1,3})\s*%\s*confiden/gi;
+
+export function extractConfidence(lines: readonly string[]): number | null {
+  let best: number | null = null;
+  for (const line of lines) {
+    CONFIDENCE_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = CONFIDENCE_RE.exec(line)) !== null) {
+      const raw = m[1] ?? m[2];
+      if (raw === undefined) continue;
+      const n = Number.parseInt(raw, 10);
+      // >100 is not a confidence figure (version strings, byte counts).
+      if (!Number.isFinite(n) || n < 0 || n > 100) continue;
+      if (best === null || n > best) best = n;
+    }
+  }
+  return best;
+}
+
+// Is this iteration's confidence a SPIKE worth re-verifying? Two arms, either
+// of which fires:
+//   - a jump of >= delta from the previous reading, or
+//   - landing at/above min (near-certainty) having not been there before.
+// The second arm matters because an agent that opens at 100 never "jumps".
+export function isConfidenceSpike(
+  prev: number | null | undefined,
+  current: number | null,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (env["LOKI_CONFIDENCE_SPIKE"] === "0") return false;
+  if (current === null) return false;
+  const delta = envIntFrom(env, "LOKI_CONFIDENCE_SPIKE_DELTA", 40);
+  const min = envIntFrom(env, "LOKI_CONFIDENCE_SPIKE_MIN", 90);
+  if (current >= min && (prev === null || prev === undefined || prev < min)) return true;
+  if (prev === null || prev === undefined) return false;
+  return current - prev >= delta;
+}
+
 // Non-destructively PEEK the structured completion signals. The council owns
 // CONSUMPTION of these files; tracking must never delete them or a later
 // consumer would see no claim. Same two paths the bash route tests.
@@ -233,8 +302,36 @@ export const defaultCouncil: CouncilHook = {
     // consecutive counter -- an agent that alternates claim/no-claim must still
     // trip this, which is precisely the case that burned a real build to its
     // timeout when only fuzzy log language was counted.
+    //
+    // 3b INTERACTION, and the reason the order here matters: a pending
+    // confidence spike DELAYS this force-stop by exactly one iteration so the
+    // spike gets verified rather than terminated on. It can never delay valve 1
+    // (stagnation), which is checked above and stays untouched -- a stagnant
+    // build must still fail cheap no matter how confident the agent sounds.
+    //
+    // The delay is consumed here (one-shot). Without consuming it, a run that
+    // keeps re-spiking could postpone the valve forever, converting a safety
+    // valve into a budget leak.
     const totalDone = state.total_done_signals ?? 0;
-    if (doneSignalLimit > 0 && totalDone >= doneSignalLimit) return true;
+    if (doneSignalLimit > 0 && totalDone >= doneSignalLimit) {
+      if (state.confidence_spike_pending === true) {
+        const stateDir2 = resolve(defaultLokiDir(), "council");
+        try {
+          state.confidence_spike_pending = false;
+          atomicWriteFile(
+            resolve(stateDir2, "state.json"),
+            JSON.stringify(state, null, 2) + "\n",
+          );
+        } catch {
+          // Fail-safe: if the consume-write fails we must NOT keep returning
+          // false forever (that would disable the valve). Fall through to the
+          // force-stop instead -- erring toward stopping, never toward running.
+          return true;
+        }
+        return false; // one extra iteration, so the spike is verified not trusted
+      }
+      return true;
+    }
 
     return false;
   },
@@ -269,10 +366,26 @@ export const defaultCouncil: CouncilHook = {
     // is only consulted when the structured check came back negative, matching
     // bash's precedence exactly.
     let doneThisIter = hasStructuredDoneSignal(targetDir);
-    if (!doneThisIter && logFile && existsSync(logFile)) {
-      const tail = tailLines(logFile, 200);
-      if (tail) doneThisIter = tail.some((l) => DONE_LANGUAGE_RE.test(l));
+    // Read the tail ONCE and reuse it for both the done-language grep and the
+    // confidence scan, rather than walking the same file twice per iteration.
+    let tailCache: string[] | null = null;
+    if (logFile && existsSync(logFile)) tailCache = tailLines(logFile, 200);
+    if (!doneThisIter && tailCache) {
+      doneThisIter = tailCache.some((l) => DONE_LANGUAGE_RE.test(l));
     }
+
+    // --- confidence-spike detection (3b) -------------------------------------
+    // Purely observational here: record that a spike happened so shouldStop can
+    // force ONE extra verification. Never suppresses anything.
+    const currentConfidence = tailCache ? extractConfidence(tailCache) : null;
+    const spiked = isConfidenceSpike(state.last_confidence, currentConfidence);
+    if (spiked) {
+      state.confidence_spike_pending = true;
+      state.confidence_spikes_total = (state.confidence_spikes_total ?? 0) + 1;
+    }
+    // Only advance the baseline when a figure was actually read; a silent
+    // iteration must not reset the high-water mark and re-arm the same spike.
+    if (currentConfidence !== null) state.last_confidence = currentConfidence;
 
     // Two counters with DIFFERENT reset rules, and mixing them up would stop
     // the valve arming: done_signals is CONSECUTIVE (resets the moment the
@@ -310,6 +423,7 @@ export const defaultCouncil: CouncilHook = {
     state.last_diff_hash = combinedHash;
     state.files_changed = filesChanged;
     state.last_track_iteration = iteration;
+    // confidence_spike_pending / _total / last_confidence were set above.
     atomicWriteFile(resolve(stateDir, "state.json"), JSON.stringify(state, null, 2) + "\n");
   },
 };
@@ -328,7 +442,13 @@ function readCouncilState(stateDir: string): Partial<CouncilState> {
 }
 
 function envInt(name: string, fallback: number): number {
-  const raw = process.env[name];
+  return envIntFrom(process.env, name, fallback);
+}
+
+// Same parse against an explicit env, so the confidence predicates stay pure
+// over their input and are callable without mutating process.env.
+function envIntFrom(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  const raw = env[name];
   if (raw === undefined || raw.trim() === "") return fallback;
   const n = Number.parseInt(raw, 10);
   return Number.isFinite(n) ? n : fallback;
