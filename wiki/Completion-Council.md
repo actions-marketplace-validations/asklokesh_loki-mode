@@ -35,6 +35,20 @@ The council tracks git diff hashes between iterations to detect stagnation:
 - After `LOKI_COUNCIL_STAGNATION_LIMIT` consecutive iterations with no git changes, a circuit breaker triggers and forces session completion
 - This prevents infinite loops where the AI is not making meaningful progress
 
+> **Route parity (v8.0.0):** both force-stop valves now run on the default
+> (bash) route AND the opt-in Agent SDK loop (`LOKI_SDK_MODE=full`). The TS
+> route persists its convergence counters to `.loki/council/state.json`, so they
+> survive a runner restart. Two counters with different reset rules drive the
+> valves: `done_signals` is consecutive (it resets the moment the agent stops
+> claiming done) while `total_done_signals` is monotonic and is what arms the
+> done-signal valve. Stagnation force-stops at 2x
+> `LOKI_COUNCIL_STAGNATION_LIMIT`, matching bash. See
+> `loki-ts/src/runner/council.ts` and
+> `loki-ts/tests/council/track_iteration_valves.test.ts`.
+>
+> A force-stop is **not** a council approval: it means the run was halted to
+> stop it burning budget, and the work is NOT verified-complete.
+
 ### Anti-Sycophancy
 
 When all council members agree unanimously, Loki Mode triggers a devil's advocate review:
