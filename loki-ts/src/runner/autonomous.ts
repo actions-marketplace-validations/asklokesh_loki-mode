@@ -29,6 +29,7 @@ import { run as shellRun } from "../util/shell.ts";
 import { maybeGenerateProof } from "./proof.ts";
 import { cavemanCaptureUserMode } from "../providers/claude_flags.ts";
 import { resolvePrdForRun } from "./prd_reuse.ts";
+import { classifyFailure, shouldStopRetrying } from "./retry_class.ts";
 
 // ---------------------------------------------------------------------------
 // Graceful dynamic imports.
@@ -857,6 +858,29 @@ async function runAutonomousCore(
         captured && existsSync(captured)
           ? readFileSyncSafeForRunner(captured)
           : "";
+
+      // v8 harness intelligence (3d): SMART RETRY. A positively-identified
+      // permanent failure (bad credentials, unknown model, exhausted quota)
+      // fails identically on every retry, so retrying only burns the budget and
+      // wall-clock the run could spend on real work.
+      //
+      // Fail-safe by construction: classifyFailure returns "transient" for
+      // anything it does not positively recognize, so unknown errors keep the
+      // existing retry behavior. Only a matched permanent pattern stops early.
+      // Rate limits are explicitly transient and never caught here.
+      if (txt) {
+        const decision = classifyFailure(txt);
+        if (shouldStopRetrying(decision, process.env as NodeJS.ProcessEnv)) {
+          log(
+            `[runner] non-retryable failure (${decision.reason}); stopping early to save budget ` +
+              `instead of ${ctx.maxRetries - ctx.retryCount - 1} further identical retries. ` +
+              `Set LOKI_SMART_RETRY=0 to retry regardless.`,
+          );
+          await persistState(stateMod, ctx, "failed", 1);
+          return 1;
+        }
+      }
+
       if (txt) {
         const budgetMod2 = await tryImport<{
           isRateLimited(text: string): boolean;
