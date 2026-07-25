@@ -150,6 +150,33 @@ Conditional auditor (not numbered): Backward-compatibility / legacy-healing-audi
 - **Efficiency**: Task cost tracking (`.loki/metrics/efficiency/`)
 - **Rewards**: Outcome/efficiency/preference signals (`.loki/metrics/rewards/`)
 
+### v8 Harness Intelligence (v8.0.0)
+
+Four measured-harness disciplines on the trust core. None can weaken a gate.
+
+- **Prompt-cache discipline**: prompt splits into a cache-stable `<loki_system>`
+  prefix and a volatile `<dynamic_context>` tail at `[CACHE_BREAKPOINT]`;
+  `sdk_invoker.ts` applies `cache_control` on that split. **Any new always-on
+  instruction MUST go in the prefix** or it busts the cache every iteration.
+- **Confidence-spike re-check** (`loki-ts/src/runner/council.ts`): delays the
+  done-signal force-stop by ONE iteration when self-reported confidence spikes.
+  Strictly additive (never skips a gate), never delays the stagnation valve,
+  one-shot so a re-spiking run cannot postpone the valve forever.
+  `LOKI_CONFIDENCE_SPIKE=0` / `_DELTA` (40) / `_MIN` (90).
+- **Goal scoring** (`loki-ts/src/runner/goal_score.ts`): flags a
+  `COMPLETION_PROMISE` with no measurable target. Advisory only. Suppressed for
+  an absent goal and in perpetual mode. **Byte-mirrored in `autonomy/run.sh`** --
+  edit BOTH or the `build_prompt` parity fixtures diverge. `LOKI_GOAL_SCORING=0`.
+- **Smart retry** (`loki-ts/src/runner/retry_class.ts`): exits early on a
+  positively-identified permanent failure. **Fail-safe direction is
+  load-bearing**: unrecognized failures stay TRANSIENT and retry as before; rate
+  limits are explicitly excluded from the permanent set. Never invert this
+  default. `LOKI_SMART_RETRY=0`.
+
+Observability: SDK failures emit a structured `capability_degraded` record to
+`.loki/events.jsonl`; `.loki/app-runner/first-preview.json` records
+time-to-first-preview write-once (bash route only).
+
 ### Phase 1 / RARV-C Closure Env Vars
 
 Default-on in the Bun runner (see `CHANGELOG.md` v7.x entries; documented in `skills/quality-gates.md:88-110`). Set to `0` to disable; set to `1` to force-enable on the bash route.

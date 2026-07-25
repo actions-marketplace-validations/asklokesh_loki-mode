@@ -356,6 +356,58 @@ Two completion-trust features extend the verification gates. Full details in `sk
 - **Held-out spec evals:** ~25% of checklist items (deterministic `sha256(id)` order, `N >= 4`) are reserved into `.loki/checklist/held-out.json` and excluded from the build prompt feed; the completion council blocks if a held-out item fails. Opt out with `LOKI_HELDOUT_GATE=0`. Honest limit: this guards the prompt feed, not a sandbox; the reservation file is on disk and an agent with filesystem access can read it.
 - **Inconclusive-baseline disclosure:** when the evidence gate cannot establish a diff baseline (`no_git_repo` / `no_run_start_sha`) it writes `.loki/state/evidence-inconclusive.json` and `COMPLETION.txt` carries an honest "not independently verified" line. It never blocks non-git projects; red tests still block.
 
+## Harness intelligence (v8.0.0)
+
+Four measured-harness disciplines layered onto the existing trust core. None of
+them can weaken a gate: each either adds verification or saves budget on work
+that cannot succeed.
+
+| Env Var | Default | Effect |
+|---------|---------|--------|
+| `LOKI_CONFIDENCE_SPIKE=0` | on | Disable the confidence-spike re-check |
+| `LOKI_CONFIDENCE_SPIKE_DELTA` | `40` | Confidence jump (points) that counts as a spike |
+| `LOKI_CONFIDENCE_SPIKE_MIN` | `90` | Absolute level that counts as a spike on first arrival |
+| `LOKI_GOAL_SCORING=0` | on | Disable the goal-measurability advisory |
+| `LOKI_SMART_RETRY=0` | on | Retry every failure, including non-retryable ones |
+
+- **Prompt-cache discipline.** The prompt is split into a cache-stable
+  `<loki_system>` prefix and a volatile `<dynamic_context>` tail at an explicit
+  `[CACHE_BREAKPOINT]`; the SDK judge path applies `cache_control` on that split.
+  Any new always-on instruction belongs in the prefix, or it busts the cache
+  every iteration.
+- **Confidence-spike re-check.** A jump to near-maximal self-reported confidence
+  forces ONE extra verification before the done-signal valve force-stops a run.
+  Strictly additive: a spike can only ADD a verification pass, never skip,
+  shorten, or satisfy a gate. It cannot delay the stagnation valve, and the
+  delay is one-shot, so a repeatedly-spiking run cannot postpone the valve
+  indefinitely.
+- **Hill-climbable goal scoring.** A `COMPLETION_PROMISE` with no measurable
+  target (no number, comparator, named metric, or verifiable artifact) gets a
+  prompt advisory asking for a checkable success condition. Advisory only: it
+  never blocks a build and never rewrites the goal. Suppressed for an absent
+  goal and in perpetual mode, where open-endedness is the chosen configuration.
+  Byte-mirrored across the bash and TypeScript routes.
+- **Smart retry.** A positively-identified permanent failure (bad credentials,
+  unknown model, exhausted quota) stops early instead of burning the retry
+  budget on guaranteed-identical failures. Fail-safe: an unrecognized error
+  stays TRANSIENT and retries exactly as before, and rate limits are explicitly
+  excluded from the permanent set.
+
+## Operational observability (v8.0.0)
+
+- **SDK capability-degradation event.** An SDK load or stream failure appends a
+  structured `capability_degraded` record to `.loki/events.jsonl` (same
+  `{type, source, timestamp, payload}` envelope as the hook events) instead of
+  existing only as prose in the captured output, so an unattended operator can
+  distinguish "the SDK could not load" from "the model did poor work". The
+  record states `fail_closed: true` rather than leaving it to be assumed. No env
+  var: this is signal an operator always wants.
+- **Time to first preview.** `.loki/app-runner/first-preview.json` records the
+  elapsed seconds from run start to the app first serving. Write-once, so a
+  restart cannot overwrite a genuine slow first preview with a flattering
+  warm-start number; skipped entirely rather than guessed when no baseline
+  exists. Bash route only (app-runner integration lives there).
+
 ## First-run UX (v7.29.0)
 
 - **`loki quickstart`:** guided 4-step first build (setup check, one-line idea, offline template match, plan review with real estimator figures); Enter-through-everything builds the sample Todo app; non-TTY/CI exits 2 with an automation hint.
@@ -393,6 +445,11 @@ See `CHANGELOG.md` entries [7.5.7], [7.5.8], [7.5.13] for the per-fix list and r
 | Managed Agents (memory mirror) | v7.2.0 | Opt-in via `LOKI_MANAGED_AGENTS` -- see Managed Agents section |
 | Bun runtime (Phase 1) | v7.3.0 | Read-only commands routed through `bin/loki`; `LOKI_LEGACY_BASH=1` to revert |
 | Phase 1 RARV-C closure | v7.5.x | Findings injection, real judges, auto-learnings, handoff.md |
+| Anthropic SDK route | v8.0.0 | Opt-in, default-off; one switch `LOKI_SDK_MODE` -- see `references/sdk-mode.md` |
+| Harness intelligence | v8.0.0 | Prompt-cache discipline, confidence-spike re-check, goal scoring, smart retry |
+| SDK degradation event | v8.0.0 | Structured `capability_degraded` record on `.loki/events.jsonl` |
+| Time to first preview | v8.0.0 | `.loki/app-runner/first-preview.json`, write-once (bash route) |
+| Opt-in build analytics | v8.0.0 | `build_verified` event behind a strict second gate, allowlist-only fields |
 
 ## Planned / In-Progress Features
 

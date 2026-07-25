@@ -33,8 +33,10 @@ This plan costs each phase so the founder funds them selectively, not as one ope
 | Code-review calibration | Built | `test-review-severity-calibration`, `-assurance-tail`, `-lockfile-context` + council/quality_gates mods |
 | ~18k LOC uncommitted total | Working, not committed | `git diff`: 46 files +7173/-1296; 25 new files +11057 LOC |
 | Published to npm as 8.x | NO | npm latest = 7.129.4; v8 never published, never merged to main |
-| PostHog analytics | NOT built | existing telemetry is OTLP/stream-json only (V8 plan L130) |
-| otel 2.x (the deferred CVE fix) | NOT done | deferred here from the v7.129.4 patch |
+| PostHog analytics | **BUILT** (`5dcc88c6`) | opt-in `build_verified` event behind a strict second gate (`LOKI_ANALYTICS=on`, default OFF even when telemetry is on), fixed allowlist reader emits proof scalars only |
+| otel 2.x (the deferred CVE fix) | **DONE** (`159dc7f4`) | clears GHSA-45rx-2jwx-cxfr at source |
+| Phase 3 harness intelligence | **BUILT** (`9e596e9a`, `889bd52a`, `500e74f6`) | 3a prompt-cache discipline already existed (verified, not rebuilt); 3b confidence-spike, 3c goal scoring, 3d smart retry landed 2026-07-25 |
+| Release identity (VERSION vs CHANGELOG) | **RESOLVED** (`a749ee54`) | folded the drafted `v8.1.0` block into one `v8.0.0` entry; no 8.x was ever published, so a first-ever 8.x as 8.1.0 would have described a release history that does not exist |
 
 **Releasability gate:** full `local-ci.sh` on the WIP tree - RESULT PENDING (running at write time;
 this plan's Phase 1 cost depends on how clean it is).

@@ -44,7 +44,19 @@ What happens: `loki start` (`cmd_start` in `autonomy/loki`) execs the runner
 (`build_prompt()`), invokes the provider, then runs checklist verification, an app
 runner, smoke tests, and code review. It stops when the completion council votes
 stop (`council_should_stop` in `autonomy/completion-council.sh`), a completion
-promise is met, or max iterations is hit.
+promise is met, max iterations is hit, or (v8.0.0) a failure is positively
+identified as non-retryable -- bad credentials, unknown model, exhausted quota --
+where further retries would be guaranteed-identical failures
+(`loki-ts/src/runner/retry_class.ts`, `LOKI_SMART_RETRY=0` to disable). An
+unrecognized failure stays transient and retries as before, so the early exit
+can never abandon a build that would have succeeded.
+
+The council's own force-stop valves (stagnation, repeated done-claims) are
+additionally delayed by one iteration when the agent's self-reported confidence
+spikes, so a sudden claim of near-certainty is VERIFIED rather than trusted
+(`loki-ts/src/runner/council.ts`, v8.0.0). That delay is strictly additive: it
+can only add a verification pass, never skip one, and it never delays the
+stagnation valve.
 
 What you get:
 - A runnable artifact (the built product in your working directory).

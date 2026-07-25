@@ -72,12 +72,24 @@ on the same items and would deepen (not change) the verdicts:
 ## Known NET-NEW (verified elsewhere this session)
 
 - **#3 no SDK-full silent fallback to legacy** and the stuck/stagnation coverage:
-  see the SDK-loop valve gap. `loki-ts/src/runner/council.ts:150-165` states the
-  stagnation and done-signal force-stop valves are NOT active on the TS/SDK
-  route (`trackIteration` writes placeholder zeros). Bash has both valves
-  (`autonomy/completion-council.sh:4519`, `:4528`). This is a HARD PREREQUISITE
-  of the SDK-default flip, tracked in the plan under P1, contract defined by
-  `tests/test-council-structured-done-signal.sh`.
+  **RESOLVED 2026-07-25, this section is kept for history.** When written, the
+  stagnation and done-signal force-stop valves were NOT active on the TS/SDK
+  route (`trackIteration` wrote placeholder zeros) while bash had both
+  (`autonomy/completion-council.sh:4519`, `:4528`), making the port a hard
+  prerequisite of the SDK-default flip.
+
+  Both valves were ported in commit `5c3d2769` and now run on the TS route,
+  persisting counters to `.loki/council/state.json` so they survive a runner
+  restart (`loki-ts/src/runner/council.ts`). Fail-closed behavior for #3 was
+  separately source-verified in `docs/V8-RUNTIME-TRUTH-2026-07-25.md`: there is
+  no CLI fallback branch, and `sawResult ? exitCode : 1` means a stream that
+  never produced a terminal result is a FAILED iteration.
+
+  Note also that this document's related claim about SDK **session continuity**
+  blocking the flip was later found FALSE and corrected in `c31f6f20` -- legacy
+  session stamping is default-OFF and emits a per-iteration DISTINCT uuid, so it
+  never provided cross-iteration continuity either. No capability regression
+  blocks the flip; the remaining gate is the untested acceptance items.
 
 ## Honest status
 

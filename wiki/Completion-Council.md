@@ -49,6 +49,34 @@ The council tracks git diff hashes between iterations to detect stagnation:
 > A force-stop is **not** a council approval: it means the run was halted to
 > stop it burning budget, and the work is NOT verified-complete.
 
+### Confidence-Spike Re-Check (v8.0.0)
+
+An agent asserting maximal confidence is not evidence the work is done: a jump
+to near-certainty correlates with the agent having stopped looking, not with
+correctness. Loki already refuses to treat a self-report as a gate, and this
+adds the cheap complement.
+
+When the agent's self-reported confidence spikes, the **done-signal** force-stop
+is delayed by exactly one iteration, so the claim gets verified instead of
+terminated on. A spike is either a jump of at least
+`LOKI_CONFIDENCE_SPIKE_DELTA` points (default `40`), or arrival at
+`LOKI_CONFIDENCE_SPIKE_MIN` (default `90`) having not been there before -- the
+second arm matters because an agent that opens at 100 never "jumps".
+
+Three properties make this safe rather than a liability:
+
+- **Strictly additive.** A spike can only ever ADD a verification pass. There is
+  deliberately no path by which high confidence skips, shortens, or satisfies a
+  gate -- that would be a false-green vector. High confidence makes the engine
+  look harder, never less hard.
+- **Never delays stagnation.** Only the done-signal valve is delayed. A stagnant
+  build still fails cheap no matter how confident the agent sounds.
+- **One-shot.** The delay is consumed on use, so a run that keeps re-spiking
+  cannot postpone the valve forever and turn a safety valve into a budget leak.
+
+Inert unless the agent actually emits a confidence figure. Opt out with
+`LOKI_CONFIDENCE_SPIKE=0`. See `loki-ts/src/runner/council.ts`.
+
 ### Anti-Sycophancy
 
 When all council members agree unanimously, Loki Mode triggers a devil's advocate review:
