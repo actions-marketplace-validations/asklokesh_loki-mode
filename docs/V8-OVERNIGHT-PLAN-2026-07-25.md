@@ -63,14 +63,18 @@ silent stub). `providers.ts:559-640` is fail-closed: no CLI fallback,
 produced a terminal result cannot be counted as success. The SDK path's MAIN
 LOOP has no `claude`-binary dependency.
 
-**Scope corrected 2026-07-26** (was "the SDK path has no `claude`-binary
-dependency", which was too broad): `providers.ts:570` delegates every
-non-mainLoop call -- council judges and other subcalls -- back to
-`claudeProvider()`, which does reach the binary via `ensureClaudeHelpCache()`.
-A missing binary degrades safely there (empty help cache, so no unsupported
-flag is ever passed), but the judge path still shells out to `claude`. So
-"SDK-full runs with no `claude` installed" is true of the agentic loop, which
-is what the flip changes, and NOT yet true end-to-end. Pinned by
+**Scope stated exactly, 2026-07-26.** `providers.ts:570` delegates every
+non-mainLoop call back to `claudeProvider()`, which reaches the binary via
+`ensureClaudeHelpCache()`. But that is the `LOKI_SDK_MODE=off` path, and
+reading it alone to mean "the judge path shells out to claude" is wrong:
+under `judges`/`full`, `sdkModeDefaults()` enables all seven `JUDGE_VARS` and
+those sites have their own raw-SDK bridges. `completion-council.sh:2910` says
+so directly -- the raw-SDK vote path "needs no claude binary" (its precondition
+is bun plus the bridge), falling closed to `claude` only on an SDK miss.
+
+So under `LOKI_SDK_MODE=full` BOTH the loop and the judges have binary-free
+paths; the residual CLI dependency is off-mode delegation plus the fail-closed
+fallback. Pinned by
 `loki-ts/tests/runner/acceptance_sdk_binary_absent.test.ts`.
 
 The genuine remaining gap is OBSERVABILITY: an SDK load/stream failure is

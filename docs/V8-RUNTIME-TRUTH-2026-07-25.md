@@ -170,19 +170,33 @@ broken and the test confirmed RED before being committed - because all three
 premises already looked satisfied in source, which is precisely the condition
 under which a new test passes vacuously and proves nothing.
 
-- **#1, with a corrected scope.** The main agentic loop is genuinely
+- **#1, with the scope stated exactly.** The main agentic loop is genuinely
   binary-free: route resolution is pure over env, the SDK loads by lazy dynamic
   import, and no spawn/shell/flag-probe appears anywhere in
-  `sdkQueryProvider`'s own body. **But the earlier "no `claude`-binary
-  dependency" claim was too broad.** `providers.ts:570` delegates every
-  non-mainLoop call (council judges, subcalls) back to `claudeProvider()`,
-  which does reach the binary via `ensureClaudeHelpCache()`. A missing binary
-  degrades safely there (the help cache goes empty, so `claudeFlagSupported`
-  returns false for every flag and no unsupported flag is passed), but the
-  judge path still shells out to `claude`. Acceptance #1 therefore holds for
-  the main loop - which is what the flip changes - and NOT for the judge path.
-  That boundary is now pinned by a test so a future edit to the delegation
-  cannot silently redefine what "SDK-full" means.
+  `sdkQueryProvider`'s own body.
+
+  **Two corrections, in opposite directions, both recorded rather than
+  quietly fixed.** The `providers.ts:570` delegation IS real: every non-mainLoop
+  call goes back to `claudeProvider()`, which reaches the binary via
+  `ensureClaudeHelpCache()`. But reading that line alone and concluding "the
+  judge path shells out to claude" was ALSO wrong, in the same way section 4's
+  original error was wrong: it described one route while a second, enabled by a
+  different switch, was sitting next to it.
+
+  `:570` is the **`LOKI_SDK_MODE=off` path**. Under `judges` or `full`,
+  `sdkModeDefaults()` turns on all seven `JUDGE_VARS`
+  (`LOKI_SDK_COUNCIL_VOTE`, `LOKI_SDK_CODE_REVIEW`, `LOKI_SDK_DONE_RECOG`,
+  `LOKI_SDK_COUNCIL_V2`, `LOKI_SDK_VOTER_AGENTS`, `LOKI_SDK_GRILL`,
+  `LOKI_SDK_PRD_ENRICH`), and those sites have their own raw-SDK bridges.
+  `completion-council.sh:2910` states it directly: the raw-SDK vote path
+  "needs no claude binary", and the precondition check is satisfied by
+  bun plus the bridge instead. It falls closed to `claude` only on an SDK miss.
+
+  **So: under `LOKI_SDK_MODE=full` both the loop and the judges have
+  binary-free paths.** The residual CLI dependency is the `off`-mode
+  delegation and the fail-closed fallback, not a hole in SDK-full. The
+  delegation boundary is pinned by a test so a future edit cannot silently
+  redefine what "SDK-full" means in either direction.
 - **#7.** Truncated state is reported `corrupted: true`, never as a clean
   start, and the bad file is preserved for forensics - the same
   empty-vs-invalid trap as the v7.129.5 receipt bug. A state left at `running`
