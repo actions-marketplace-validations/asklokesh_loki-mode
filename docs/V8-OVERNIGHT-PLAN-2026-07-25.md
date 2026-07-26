@@ -60,8 +60,18 @@ name the blocker.
 (a load-bearing module that cannot load is a fatal contract violation, not a
 silent stub). `providers.ts:559-640` is fail-closed: no CLI fallback,
 `exitCode=1` on throw, and `sawResult ? res.exitCode : 1` so a stream that never
-produced a terminal result cannot be counted as success. The SDK path has no
-`claude`-binary dependency.
+produced a terminal result cannot be counted as success. The SDK path's MAIN
+LOOP has no `claude`-binary dependency.
+
+**Scope corrected 2026-07-26** (was "the SDK path has no `claude`-binary
+dependency", which was too broad): `providers.ts:570` delegates every
+non-mainLoop call -- council judges and other subcalls -- back to
+`claudeProvider()`, which does reach the binary via `ensureClaudeHelpCache()`.
+A missing binary degrades safely there (empty help cache, so no unsupported
+flag is ever passed), but the judge path still shells out to `claude`. So
+"SDK-full runs with no `claude` installed" is true of the agentic loop, which
+is what the flip changes, and NOT yet true end-to-end. Pinned by
+`loki-ts/tests/runner/acceptance_sdk_binary_absent.test.ts`.
 
 The genuine remaining gap is OBSERVABILITY: an SDK load/stream failure is
 written into captured text, not emitted as a structured capability-degradation

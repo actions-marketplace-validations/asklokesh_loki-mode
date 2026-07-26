@@ -202,6 +202,7 @@ jobs:
           bash tests/test-sdk-loop-routing.sh
           bash tests/test-sdk-mode.sh
           bash tests/test-sandbox-deprecation.sh
+          bash tests/test-acceptance-resume-idempotence.sh
 
       - name: Run CLI tests via bash route (LOKI_LEGACY_BASH=1)
         env:

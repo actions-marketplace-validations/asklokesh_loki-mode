@@ -22,7 +22,7 @@ is three untested acceptance items. The gating work is TESTS, not a port.
 | Structured degradation event | **ADDED 2026-07-25** |
 | Stagnation / done-signal valves | **PORTED 2026-07-24** |
 | Session continuity across iterations | **NOT A GAP** (corrected 2026-07-25; opt-in recovery parity only) |
-| Acceptance #1 / #7 / #8 | **UNTESTED - the only thing left gating the flip** |
+| Acceptance #1 / #7 / #8 | **TESTED 2026-07-26** (28 assertions, each with a verified negative control) |
 
 ## 1. Route resolution (verified)
 
@@ -159,17 +159,55 @@ recovery tests pass. Current state:
 | Stagnation + done-signal valves on TS route | **DONE** (2026-07-24, 10 tests, 9 fail against the pre-port stub) |
 | No silent fallback | **DONE** (verified sound; degradation event added) |
 | Session continuity parity | **NOT A BLOCKER** (corrected - see section 4; both legacy knobs default OFF and the stamp is per-iteration distinct, so there is no default-path continuity to regress) |
-| Acceptance #1 (SDK-full works with `claude` binary absent) | Untested. No binary dependency found in the SDK path, but absence of a grep hit is not a test. |
-| Acceptance #7 (SIGKILL recoverable without corruption) | Untested |
-| Acceptance #8 (resume does not repeat irreversible actions) | Untested. **Note the naming collision** flagged at `claude_flags.ts:438`: Loki's own checkpoint `--resume` is a different layer from the claude-CLI session resume. #8 reads as the CHECKPOINT layer, so it is testable now and was never downstream of session continuity. |
+| Acceptance #1 (SDK-full works with `claude` binary absent) | **DONE 2026-07-26** - `loki-ts/tests/runner/acceptance_sdk_binary_absent.test.ts` (9). Scope corrected below. |
+| Acceptance #7 (SIGKILL recoverable without corruption) | **DONE 2026-07-26** - `loki-ts/tests/runner/acceptance_sigkill_recovery.test.ts` (10). |
+| Acceptance #8 (resume does not repeat irreversible actions) | **DONE 2026-07-26** - `tests/test-acceptance-resume-idempotence.sh` (9, incl. a mutation check). **Naming collision** flagged at `claude_flags.ts:438`: Loki's own checkpoint `--resume` is a different layer from the claude-CLI session resume. #8 is the CHECKPOINT layer, so it was testable now and was never downstream of session continuity. |
 
-**Recommendation: DO NOT FLIP YET - but the remaining work is now entirely
-TESTS, not a port.** Every unmet prerequisite is an untested acceptance item;
-no known capability regression remains. This matches what the overnight plan
-already said #12's real content was: writing acceptance #1, #7, and #8, plus
-both-route parity. If those pass, flipping executes the founder's standing
-conditional authorization. The flip itself is a one-line change whose safety is
-entirely supplied by the tests around it.
+### What the three test files established (2026-07-26)
+
+Each has a **verified negative control** - the implementation was temporarily
+broken and the test confirmed RED before being committed - because all three
+premises already looked satisfied in source, which is precisely the condition
+under which a new test passes vacuously and proves nothing.
+
+- **#1, with a corrected scope.** The main agentic loop is genuinely
+  binary-free: route resolution is pure over env, the SDK loads by lazy dynamic
+  import, and no spawn/shell/flag-probe appears anywhere in
+  `sdkQueryProvider`'s own body. **But the earlier "no `claude`-binary
+  dependency" claim was too broad.** `providers.ts:570` delegates every
+  non-mainLoop call (council judges, subcalls) back to `claudeProvider()`,
+  which does reach the binary via `ensureClaudeHelpCache()`. A missing binary
+  degrades safely there (the help cache goes empty, so `claudeFlagSupported`
+  returns false for every flag and no unsupported flag is passed), but the
+  judge path still shells out to `claude`. Acceptance #1 therefore holds for
+  the main loop - which is what the flip changes - and NOT for the judge path.
+  That boundary is now pinned by a test so a future edit to the delegation
+  cannot silently redefine what "SDK-full" means.
+- **#7.** Truncated state is reported `corrupted: true`, never as a clean
+  start, and the bad file is preserved for forensics - the same
+  empty-vs-invalid trap as the v7.129.5 receipt bug. A state left at `running`
+  is correctly treated as a crash and reset rather than resumed, while the
+  genuinely resumable statuses (`paused`, `interrupted`, `budget_exceeded`,
+  `stopped`) keep their counters. Orphaned `*.tmp.*` files are swept, and a
+  RECENT tmp file is deliberately left alone so the sweep cannot race a live
+  writer. No test kills a real process: the states a SIGKILL produces are
+  constructed directly, so nothing depends on winning a race.
+- **#8.** The PR guard keys on REMOTE state (`gh pr list --head --state open`),
+  not a local marker - so it survives the case that matters, a resume on a
+  fresh container where local `.loki/` is gone. The test simulates exactly that
+  wipe and asserts exactly one `gh pr create` across two completion passes;
+  the mutation check removes the guard and confirms a duplicate PR appears.
+
+**Recommendation: the test prerequisites for the flip are now MET.** All three
+acceptance items are covered with non-vacuous tests, the valves are ported, and
+no known capability regression remains. The one scope correction above (judges
+still take the CLI route) does not block the flip, because the flip changes the
+main loop only - but it does mean "SDK-full runs with no `claude` binary
+installed" is not yet true end-to-end, and should not be claimed in user-facing
+docs until the judge path is ported too.
+
+The flip itself remains a one-line change whose safety is entirely supplied by
+the tests around it, and is left as a deliberate, separately-reviewable commit.
 
 ## 6. What this audit deliberately does not claim
 

@@ -376,6 +376,11 @@ fi
 run_check "tests/test-cli-commands.sh (Bun route)" "bash tests/test-cli-commands.sh 2>&1 | tail -3"
 run_check "tests/test-cli-commands.sh (LOKI_LEGACY_BASH=1)" "LOKI_LEGACY_BASH=1 bash tests/test-cli-commands.sh 2>&1 | tail -3"
 
+# Acceptance #8 (SDK-default flip gate): a resumed run must not repeat an
+# irreversible action. Stubs `gh` on PATH and uses a local bare remote, so it
+# never touches the network. Mirrored in test.yml's v8 SDK bridge step.
+run_check "tests/test-acceptance-resume-idempotence.sh" "bash tests/test-acceptance-resume-idempotence.sh 2>&1 | tail -3"
+
 # CLI consolidation (Phase A): deprecated-alias back-compat contract + help
 # structure. Data-driven; runs on BOTH routes (Bun-native alias tokens like
 # stats must emit the deprecation line on the Bun route, not bypass it).
