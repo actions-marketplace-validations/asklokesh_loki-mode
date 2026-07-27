@@ -73,6 +73,23 @@ run_check() {
       FAILED+=("$label")
       echo "${RED}FAIL:${NC} $label"
       echo "$out" | tail -30
+      # Most checks are written as `bash tests/foo.sh 2>&1 | tail -3`, so the
+      # `tail -30` above can only ever show those same 3 lines -- which are the
+      # SUMMARY, never the failing assertion. Diagnosing a failure then costs a
+      # full 40-minute re-run to learn nothing, and a load-flake that passes in
+      # isolation is undiagnosable. On failure only, re-run with the inner
+      # truncation stripped and surface the actual FAIL lines.
+      local _bare="${cmd%% | tail -*}"
+      if [ "$_bare" != "$cmd" ]; then
+        local _full
+        _full=$(eval "$_bare" 2>&1) || true
+        local _hits
+        _hits=$(printf '%s\n' "$_full" | grep -aiE '^[[:space:]]*(\[?FAIL\]?|not ok|✗|FAILED)' | head -15)
+        if [ -n "$_hits" ]; then
+          echo "${YELLOW}  failing assertions:${NC}"
+          printf '%s\n' "$_hits" | sed 's/^/    /'
+        fi
+      fi
     fi
   fi
 }
