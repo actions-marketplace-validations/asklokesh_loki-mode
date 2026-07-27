@@ -10362,7 +10362,38 @@ _loki_zero_tests_executed() {
             done << ZT_MATCHES_EOF
 $_zt_matches
 ZT_MATCHES_EOF
-            [ "$_zt_real" -eq 0 ] && return 0
+            if [ "$_zt_real" -gt 0 ]; then
+                return 1   # real tests seen -> definitely not zero
+            fi
+            # ZERO ok-lines is NOT proof of zero tests. It is only proof that
+            # this output is not TAP. node's DEFAULT reporter since node 26 is
+            # `spec`, which prints "OK adds (0.3ms)" / "i tests 1" and emits no
+            # "ok N - " lines at all, so a genuinely PASSING suite reached here
+            # and got recorded as pass:"inconclusive" / status:"no_tests_run".
+            #
+            # That inverts the helper's own contract (see the header above):
+            # return 0 ONLY on POSITIVE detection; anything unparseable returns 1
+            # so a legitimate suite is never false-downgraded. Absence of a
+            # format marker is not evidence of absence of tests -- that is
+            # grep-absence-false-green with the sign flipped.
+            #
+            # Why the fix is here and not at the call site: commit 54469c1f
+            # forced --test-reporter=tap on the two DIRECT `node --test`
+            # fallbacks and deliberately left a project's own `npm test` alone
+            # ("its format is the project's responsibility"). But the
+            # package.json scripts.test branch runs FIRST (every later branch
+            # gates on runner=="none"), so that fix is unreachable for exactly
+            # the projects that hit this. Appending a flag to an arbitrary npm
+            # script is also unsafe (`node --test && lint` breaks). Fixing the
+            # DETECTOR repairs every present and future caller.
+            #
+            # So: require a POSITIVE TAP shape before trusting a zero count.
+            case "$_zt_out" in
+                *"TAP version"*|*$'\n# tests '*|"# tests "*)
+                    return 0 ;;   # genuinely TAP, and genuinely zero tests
+            esac
+            # Non-TAP shape (spec reporter, dot reporter, junit, custom):
+            # unparseable by this arm -> no opinion, never a downgrade.
             return 1
             ;;
         jest|monorepo-jest)

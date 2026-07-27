@@ -397,6 +397,12 @@ run_test "Provider Loader (contract + tier mapping)" "$SCRIPT_DIR/test-provider-
 # 67 audit files on a real machine were internally chain-broken.
 run_test "Audit Chain Multiprocess (cross-process flock + tip re-read)" "$SCRIPT_DIR/test-audit-chain-multiprocess.sh"
 
+# Test-coverage gate: a PASSING suite must record pass:true, a failing one must
+# BLOCK, and genuinely-no-tests must stay inconclusive. Registered with the
+# node-test detector fix (2026-07-27): node 26 defaults to the spec reporter, so
+# a green suite emitted no TAP "ok N -" lines and was mislabeled "no_tests_run".
+run_test "Coverage Gate Fail-Open (node-test detector)" "$SCRIPT_DIR/test-coverage-gate-fail-open.sh"
+
 # ---------------------------------------------------------------------------
 # Batch 1 of the orphaned-suite registration (2026-07-27). These suites existed
 # and passed but were wired into NO runner, so they never executed. See
