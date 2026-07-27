@@ -95,6 +95,27 @@ else
     ok "SDK + key but SDK loop not active -> still blocked (fail-closed)"
 fi
 
+# REGRESSION (found by the T1 verify council, with a working repro): the
+# truthy set here MUST match bin/loki:255 exactly, which forks to the Bun SDK
+# loop only on "1" or "true". An earlier draft accepted the truthy() spellings
+# yes/on/YES/On/... -- 8 of 10 accepted values were in the broken set. With
+# LOKI_SDK_LOOP=yes doctor printed PASS while the next `loki start` stayed on
+# the bash route and exited 2 at the provider gate: green doctor, dead build.
+for _spelling in yes on YES ON True Yes On true1 ""; do
+    if probe "$SDK_OK" LOKI_SDK_LOOP="$_spelling" ANTHROPIC_API_KEY=sk-test; then
+        bad "LOKI_SDK_LOOP='$_spelling' is not honored by bin/loki:255 and must stay blocked (fail-open!)"
+    fi
+done
+ok "only bin/loki's exact truthy set (1, true) opens the gate"
+
+# The Bun runtime must exist. bin/loki:200-203 silently execs the BASH CLI when
+# bun is absent, and the bash route needs a binary on PATH.
+if PATH="/usr/bin:/bin" probe "$SDK_OK" LOKI_SDK_LOOP=1 ANTHROPIC_API_KEY=sk-test; then
+    bad "bun absent must stay blocked (bin/loki falls back to bash) (fail-open!)"
+else
+    ok "bun absent -> still blocked (fail-closed)"
+fi
+
 if probe "$SDK_OK" LOKI_SDK_LOOP=0 ANTHROPIC_API_KEY=sk-test; then
     bad "explicit LOKI_SDK_LOOP=0 must stay blocked (fail-open!)"
 else

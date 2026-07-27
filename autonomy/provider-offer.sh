@@ -83,10 +83,23 @@ detect_any_provider() {
 #
 # Any doubt -> return 1 and the caller keeps today's behavior verbatim.
 detect_bundled_sdk_provider() {
+    # MATCH bin/loki:255 EXACTLY -- only "1" and "true" fork to the Bun SDK loop.
+    # bin/loki's own comment concedes it cannot cheaply reproduce truthy()'s
+    # yes/on spellings, so accepting a wider set here is a proven fail-open:
+    # LOKI_SDK_LOOP=yes made doctor print PASS while the very next `loki start`
+    # stayed on the bash route and exited 2 at the provider gate. Doctor green,
+    # build dead. Keep these two sets byte-identical; widening either one alone
+    # reopens the hole.
     case "${LOKI_SDK_LOOP:-}" in
-        1|true|yes|on|TRUE|YES|ON|True|Yes|On) : ;;
+        1|true) : ;;
         *) return 1 ;;
     esac
+
+    # The Bun runtime must actually exist. bin/loki:200-203 silently execs the
+    # BASH CLI when `command -v bun` fails ("keeps users on systems without Bun
+    # working"), and the bash route needs a binary on PATH. Without this check a
+    # bun-less machine with the SDK + a key would pass doctor and then die.
+    command -v bun >/dev/null 2>&1 || return 1
 
     if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${ANTHROPIC_AUTH_TOKEN:-}" ] \
         && [ -z "${ANTHROPIC_BASE_URL:-}" ]; then
