@@ -391,6 +391,35 @@ run_test "Provider Degraded Mode (capability flags)" "$SCRIPT_DIR/test-provider-
 # mapping, unknown-provider handling). Also previously unregistered.
 run_test "Provider Loader (contract + tier mapping)" "$SCRIPT_DIR/test-provider-loader.sh"
 
+# ---------------------------------------------------------------------------
+# Batch 1 of the orphaned-suite registration (2026-07-27). These suites existed
+# and passed but were wired into NO runner, so they never executed. See
+# tests/test-registration-coverage.sh for the gate that now prevents new orphans.
+# ---------------------------------------------------------------------------
+run_test "Admin Quote Injection" "$SCRIPT_DIR/test-admin-quote-injection.sh"
+run_test "Aider Cloud" "$SCRIPT_DIR/test-aider-cloud.sh"
+run_test "Api Server" "$SCRIPT_DIR/test-api-server.sh"
+run_test "App Runner Compose" "$SCRIPT_DIR/test-app-runner-compose.sh"
+run_test "App Runner Injection" "$SCRIPT_DIR/test-app-runner-injection.sh"
+run_test "App Runner Nextjs Standalone" "$SCRIPT_DIR/test-app-runner-nextjs-standalone.sh"
+run_test "App Runner Port Reconcile" "$SCRIPT_DIR/test-app-runner-port-reconcile.sh"
+run_test "App Runner Static Site" "$SCRIPT_DIR/test-app-runner-static-site.sh"
+run_test "App Runner Token Lifecycle" "$SCRIPT_DIR/test-app-runner-token-lifecycle.sh"
+run_test "App Runner Tree Stop" "$SCRIPT_DIR/test-app-runner-tree-stop.sh"
+run_test "App Runner Watchdog Health" "$SCRIPT_DIR/test-app-runner-watchdog-health.sh"
+run_test "App Runner Wave5 W5" "$SCRIPT_DIR/test-app-runner-wave5-w5.sh"
+run_test "Apprunner Dockerfile Exec Wave8" "$SCRIPT_DIR/test-apprunner-dockerfile-exec-wave8.sh"
+run_test "Assumption Gate Brief Mode" "$SCRIPT_DIR/test-assumption-gate-brief-mode.sh"
+run_test "Auto Wiki" "$SCRIPT_DIR/test-auto-wiki.sh"
+run_test "Backend Floor" "$SCRIPT_DIR/test-backend-floor.sh"
+run_test "Bench Haschanges" "$SCRIPT_DIR/test-bench-haschanges.sh"
+run_test "Benchmarks Resume Atomic" "$SCRIPT_DIR/test-benchmarks-resume-atomic.sh"
+run_test "Bmad Integration" "$SCRIPT_DIR/test-bmad-integration.sh"
+run_test "Build Profile" "$SCRIPT_DIR/test-build-profile.sh"
+run_test "Caveman Loki Coverage" "$SCRIPT_DIR/test-caveman-loki-coverage.sh"
+run_test "Checkpoint Cli" "$SCRIPT_DIR/test-checkpoint-cli.sh"
+run_test "Checkpoint Prune Sort" "$SCRIPT_DIR/test-checkpoint-prune-sort.sh"
+
 # Secure-by-default gate (Loop 4): the secure-scan engine precision (bad/safe
 # matrix for all 5 rules + the named false-positive guards), the run_secure_scan
 # wiring (advisory default never blocks; LOKI_SECURE_GATE=block blocks an
