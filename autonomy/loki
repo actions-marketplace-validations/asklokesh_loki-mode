@@ -10691,15 +10691,25 @@ cmd_doctor() {
     # Check if at least one provider is installed (detect_any_provider is the
     # shared helper from provider-offer.sh, extracted from this exact loop).
     if ! detect_any_provider; then
-        echo -e "  ${RED}FAIL${NC}  No AI provider CLI installed -- at least one is required"
-        echo -e "         ${YELLOW}Install: npm install -g @anthropic-ai/claude-code${NC}"
-        fail_count=$((fail_count + 1))
-        # v7.29.0: on a TTY (non-json), append the consent-gated install offer.
-        # In report mode the helper is a no-op on non-TTY/CI, so the doctor
-        # output stays byte-identical for the bun-parity matrix. --json never
-        # reaches here (cmd_doctor dispatches to cmd_doctor_json earlier).
-        if declare -f offer_provider_install >/dev/null 2>&1; then
-            offer_provider_install report || true
+        # The bundled Claude Agent SDK runs the main loop with no separate CLI,
+        # but ONLY when it is genuinely usable: binary extracted, credentials
+        # present, and the SDK loop actually active. detect_bundled_sdk_provider
+        # fails closed on any doubt, so when it returns false we emit today's
+        # blocker verbatim. Mirrored in loki-ts/src/commands/doctor.ts.
+        if declare -f detect_bundled_sdk_provider >/dev/null 2>&1 && detect_bundled_sdk_provider; then
+            echo -e "  ${GREEN}PASS${NC}  Bundled Claude Agent SDK is usable -- no separate CLI needed"
+            pass_count=$((pass_count + 1))
+        else
+            echo -e "  ${RED}FAIL${NC}  No AI provider CLI installed -- at least one is required"
+            echo -e "         ${YELLOW}Install: npm install -g @anthropic-ai/claude-code${NC}"
+            fail_count=$((fail_count + 1))
+            # v7.29.0: on a TTY (non-json), append the consent-gated install offer.
+            # In report mode the helper is a no-op on non-TTY/CI, so the doctor
+            # output stays byte-identical for the bun-parity matrix. --json never
+            # reaches here (cmd_doctor dispatches to cmd_doctor_json earlier).
+            if declare -f offer_provider_install >/dev/null 2>&1; then
+                offer_provider_install report || true
+            fi
         fi
     fi
     echo ""

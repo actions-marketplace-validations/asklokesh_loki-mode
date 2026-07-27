@@ -710,6 +710,12 @@ PYHS
 # start/demo gate.
 run_check "tests/cli/test-provider-offer.sh (provider install offer + gate)" "bash tests/cli/test-provider-offer.sh 2>&1 | tail -3"
 
+# T1: the bundled Claude Agent SDK counts as a provider ONLY when usable
+# (extracted binary + credentials + SDK loop active). Fixture node_modules via
+# the LOKI_SDK_NODE_MODULES test seam; asserts every fail-closed branch and that
+# detect_any_provider stays PATH-only (demo/quick run on the bash route).
+run_check "tests/test-bundled-sdk-provider.sh (bundled SDK provider, fail-closed)" "bash tests/test-bundled-sdk-provider.sh 2>&1 | tail -3"
+
 # v7.29.0: quickstart guided interview (autonomy/quickstart.sh). Stub-based,
 # ZERO spend / ZERO build: source-level harness overrides _qs_non_interactive
 # and stubs show_prd_plan / provider_offer_gate / cmd_start / cmd_dashboard_open.

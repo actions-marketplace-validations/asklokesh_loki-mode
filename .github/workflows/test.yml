@@ -201,6 +201,7 @@ jobs:
           bash tests/test-sdk-voter-agents.sh
           bash tests/test-sdk-loop-routing.sh
           bash tests/test-sdk-mode.sh
+          bash tests/test-bundled-sdk-provider.sh
           bash tests/test-sandbox-deprecation.sh
           bash tests/test-acceptance-resume-idempotence.sh
 
