@@ -423,6 +423,19 @@ run_test "Bugfix Audit (CLI regressions)" "$SCRIPT_DIR/test-bugfix-audit.sh"
 run_test "CLAUDE.md Walker (project graph layers)" "$SCRIPT_DIR/test-claude-md-walker.sh"
 run_test "CI Command (--fail-on thresholds)" "$SCRIPT_DIR/test-ci-command.sh"
 
+# Batch 7 of the orphaned-suite registration (2026-07-27).
+run_test "Report Command" "$SCRIPT_DIR/test-report-command.sh"
+run_test "Review Allowlist 167" "$SCRIPT_DIR/test-review-allowlist-167.sh"
+run_test "Review Command" "$SCRIPT_DIR/test-review-command.sh"
+run_test "Review Severity Calibration" "$SCRIPT_DIR/test-review-severity-calibration.sh"
+run_test "Run Sh Quoting" "$SCRIPT_DIR/test-run-sh-quoting.sh"
+run_test "Run Start Estimate" "$SCRIPT_DIR/test-run-start-estimate.sh"
+run_test "Runtime Gate" "$SCRIPT_DIR/test-runtime-gate.sh"
+run_test "Sandbox Bughunt W4" "$SCRIPT_DIR/test-sandbox-bughunt-w4.sh"
+run_test "Scaffold Hook" "$SCRIPT_DIR/test-scaffold-hook.sh"
+run_test "Sentrux Setup Hints" "$SCRIPT_DIR/test-sentrux-setup-hints.sh"
+run_test "Share Command" "$SCRIPT_DIR/test-share-command.sh"
+
 # ---------------------------------------------------------------------------
 # Batch 1 of the orphaned-suite registration (2026-07-27). These suites existed
 # and passed but were wired into NO runner, so they never executed. See
