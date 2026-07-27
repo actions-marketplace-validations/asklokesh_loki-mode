@@ -53,29 +53,34 @@ PROVIDER_HAS_SUBAGENTS=false
 PROVIDER_HAS_TASK_TOOL=false
 PROVIDER_HAS_MCP=true
 #
-# PARALLEL: MEASURED SUPPORTED, DELIBERATELY LEFT OFF. Read before "fixing".
+# PARALLEL: enabled 2026-07-27 after MEASURING it, not assuming it.
 #
-# The v0.98-era `false` here was an untested assumption, and the underlying
-# capability is real: on codex-cli 0.144.6 two concurrent `codex exec` runs in
-# separate git worktrees both completed, exit 0, zero rate-limit errors. This
-# flag gates exactly one behavior -- worktree parallel sessions (run.sh:4832
-# spawn guard, run.sh:23473 mode downgrade) -- and that primitive is just "run
-# the non-interactive CLI in N directories at once", needing no subagents.
+# The v0.98-era `false` was an untested assumption. On codex-cli 0.144.6 two
+# concurrent `codex exec` runs in separate git worktrees both completed, exit 0,
+# zero rate-limit errors. This flag gates exactly one behavior -- worktree
+# parallel sessions (run.sh:4832 spawn guard, run.sh:23473 mode downgrade) --
+# and that primitive is only "run the non-interactive CLI in N directories at
+# once". It needs no subagents and no Task tool, which is why those two stay
+# false above while this one does not.
 #
-# It stays false anyway because Codex is PROVIDER_DEGRADED=true, and this
-# codebase treats degraded as implying no parallelism in two places that would
-# then contradict each other: run.sh:23461 prints "Degraded mode: Parallel
-# agents and Task tool not available" to the user, and the degraded-flag
-# consistency check asserts the invariant. Flipping only this flag would make
-# Loki print one thing and do another.
+# Enabling it required making the user-facing text honest first, because
+# "degraded" was being reported as if it always implied "sequential":
+# run.sh:23461 now enumerates the capabilities actually missing (read from
+# these flags) instead of hardcoding "Parallel agents and Task tool", and the
+# live-output banner only claims "Sequential execution only" when
+# PROVIDER_HAS_PARALLEL is genuinely false. PROVIDER_DEGRADED itself is
+# deliberately UNTOUCHED: its other consumers (run.sh:20340 workflow analysis,
+# done-recognition.sh:167) are claude-only guards and one is parity-locked with
+# the Bun route, so widening its meaning would ripple into prompt construction
+# for no gain here.
 #
-# Lifting it properly means deciding whether "degraded" should keep meaning
-# "no parallelism" or split into per-capability truth, then updating the
-# warning text, the invariant, and this flag together. That is a design change,
-# not a config edit. Evidence for the capability is recorded here so whoever
-# takes it on does not have to re-measure.
-PROVIDER_HAS_PARALLEL=false
-PROVIDER_MAX_PARALLEL=1
+# MAX_PARALLEL is 2, not the Claude value. Two is what was actually verified,
+# and Codex's free ChatGPT tier -- the audience this matters for, since Codex is
+# the only zero-cost on-ramp in the category -- is rate-limited well before
+# process concurrency becomes the ceiling. Raise it only with evidence at the
+# higher number.
+PROVIDER_HAS_PARALLEL=true
+PROVIDER_MAX_PARALLEL=2
 
 # Model Configuration
 # Codex uses a single model with an effort parameter.

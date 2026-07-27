@@ -20474,7 +20474,15 @@ except Exception as exc:
         echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo -e "${CYAN}  ${PROVIDER_DISPLAY_NAME:-CLAUDE CODE} OUTPUT (live)${NC}"
         if [ "${PROVIDER_DEGRADED:-false}" = "true" ]; then
-            echo -e "${YELLOW}  [DEGRADED MODE: Sequential execution only]${NC}"
+            # Only claim "sequential only" when the provider genuinely cannot run
+            # parallel sessions. Degraded is not synonymous with serial: a
+            # provider can lack subagents or the Task tool while still supporting
+            # concurrent worktree sessions.
+            if [ "${PROVIDER_HAS_PARALLEL:-false}" = "true" ]; then
+                echo -e "${YELLOW}  [DEGRADED MODE: reduced capability]${NC}"
+            else
+                echo -e "${YELLOW}  [DEGRADED MODE: Sequential execution only]${NC}"
+            fi
         fi
         echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo ""
@@ -23458,7 +23466,26 @@ main() {
     # Show provider info
     log_info "Provider: ${PROVIDER_DISPLAY_NAME:-Claude Code} (${PROVIDER_NAME:-claude})"
     if [ "${PROVIDER_DEGRADED:-false}" = "true" ]; then
-        log_warn "Degraded mode: Parallel agents and Task tool not available"
+        # Report what is ACTUALLY missing, read from the capability flags, rather
+        # than asserting a fixed pair. The old wording hardcoded "Parallel agents
+        # and Task tool not available" for every degraded provider, which stops
+        # being true the moment one of them gains a capability: a provider whose
+        # CLI really does support concurrent non-interactive runs would still be
+        # told it does not. A warning that can be wrong is worse than one that
+        # names its evidence, because users calibrate on it.
+        local _degraded_missing=""
+        [ "${PROVIDER_HAS_PARALLEL:-false}" != "true" ] && _degraded_missing="parallel agents"
+        if [ "${PROVIDER_HAS_TASK_TOOL:-false}" != "true" ]; then
+            _degraded_missing="${_degraded_missing}${_degraded_missing:+, }Task tool"
+        fi
+        if [ "${PROVIDER_HAS_SUBAGENTS:-false}" != "true" ]; then
+            _degraded_missing="${_degraded_missing}${_degraded_missing:+, }subagents"
+        fi
+        if [ -n "$_degraded_missing" ]; then
+            log_warn "Degraded mode: ${_degraded_missing} not available"
+        else
+            log_warn "Degraded mode: reduced capability (see limitations below)"
+        fi
         # Check if array exists and has elements before iterating
         if [ -n "${PROVIDER_DEGRADED_REASONS+x}" ] && [ ${#PROVIDER_DEGRADED_REASONS[@]} -gt 0 ]; then
             log_info "Limitations:"
