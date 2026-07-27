@@ -500,6 +500,27 @@ run_test "Memory Speed Privacy" "$SCRIPT_DIR/test-memory-speed-privacy.sh"
 run_test "Memory Wake Dead Code" "$SCRIPT_DIR/test-memory-wake-dead-code.sh"
 run_test "Metrics Command" "$SCRIPT_DIR/test-metrics-command.sh"
 
+# Batch 5 of the orphaned-suite registration (2026-07-27).
+run_test "Migration Post Edit Revert" "$SCRIPT_DIR/test-migration-post-edit-revert.sh"
+run_test "Migration V2" "$SCRIPT_DIR/test-migration-v2.sh"
+run_test "Model And Port" "$SCRIPT_DIR/test-model-and-port.sh"
+run_test "Onboard Command" "$SCRIPT_DIR/test-onboard-command.sh"
+run_test "Onboard Json Injection Wave10" "$SCRIPT_DIR/test-onboard-json-injection-wave10.sh"
+run_test "Openspec Sentinel" "$SCRIPT_DIR/test-openspec-sentinel.sh"
+run_test "Parity Mcp Config" "$SCRIPT_DIR/test-parity-mcp-config.sh"
+run_test "Platform Infra" "$SCRIPT_DIR/test-platform-infra.sh"
+run_test "Policy Failclosed" "$SCRIPT_DIR/test-policy-failclosed.sh"
+run_test "Prd Checklist Interval W4" "$SCRIPT_DIR/test-prd-checklist-interval-w4.sh"
+run_test "Prd Directive Envelope" "$SCRIPT_DIR/test-prd-directive-envelope.sh"
+run_test "Prd Reuse Bash W4" "$SCRIPT_DIR/test-prd-reuse-bash-w4.sh"
+run_test "Proof Forgery Defense" "$SCRIPT_DIR/test-proof-forgery-defense.sh"
+run_test "Provider Degraded Reasons Honesty" "$SCRIPT_DIR/test-provider-degraded-reasons-honesty.sh"
+run_test "Provider Flags" "$SCRIPT_DIR/test-provider-flags.sh"
+run_test "Provider Source Cli" "$SCRIPT_DIR/test-provider-source-cli.sh"
+run_test "Rarv Tier Mapping" "$SCRIPT_DIR/test-rarv-tier-mapping.sh"
+run_test "Rate Limit Octal" "$SCRIPT_DIR/test-rate-limit-octal.sh"
+run_test "Ratelimit Debug Clean" "$SCRIPT_DIR/test-ratelimit-debug-clean.sh"
+
 # Secure-by-default gate (Loop 4): the secure-scan engine precision (bad/safe
 # matrix for all 5 rules + the named false-positive guards), the run_secure_scan
 # wiring (advisory default never blocks; LOKI_SECURE_GATE=block blocks an
