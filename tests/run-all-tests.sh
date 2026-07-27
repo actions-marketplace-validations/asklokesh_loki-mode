@@ -474,6 +474,32 @@ run_test "Evidence Proof Axes" "$SCRIPT_DIR/test-evidence-proof-axes.sh"
 run_test "Expectation Ledger" "$SCRIPT_DIR/test-expectation-ledger.sh"
 run_test "F3 Port Detection" "$SCRIPT_DIR/test-f3-port-detection.sh"
 
+# Batch 4 of the orphaned-suite registration (2026-07-27).
+run_test "Hard Deadline Confinement" "$SCRIPT_DIR/test-hard-deadline-confinement.sh"
+run_test "Honest Gate Status" "$SCRIPT_DIR/test-honest-gate-status.sh"
+run_test "Human Input Directive" "$SCRIPT_DIR/test-human-input-directive.sh"
+run_test "Isolation Dial" "$SCRIPT_DIR/test-isolation-dial.sh"
+run_test "Iteration Card Plain" "$SCRIPT_DIR/test-iteration-card-plain.sh"
+run_test "Iteration Complete Accuracy" "$SCRIPT_DIR/test-iteration-complete-accuracy.sh"
+run_test "Json Prd" "$SCRIPT_DIR/test-json-prd.sh"
+run_test "License Audit Pinned Version" "$SCRIPT_DIR/test-license-audit-pinned-version.sh"
+run_test "Log Debug Stderr" "$SCRIPT_DIR/test-log-debug-stderr.sh"
+run_test "Loki Stop Byid Reap Wave8" "$SCRIPT_DIR/test-loki-stop-byid-reap-wave8.sh"
+run_test "Lsp Diagnostics Regression" "$SCRIPT_DIR/test-lsp-diagnostics-regression.sh"
+run_test "Lsp Proxy Http" "$SCRIPT_DIR/test-lsp-proxy-http.sh"
+run_test "Lsp Proxy" "$SCRIPT_DIR/test-lsp-proxy.sh"
+run_test "Magic" "$SCRIPT_DIR/test-magic.sh"
+run_test "Mcp Config" "$SCRIPT_DIR/test-mcp-config.sh"
+run_test "Mcp Http Auth" "$SCRIPT_DIR/test-mcp-http-auth.sh"
+run_test "Memory Audit Fixes" "$SCRIPT_DIR/test-memory-audit-fixes.sh"
+run_test "Memory Capture Wedge" "$SCRIPT_DIR/test-memory-capture-wedge.sh"
+run_test "Memory Economics Endpoint" "$SCRIPT_DIR/test-memory-economics-endpoint.sh"
+run_test "Memory Error Log" "$SCRIPT_DIR/test-memory-error-log.sh"
+run_test "Memory Replay" "$SCRIPT_DIR/test-memory-replay.sh"
+run_test "Memory Speed Privacy" "$SCRIPT_DIR/test-memory-speed-privacy.sh"
+run_test "Memory Wake Dead Code" "$SCRIPT_DIR/test-memory-wake-dead-code.sh"
+run_test "Metrics Command" "$SCRIPT_DIR/test-metrics-command.sh"
+
 # Secure-by-default gate (Loop 4): the secure-scan engine precision (bad/safe
 # matrix for all 5 rules + the named false-positive guards), the run_secure_scan
 # wiring (advisory default never blocks; LOKI_SECURE_GATE=block blocks an
