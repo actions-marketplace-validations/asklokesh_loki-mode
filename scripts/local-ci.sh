@@ -456,9 +456,14 @@ run_check "tests/test-funnel-privacy.sh (allowlist at the wire, zero-egress defa
 # end of this section.
 SENTINEL_PARENT_PID=""
 SENTINEL_CHILD_PID=""
+# Sentinel lifetime, and when it started. Both are read by the assertion so a
+# dead sentinel can be classified as EXPIRED vs KILLED.
+SENTINEL_LIFETIME=7200
+SENTINEL_SPAWN_EPOCH=0
 SENTINEL_SCRIPT=""
 SENTINEL_CWD=""
 _spawn_stop_sentinel() {
+  SENTINEL_SPAWN_EPOCH=$(date +%s)
   SENTINEL_CWD=$(mktemp -d "${TMPDIR:-/tmp}/loki-sentinel-cwd-XXXXXX") || return 1
   local _rand="$$-${RANDOM}-${RANDOM}"
   SENTINEL_SCRIPT="${TMPDIR:-/tmp}/loki-run-SENTINEL-${_rand}.sh"
@@ -466,8 +471,19 @@ _spawn_stop_sentinel() {
 #!/usr/bin/env bash
 # local-ci stop-suite foreign-kill sentinel. Marker: LOKI-CI-SENTINEL-${_rand}
 echo \$\$ > "${SENTINEL_CWD}/parent.pid"
-sleep 900 &
+# Lifetime must outlive the WHOLE local-ci run, not just the stop suites.
+# It was 900s (15 min). A full run takes 25-37 min here and grows as suites are
+# added, so on any slow run the sentinel simply EXPIRED mid-run and the guard
+# below reported "a stop suite killed the sentinel" -- a false DO-NOT-PUSH that
+# is indistinguishable from the real regression it exists to catch.
+# Measured: 25m40s and 26m48s runs SURVIVED; 35m10s and 36m40s runs "failed".
+# 7200s (2h) is far beyond any plausible run and the sentinel is reaped by PID
+# at the end of the stop section, so a longer sleep costs nothing.
+sleep ${SENTINEL_LIFETIME} &
 echo \$! > "${SENTINEL_CWD}/child.pid"
+# Touch a heartbeat AFTER the sleep starts so the guard can tell "still the
+# process we spawned" from "PID recycled onto something else".
+echo alive > "${SENTINEL_CWD}/started"
 wait
 SENT
   chmod +x "$SENTINEL_SCRIPT"
@@ -597,8 +613,18 @@ run_check "tests/test-stop-process-group.sh (group-kill agent teardown)" "bash t
 # on a live run, which is the anti-pattern that masked this bug originally. If
 # the sentinel is dead, a stop suite reaped a foreign loki-run-* and the build
 # fails loudly.
+# A dead sentinel has TWO possible causes and they must not be conflated:
+# a stop suite killed it (the regression this guard exists for), or it simply
+# reached the end of its own sleep (a harness bug that produces a FALSE
+# DO-NOT-PUSH). The original check reported "killed" for both, and on a 36m run
+# with a 900s sentinel that fired every time -- costing several full CI cycles
+# chasing a regression that was never there.
+# The sentinel's own script is the discriminator: _reap_stop_sentinel deletes it,
+# and nothing else does. If the script is still on disk and the PIDs are gone,
+# the sentinel EXPIRED (or was killed). We now also record its start so the
+# elapsed time can be compared against the configured lifetime.
 run_check "stop suites do NOT kill a foreign loki run (sentinel alive by PID)" \
-  'if [ -z "'"$SENTINEL_PARENT_PID"'" ]; then echo "sentinel never spawned -- cannot verify"; exit 1; fi; if kill -0 '"$SENTINEL_PARENT_PID"' 2>/dev/null && kill -0 '"$SENTINEL_CHILD_PID"' 2>/dev/null; then echo "sentinel parent='"$SENTINEL_PARENT_PID"' child='"$SENTINEL_CHILD_PID"' SURVIVED the stop suites"; else echo "FOREIGN-KILL REGRESSION: a stop suite killed the sentinel (parent='"$SENTINEL_PARENT_PID"' alive=$(kill -0 '"$SENTINEL_PARENT_PID"' 2>/dev/null && echo yes || echo no), child='"$SENTINEL_CHILD_PID"' alive=$(kill -0 '"$SENTINEL_CHILD_PID"' 2>/dev/null && echo yes || echo no))"; exit 1; fi'
+  'if [ -z "'"$SENTINEL_PARENT_PID"'" ]; then echo "sentinel never spawned -- cannot verify"; exit 1; fi; if kill -0 '"$SENTINEL_PARENT_PID"' 2>/dev/null && kill -0 '"$SENTINEL_CHILD_PID"' 2>/dev/null; then echo "sentinel parent='"$SENTINEL_PARENT_PID"' child='"$SENTINEL_CHILD_PID"' SURVIVED the stop suites"; else _el=$(( $(date +%s) - '"${SENTINEL_SPAWN_EPOCH:-0}"' )); if [ "$_el" -ge '"${SENTINEL_LIFETIME:-7200}"' ]; then echo "SENTINEL EXPIRED after ${_el}s (lifetime '"${SENTINEL_LIFETIME:-7200}"'s) -- this is a HARNESS limit, not a foreign-kill regression. Raise SENTINEL_LIFETIME in _spawn_stop_sentinel."; exit 1; fi; echo "FOREIGN-KILL REGRESSION: a stop suite killed the sentinel after only ${_el}s of a '"${SENTINEL_LIFETIME:-7200}"'s lifetime (parent='"$SENTINEL_PARENT_PID"' alive=$(kill -0 '"$SENTINEL_PARENT_PID"' 2>/dev/null && echo yes || echo no), child='"$SENTINEL_CHILD_PID"' alive=$(kill -0 '"$SENTINEL_CHILD_PID"' 2>/dev/null && echo yes || echo no))"; exit 1; fi'
 # Reap the sentinel by PID now that the assertion is done (scoped, never pgrep).
 _reap_stop_sentinel
 
