@@ -226,7 +226,20 @@ loki init my-app --template simple-todo-app    # scaffold a starter PRD
 cd my-app && loki start prd.md                 # autonomous build from the spec
 ```
 
-One thing to know first: Loki drives a separate coding-agent CLI (Claude Code is the recommended one) and needs it plus a couple of common tools on your PATH. Run `loki doctor` any time and it tells you exactly what is present and what is missing, with a copy-pasteable install command for each gap.
+One thing to know first: Loki needs a model to drive. There are two ways to give it one.
+
+**Without a separate CLI (v8).** The Claude Agent SDK ships inside Loki, so an API key alone is enough:
+
+```bash
+export ANTHROPIC_API_KEY=sk-...               # or ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL
+LOKI_SDK_MODE=full loki start prd.md          # runs the loop and the judges through the bundled SDK
+```
+
+This needs Bun on your PATH (the SDK loop runs on the Bun runtime). `loki doctor` reports `Bundled Claude Agent SDK is usable -- no separate CLI needed` when that path is genuinely ready, and stays on the normal blocker otherwise: it checks that the SDK's platform binary is actually extracted, that credentials are present, and that the SDK loop is really the route your next run will take. It will not tell you that you are ready and then fail the build.
+
+**With a coding-agent CLI.** The classic path, and still the default: Loki drives a separate CLI (Claude Code is the recommended one) plus a couple of common tools on your PATH.
+
+Either way, run `loki doctor` any time and it tells you exactly what is present and what is missing, with a copy-pasteable install command for each gap.
 
 ```bash
 loki doctor                                    # check your setup before the first build
