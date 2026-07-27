@@ -391,6 +391,12 @@ run_test "Provider Degraded Mode (capability flags)" "$SCRIPT_DIR/test-provider-
 # mapping, unknown-provider handling). Also previously unregistered.
 run_test "Provider Loader (contract + tier mapping)" "$SCRIPT_DIR/test-provider-loader.sh"
 
+# Audit-chain integrity across CONCURRENT WRITER PROCESSES. Registered with the
+# fix (2026-07-27): a threading.Lock plus an import-time chain tip meant every
+# concurrent writer process forked the tamper-evident chain at write time. 25 of
+# 67 audit files on a real machine were internally chain-broken.
+run_test "Audit Chain Multiprocess (cross-process flock + tip re-read)" "$SCRIPT_DIR/test-audit-chain-multiprocess.sh"
+
 # ---------------------------------------------------------------------------
 # Batch 1 of the orphaned-suite registration (2026-07-27). These suites existed
 # and passed but were wired into NO runner, so they never executed. See
