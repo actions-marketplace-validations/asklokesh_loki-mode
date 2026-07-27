@@ -408,6 +408,12 @@ run_test "Coverage Gate Fail-Open (node-test detector)" "$SCRIPT_DIR/test-covera
 # directory emitted invalid JSON to any tool parsing it.
 run_test "Init Command (templates, --json, --list)" "$SCRIPT_DIR/test-init-command.sh"
 
+# ANTHROPIC_BASE_URL + LOKI_MODEL_OVERRIDE fail-closed AND-gate (bash route).
+# Registered 2026-07-27 after retargeting 4 assertions that still expected the
+# pre-v7.104.0 opus default; the Bun mirror had been updated, the bash twin had
+# not, because no runner ever ran it.
+run_test "Anthropic Base URL (override AND-gate, bash)" "$SCRIPT_DIR/test-anthropic-base-url.sh"
+
 # ---------------------------------------------------------------------------
 # Batch 1 of the orphaned-suite registration (2026-07-27). These suites existed
 # and passed but were wired into NO runner, so they never executed. See
