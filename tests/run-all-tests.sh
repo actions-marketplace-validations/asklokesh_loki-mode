@@ -376,6 +376,21 @@ run_test "Emit JSON Escape (C0 control chars + UTF-8)" "$SCRIPT_DIR/test-emit-js
 # against CODEX_KNOWN_MODELS. Regression guard for the silent-downgrade bug.
 run_test "Codex Model Trusted (LOKI_CODEX_MODEL verbatim)" "$SCRIPT_DIR/test-codex-model-trusted.sh"
 
+# provider_invoke()/provider_invoke_with_tier() argv construction across all
+# four providers. Registered 2026-07-27: this file existed but was wired into
+# NO runner, so the layer it guards went unwatched -- which is how a hardcoded
+# codex model that ChatGPT accounts reject reached users. An unregistered test
+# is indistinguishable from no test.
+run_test "Provider Invocation (argv construction, all providers)" "$SCRIPT_DIR/test-provider-invocation.sh"
+
+# Provider capability flags + degraded-mode reasons must match what each CLI
+# actually supports, not a stale assumption.
+run_test "Provider Degraded Mode (capability flags)" "$SCRIPT_DIR/test-provider-degraded-mode.sh"
+
+# The loader contract itself (which vars every provider must export, tier
+# mapping, unknown-provider handling). Also previously unregistered.
+run_test "Provider Loader (contract + tier mapping)" "$SCRIPT_DIR/test-provider-loader.sh"
+
 # Secure-by-default gate (Loop 4): the secure-scan engine precision (bad/safe
 # matrix for all 5 rules + the named false-positive guards), the run_secure_scan
 # wiring (advisory default never blocks; LOKI_SECURE_GATE=block blocks an
