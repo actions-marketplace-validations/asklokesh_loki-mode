@@ -28,6 +28,8 @@ import {
   buildAutoFlags,
   claudeFlagSupported,
   ensureClaudeHelpCache,
+  autonomyAppendText,
+  autonomyAppendEnabled,
   sessionStampArgv,
   sessionResumeArgv,
   cavemanActivateEnv,
@@ -634,9 +636,21 @@ export function sdkQueryProvider(): ProviderInvoker {
                   },
                 }
               : {}),
-            // build_prompt owns ALL injection; use the claude_code preset with no
-            // append so system-prompt behavior matches `claude -p`.
-            systemPrompt: { type: "preset", preset: "claude_code" },
+            // build_prompt owns the ITERATION prompt; the preset matches
+            // `claude -p`. The one thing build_prompt does NOT carry is the
+            // autonomy/first-pass append, which the CLI route sends via
+            // --append-system-prompt. That flag path is gated on a `claude`
+            // BINARY probe, so on this route (no CLI required) the FIRST-PASS
+            // EXCELLENCE directive was silently dropped -- losing a measured
+            // 2.8x iterations-to-done reduction on the very route v8 promotes.
+            // Same text, same iteration-1 gate, same opt-out, no binary probe.
+            systemPrompt: autonomyAppendEnabled()
+              ? {
+                  type: "preset",
+                  preset: "claude_code",
+                  append: autonomyAppendText(),
+                }
+              : { type: "preset", preset: "claude_code" },
             env,
             // T3(b) parity: MCP tools + effort + USD budget + fallback model.
             ...(extra.mcpServers ? { mcpServers: extra.mcpServers } : {}),

@@ -271,13 +271,7 @@ export function buildAutoFlags(args: AutoFlagsArgs): string[] {
     // mirror providers/claude.sh _loki_autonomy_override_text so both routes send
     // the same append at runtime (the matrix parity gate does not spawn a model,
     // so a one-route-only change would pass every gate yet diverge live).
-    const iter = Number.parseInt(process.env["ITERATION_COUNT"] ?? "1", 10);
-    const firstPassOn = process.env["LOKI_FIRST_PASS_EXCELLENCE"] !== "0";
-    const text =
-      firstPassOn && (Number.isNaN(iter) || iter <= 1)
-        ? AUTONOMY_OVERRIDE_TEXT + FIRST_PASS_EXCELLENCE_TEXT
-        : AUTONOMY_OVERRIDE_TEXT;
-    out.push("--append-system-prompt", text);
+    out.push("--append-system-prompt", autonomyAppendText());
   }
   // v7.34.0: --no-session-persistence. OPT-IN via LOKI_NO_SESSION_PERSIST=1;
   // DEFAULT OFF (zero behavior change). Disables Claude's own transcript JSONL
@@ -290,6 +284,40 @@ export function buildAutoFlags(args: AutoFlagsArgs): string[] {
     out.push("--no-session-persistence");
   }
   return out;
+}
+
+// autonomyAppendText: the exact system-prompt append both routes send.
+//
+// EXTRACTED so the SDK route can reach it. This composition used to live inline
+// inside the CLI flag builder, behind claudeFlagSupported("--append-system-prompt")
+// -- a probe of the `claude` BINARY. On the SDK route with no CLI installed
+// (LOKI_SDK_MODE=full, the configuration v8 steers new users toward) that
+// predicate is false, so the FIRST-PASS EXCELLENCE directive silently vanished
+// from exactly the route v8 promotes. That directive is the measured
+// iterations-to-done lever: a hard task dropped from [3,2] iterations to [1,1],
+// 2.8x cheaper, with correctness held. Losing it on the default route is the
+// opposite of what the loop is for.
+//
+// The CLI caller still gates on binary support (it must -- an unsupported flag
+// would be rejected by the binary). The SDK caller has no such constraint and
+// passes this text straight to query()'s systemPrompt append.
+//
+// Iteration-1-only, gated on LOKI_FIRST_PASS_EXCELLENCE (default on). Callers
+// on BOTH routes must use this function so the two can never diverge at
+// runtime: the matrix parity gate does not spawn a model, so a one-route-only
+// change would pass every gate and still send different prompts live.
+export function autonomyAppendText(): string {
+  const iter = Number.parseInt(process.env["ITERATION_COUNT"] ?? "1", 10);
+  const firstPassOn = process.env["LOKI_FIRST_PASS_EXCELLENCE"] !== "0";
+  return firstPassOn && (Number.isNaN(iter) || iter <= 1)
+    ? AUTONOMY_OVERRIDE_TEXT + FIRST_PASS_EXCELLENCE_TEXT
+    : AUTONOMY_OVERRIDE_TEXT;
+}
+
+// autonomyAppendEnabled: whether the append should be sent at all. Shared by
+// both routes so the opt-out (LOKI_AUTONOMY_OVERRIDE=off) behaves identically.
+export function autonomyAppendEnabled(): boolean {
+  return process.env["LOKI_AUTONOMY_OVERRIDE"] !== "off";
 }
 
 // The system-prompt text that authorizes autonomous operation and resolves
