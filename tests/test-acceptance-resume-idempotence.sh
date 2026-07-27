@@ -119,14 +119,20 @@ source "$ADVISORY_LIB"
 source "$BRANCH_LIB"
 EOF
 
-# A real bare remote so `git push` works entirely locally, never to a network.
-REMOTE="$WORKROOT/remote.git"
-git init --bare -q "$REMOTE" 2>/dev/null
-
 make_repo() {
     local name="$1"
     local repo="$WORKROOT/$name"
+    # A real bare remote so `git push` works entirely locally, never to a
+    # network. ONE REMOTE PER REPO, deliberately: repo1 and repo2 both work on
+    # the same branch name, so a shared remote made repo2's first push a
+    # non-fast-forward reject. create_session_pr returns 1 on a failed push
+    # (run.sh:8172) BEFORE reaching gh, so the mutation block recorded zero
+    # `gh pr create` calls and the non-vacuity proof reported "may be vacuous"
+    # against a mutation that was working correctly. It was intermittent
+    # because it depended on whether repo1 had pushed first.
+    local remote="$WORKROOT/$name-remote.git"
     mkdir -p "$repo"
+    git init --bare -q "$remote" 2>/dev/null
     (
         cd "$repo" || exit 1
         git init -q -b main .
@@ -136,7 +142,7 @@ make_repo() {
         echo "seed" > README.md
         git add README.md
         git commit -qm "seed"
-        git remote add origin "$REMOTE"
+        git remote add origin "$remote"
         mkdir -p .loki/state
         echo "main" > .loki/state/base-branch.txt
         # create_session_pr reads the agent branch from here (run.sh:8111) and
