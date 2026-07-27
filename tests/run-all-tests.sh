@@ -403,6 +403,11 @@ run_test "Audit Chain Multiprocess (cross-process flock + tip re-read)" "$SCRIPT
 # a green suite emitted no TAP "ok N -" lines and was mislabeled "no_tests_run".
 run_test "Coverage Gate Fail-Open (node-test detector)" "$SCRIPT_DIR/test-coverage-gate-fail-open.sh"
 
+# `loki init` surface, including --json. Registered with the stdout/stderr fix
+# (2026-07-27): the reinit banner was written to stdout, so the SECOND init in a
+# directory emitted invalid JSON to any tool parsing it.
+run_test "Init Command (templates, --json, --list)" "$SCRIPT_DIR/test-init-command.sh"
+
 # ---------------------------------------------------------------------------
 # Batch 1 of the orphaned-suite registration (2026-07-27). These suites existed
 # and passed but were wired into NO runner, so they never executed. See

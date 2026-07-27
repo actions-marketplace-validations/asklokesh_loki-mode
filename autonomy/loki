@@ -13111,7 +13111,12 @@ cmd_init() {
                 return 1
             fi
         fi
-        echo -e "${YELLOW}Reinitializing existing .loki/ directory${NC}"
+        # stderr, not stdout: `loki init --json` writes a machine-readable
+        # template list to stdout, and this human-facing banner was landing in
+        # the middle of it -- the second `init` in a directory emitted invalid
+        # JSON, so any tool parsing it broke on reinit but worked on first run.
+        # Diagnostics belong on stderr; stdout is the data channel.
+        echo -e "${YELLOW}Reinitializing existing .loki/ directory${NC}" >&2
     fi
 
     local version=$(get_version)
@@ -13420,7 +13425,10 @@ print(p or '')
                 return 1
             fi
         fi
-        echo -e "${YELLOW}Reinitializing existing .loki/ directory in $target_dir${NC}"
+        # stderr for the same reason as the sibling banner above: stdout is the
+        # machine-readable channel. Fixing only the path the failing test
+        # exercised would leave this one to resurface the same bug.
+        echo -e "${YELLOW}Reinitializing existing .loki/ directory in $target_dir${NC}" >&2
     fi
 
     # Build config JSON
