@@ -17642,7 +17642,17 @@ main() {
        && _loki_telemetry_enabled; then
         _loki_disclose_telemetry_once
     fi
-    loki_telemetry "cli_command" "command=$command" 2>/dev/null || true
+    # The command value is passed through the FIXED ALLOWLIST at the boundary
+    # (_loki_known_command, autonomy/telemetry.sh): a real subcommand goes out
+    # verbatim, anything else becomes the literal "other". Without this, the
+    # honest typo `loki ./client-acme-merger-prd.md` put the raw file name on the
+    # wire, because the payload builder is a pass-through dict, not an allowlist.
+    # Fail closed: if the sanitizer is somehow undefined, send "other".
+    if declare -f _loki_known_command >/dev/null 2>&1; then
+        loki_telemetry "cli_command" "command=$(_loki_known_command "$command")" 2>/dev/null || true
+    else
+        loki_telemetry "cli_command" "command=other" 2>/dev/null || true
+    fi
 
     # Unified config-file pre-pass (#691). For session commands ONLY, honor
     # LOKI_CONFIG_FILE / --config|--vars|--env-file and load the file BEFORE the

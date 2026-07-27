@@ -146,6 +146,47 @@ _loki_detect_channel() {
     esac
 }
 
+# _loki_known_command <token>: FIXED ALLOWLIST at the telemetry boundary. Prints
+# the token verbatim when it is a real loki subcommand, else the literal "other".
+#
+# WHY THIS EXISTS. Every command-shaped telemetry value is the user's raw first
+# CLI token, and loki_telemetry's payload builder is a PASS-THROUGH dict, not an
+# allowlist. So the honest typo of dropping the subcommand off this project's own
+# documented quickstart --
+#     loki ./client-acme-merger-prd.md
+# -- put a user-authored file name on the wire verbatim. Spec file names routinely
+# carry client and codename. Sanitizing at this boundary bounds the value space to
+# a fixed, public vocabulary by construction, so no path, flag value, or spec name
+# can reach PostHog through a command field regardless of what the user typed.
+#
+# The arms below mirror autonomy/loki's own `case "$command" in` dispatch (whose
+# final `*)` arm is literally this same unknown bucket), UNIONed with the
+# bin/loki Bun-route arm (`internal` is Bun-only) and the `report` pre-route.
+# A token missing from this list degrades to "other": lossy, never leaky, so a
+# stale list after a new subcommand lands is safe by construction.
+_loki_known_command() {
+    case "${1:-}" in
+        --help|--version|-h|-v|agent|analyze|api|assets\
+        |audit|bench|checkpoint|ci|cleanup|cluster|cockpit|code\
+        |completions|compliance|compound|config|context|cost|council|cp\
+        |crash|ctx|dashboard|demo|deploy|docker|docs|doctor\
+        |dogfood|enterprise|explain|export|failover|github|grill|handoff\
+        |heal|help|import|init|internal|issue|kpis|logs\
+        |magic|mcp|memory|metrics|migrate|modernize|monitor|next\
+        |notify|onboard|open|optimize|otel|own|pause|plan\
+        |preview|projects|proof|provider|quick|quickstart|rc|receipt\
+        |remote|report|reset|resume|review|rollback|run|sandbox\
+        |secrets|secure|self-update|self_update|sentrux|serve|setup-skill|share\
+        |ship|spec|start|state|stats|status|steer|stop\
+        |syslog|telemetry|template|test|tour|trigger|trust|trust-metrics\
+        |ultracode|update|verify|version|voice|watch|watchdog|web\
+        |welcome|why|wiki|worktree|wt)
+            printf '%s' "$1" ;;
+        *)
+            printf 'other' ;;
+    esac
+}
+
 loki_telemetry() {
     _loki_telemetry_enabled || return 0
     local event="$1"; shift
@@ -160,12 +201,16 @@ loki_telemetry() {
     os_name=$(uname -s 2>/dev/null || echo "unknown")
     arch=$(uname -m 2>/dev/null || echo "unknown")
 
-    # Build JSON payload safely using Python to prevent injection
-    local extra_args=""
-    for arg in "$@"; do
-        extra_args="${extra_args}${extra_args:+ }${arg}"
-    done
-
+    # Build JSON payload safely using Python to prevent injection.
+    # The extra key=value pairs are forwarded as "$@" -- one argv slot per pair,
+    # QUOTED. They used to be joined into a single space-delimited string and
+    # then re-split by an unquoted expansion, which broke two ways: a value
+    # containing a space was truncated (`prd=my file.md` -> `prd=my`, rest
+    # dropped) or, if a fragment itself contained `=`, forged an extra PostHog
+    # property KEY; and the unquoted expansion also globbed, so `spec=*.md`
+    # expanded against the cwd and injected file names into the payload. Callers
+    # already pass each pair as its own quoted word, so "$@" is the array and no
+    # caller signature changes.
     local payload
     payload=$(python3 -c "
 import json, sys
@@ -175,7 +220,7 @@ for arg in sys.argv[5:]:
         k, v = arg.split('=', 1)
         props[k] = v
 print(json.dumps({'api_key': '$LOKI_POSTHOG_KEY', 'event': sys.argv[5] if len(sys.argv) > 5 else '', 'distinct_id': '$distinct_id', 'properties': props}))
-" "$os_name" "$arch" "$version" "$channel" $extra_args 2>/dev/null) || return 0
+" "$os_name" "$arch" "$version" "$channel" "$@" 2>/dev/null) || return 0
     # Re-inject event and distinct_id properly
     payload=$(python3 -c "
 import json, sys
@@ -212,6 +257,35 @@ _loki_analytics_enabled() {
         return 0
     fi
     return 1
+}
+
+# loki_emit_funnel_once <marker-name> <event> [key=value...]: fire ONE
+# first-run-funnel event, at most once per machine, under the SAME strict double
+# gate as build_verified (telemetry enabled AND analytics explicitly opted in --
+# default OFF even for diagnostics-on users). No new consent knob, no new
+# endpoint: it reuses loki_telemetry, so every existing opt-out kills it too.
+#
+# ORDERING IS LOAD-BEARING. Disclosure runs before the emit, and the marker is
+# written only AFTER the gate has passed and we have actually emitted. The
+# reverted attempt burned its marker unconditionally, which meant a first run
+# under CI/auto-off consumed the one-shot and permanently silenced the event for
+# that user. Mirrors _loki_disclose_telemetry_once: act, then mark.
+#
+# Values must already be bounded (see _loki_known_command). Best-effort: every
+# step returns 0, nothing blocks, nothing throws.
+loki_emit_funnel_once() {
+    local _marker_name="$1"; shift
+    local _event="$1"; shift
+    _loki_analytics_enabled || return 0
+    local _mfile="${HOME}/.loki/funnel-${_marker_name}"
+    [ -f "$_mfile" ] 2>/dev/null && return 0
+    if declare -f _loki_disclose_telemetry_once >/dev/null 2>&1; then
+        _loki_disclose_telemetry_once
+    fi
+    loki_telemetry "$_event" "$@" 2>/dev/null || true
+    mkdir -p "${HOME}/.loki" 2>/dev/null || return 0
+    : > "$_mfile" 2>/dev/null || true
+    return 0
 }
 
 # loki_emit_build_verified <proof.json path>: fire ONE build_verified event

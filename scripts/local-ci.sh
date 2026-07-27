@@ -433,6 +433,13 @@ run_check "tests/test-proven-pr-detached.sh (detached --pr/--ship -d carries rec
 # covertly. Hermetic (unroutable endpoint, fresh HOME, no real network send).
 run_check "tests/test-telemetry-disclosure-pty.sh (TTY signal + no covert egress)" "bash tests/test-telemetry-disclosure-pty.sh 2>&1 | tail -3"
 
+# First-run funnel privacy: asserts WHAT REACHES THE WIRE by stubbing curl (the
+# last hop) and reading the real POST body, given path-shaped, space-containing
+# and glob-containing input. Guards the leak reverted in a0f835bc: the fixed
+# allowlist at the boundary, the quoted-array transport, disclosure-before-egress
+# on the early-exit path, zero egress with the gates shut, and route parity.
+run_check "tests/test-funnel-privacy.sh (allowlist at the wire, zero-egress default)" "bash tests/test-funnel-privacy.sh 2>&1 | tail -4"
+
 # ---------------------------------------------------------------------------
 # STOP-SUITE FOREIGN-KILL REGRESSION GUARD (fix/local-ci-sentinel)
 # ---------------------------------------------------------------------------

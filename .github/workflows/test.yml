@@ -205,6 +205,15 @@ jobs:
           bash tests/test-sandbox-deprecation.sh
           bash tests/test-acceptance-resume-idempotence.sh
 
+      # First-run funnel privacy. Stubs curl and asserts on the real POST body,
+      # so it observes what would actually reach the wire (the reverted attempt's
+      # test stubbed loki_telemetry itself and could never see a leak). Hermetic:
+      # fake HOME, fake curl on PATH, no real network send. It sets
+      # LOKI_TELEMETRY=on explicitly, which by the documented gate precedence
+      # overrides the CI auto-off, so the gates are genuinely open here.
+      - name: Run first-run funnel privacy tests (stubbed curl, no real egress)
+        run: bash tests/test-funnel-privacy.sh
+
       - name: Run CLI tests via bash route (LOKI_LEGACY_BASH=1)
         env:
           LOKI_LEGACY_BASH: "1"
