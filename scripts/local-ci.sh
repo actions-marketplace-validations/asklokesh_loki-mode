@@ -548,7 +548,6 @@ run_check "tests/test-checkpoint-index-rebuild.sh (single-python index rebuild, 
 run_check "tests/test-evidence-boot-axis.sh (completion gate blocks when the built app does not run)" "bash tests/test-evidence-boot-axis.sh 2>&1 | tail -3"
 run_check "tests/test-evidence-secret-axis.sh (completion gate blocks a secret leak in changed files)" "bash tests/test-evidence-secret-axis.sh 2>&1 | tail -3"
 run_check "tests/test-loki-steer.sh (loki steer writes the file the loop reads; dead steering.md hint removed)" "bash tests/test-loki-steer.sh 2>&1 | tail -3"
-run_check "tests/test-funnel.sh (activation-funnel events fire once, carry the drop-off reason, honor opt-out)" "bash tests/test-funnel.sh 2>&1 | tail -3"
 run_check "tests/test-loki-why-stall.sh (loki why names the real stall reason: UNCERTAINTY_ESCALATION + convergence signal, suggests loki steer)" "bash tests/test-loki-why-stall.sh 2>&1 | tail -3"
 run_check "tests/test-spec-expand.sh (OpenAPI/GraphQL/Postman contract expands to a per-operation checklist; no ops lost to prompt truncation; non-contract untouched)" "bash tests/test-spec-expand.sh 2>&1 | tail -3"
 run_check "tests/test-spec-contract-drift.sh (contract locks one requirement per operation; mutating one response schema drifts exactly that operationId, exit 1)" "bash tests/test-spec-contract-drift.sh 2>&1 | tail -3"

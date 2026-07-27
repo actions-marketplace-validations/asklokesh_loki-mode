@@ -1124,15 +1124,6 @@ if [ -f "$TELEMETRY_SCRIPT" ]; then
     source "$TELEMETRY_SCRIPT"
 fi
 
-# Activation-funnel instrumentation (see autonomy/lib/funnel.sh). Sourced here so
-# the runner can fire first_start_blocked with the real reason (e.g. no_api_key)
-# at the point the build actually cannot proceed -- the drop-off the funnel needs.
-FUNNEL_SCRIPT="$SCRIPT_DIR/lib/funnel.sh"
-if [ -f "$FUNNEL_SCRIPT" ]; then
-    # shellcheck source=lib/funnel.sh
-    source "$FUNNEL_SCRIPT" 2>/dev/null || true
-fi
-
 # Crash-reporting helpers (Phase 0: local-only, zero egress).
 # Provides loki_collection_enabled (unified opt-out), loki_crash_capture,
 # loki_crash_friction, loki_show_disclosure_once.
@@ -2904,17 +2895,12 @@ validate_api_keys() {
             log_error "Log in once, then retry:"
             log_error "    claude login"
             log_error "(or set ANTHROPIC_API_KEY, or LOKI_SKIP_AUTH_PREFLIGHT=1 to bypass this check)"
-            # Funnel: the highest-value drop-off signal -- a first start that could
-            # not proceed because there is no usable auth. This is almost certainly
-            # a large share of the "installed but never built" 95%.
-            declare -f _loki_funnel_start_blocked >/dev/null 2>&1 && _loki_funnel_start_blocked "no_api_key" 2>/dev/null || true
             return 1
         elif [[ "$_login_state" == "expired" ]]; then
             log_error "Your Claude Code login has expired -- the build would stall instead of running."
             log_error "Fix it in one step, then retry:"
             log_error "    claude login"
             log_error "(or set ANTHROPIC_API_KEY, or LOKI_SKIP_AUTH_PREFLIGHT=1 to bypass this check)"
-            declare -f _loki_funnel_start_blocked >/dev/null 2>&1 && _loki_funnel_start_blocked "expired_login" 2>/dev/null || true
             return 1
         fi
         # "loggedin" or "unknown" -> proceed (fail open on uncertainty).
@@ -23844,12 +23830,6 @@ main() {
         "result=$result" \
         "provider=${PROVIDER_NAME:-claude}" \
         "iterations=$ITERATION_COUNT"
-
-    # Funnel: the first build to reach a terminal COMPLETE (exit 0) is the
-    # activation moment -- the user got real value. Fires once per machine.
-    if [ "${result:-1}" = "0" ]; then
-        declare -f _loki_funnel_build_complete >/dev/null 2>&1 && _loki_funnel_build_complete "${ITERATION_COUNT:-0}" 2>/dev/null || true
-    fi
 
     # Anonymous usage telemetry
     local session_duration=$(($(date +%s) - ${SESSION_START_EPOCH:-$(date +%s)}))
