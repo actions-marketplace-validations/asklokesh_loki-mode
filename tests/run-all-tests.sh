@@ -414,6 +414,15 @@ run_test "Init Command (templates, --json, --list)" "$SCRIPT_DIR/test-init-comma
 # not, because no runner ever ran it.
 run_test "Anthropic Base URL (override AND-gate, bash)" "$SCRIPT_DIR/test-anthropic-base-url.sh"
 
+# Batch 6: previously-orphaned suites repaired 2026-07-27. Each was failing for
+# a DIFFERENT reason (a hoisted helper the extractor no longer carried, three
+# retargets to post-v7.89.0 contracts, an incomplete checked-in fixture, and a
+# test that scanned the repo's own branch diff), and none was a product defect.
+run_test "Council Contrarian Transcript Fields" "$SCRIPT_DIR/test-council-contrarian-transcript-fields.sh"
+run_test "Bugfix Audit (CLI regressions)" "$SCRIPT_DIR/test-bugfix-audit.sh"
+run_test "CLAUDE.md Walker (project graph layers)" "$SCRIPT_DIR/test-claude-md-walker.sh"
+run_test "CI Command (--fail-on thresholds)" "$SCRIPT_DIR/test-ci-command.sh"
+
 # ---------------------------------------------------------------------------
 # Batch 1 of the orphaned-suite registration (2026-07-27). These suites existed
 # and passed but were wired into NO runner, so they never executed. See
