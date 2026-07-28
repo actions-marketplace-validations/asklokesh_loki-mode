@@ -3914,6 +3914,33 @@ notify_rate_limit() {
 # written even when desktop notifications are disabled. emit_completion_summary
 # below is the wrapper that writes the files AND (gated) fires the desktop ping.
 #===============================================================================
+# Read the gate escalation signal into one human line, or print nothing.
+# Shared by COMPLETION.txt's per-outcome guidance and PAUSED.md so the two never
+# disagree about why a run stopped. Best-effort: a missing or corrupt signal
+# yields an empty string, and the caller degrades to generic guidance.
+_loki_summary_gate_reason() {
+    local loki_dir="${1:-${TARGET_DIR:-.}/.loki}"
+    [ -s "$loki_dir/signals/GATE_ESCALATION.json" ] || return 0
+    _LOKI_GR_FILE="$loki_dir/signals/GATE_ESCALATION.json" python3 -c '
+import json, os, sys
+try:
+    d = json.load(open(os.environ["_LOKI_GR_FILE"]))
+except Exception:
+    sys.exit(0)
+if not isinstance(d, dict):
+    sys.exit(0)
+gate = str(d.get("gate", "") or "").strip()
+if not gate:
+    sys.exit(0)
+count = d.get("count")
+thr = d.get("threshold")
+if isinstance(count, int) and isinstance(thr, int):
+    print("%s (failed %d times, threshold %d)" % (gate, count, thr))
+else:
+    print(gate)
+' 2>/dev/null || true
+}
+
 build_completion_summary() {
     local outcome="${1:-complete}"
     local loki_dir="${TARGET_DIR:-.}/.loki"
@@ -4119,6 +4146,52 @@ except Exception:
                         echo "or inspect what happened: loki why"
                         ;;
                 esac
+                ;;
+        esac
+
+        # Per-outcome next step. Deliberately NOT nested inside the
+        # files_changed==0 case above: a run that stops for a gate reason has
+        # usually built plenty, and that is exactly the run whose user most needs
+        # to be told what to do. Keying this on an empty diff would silence it
+        # for the case that motivated it.
+        #
+        # Measured on the PRD benchmark: outcome=intervention with 9 files built
+        # and 28/28 tests passing produced NO guidance at all, because the old
+        # block covered only complete|max_iterations.
+        case "$outcome" in
+            intervention)
+                echo ""
+                echo "Loki stopped and needs a decision from you."
+                _cs_gate="$(_loki_summary_gate_reason "$loki_dir")"
+                if [ -n "$_cs_gate" ]; then
+                    echo "  Blocked by: $_cs_gate"
+                    echo "  The findings say exactly what to change. Fix those, then resume:"
+                else
+                    echo "  See .loki/PAUSED.md for the reason and .loki/CONTINUITY.md for context."
+                    echo "  Resume with:"
+                fi
+                echo "    rm .loki/PAUSE        # resume this run"
+                echo "    touch .loki/STOP      # end it instead"
+                echo "  Resuming without addressing the finding will stop at the same gate again."
+                ;;
+            failed)
+                echo ""
+                echo "The run failed. What went wrong:"
+                echo "  loki why              # the classified cause, in one line"
+                echo "  .loki/logs/           # the full session log"
+                echo "Anything already committed is listed above and is yours to keep or discard."
+                ;;
+            stopped|force_stopped)
+                echo ""
+                echo "The run was stopped before it finished."
+                echo "Work committed up to that point is listed above. To continue from here:"
+                echo "  loki start <your spec>   # a fresh run over the current tree"
+                ;;
+            inconclusive_spec_contradiction)
+                echo ""
+                echo "Loki could not reconcile parts of the spec, so it stopped rather than"
+                echo "guess. The specific contradictions are in .loki/assumptions/ledger.md."
+                echo "Resolve those in the spec, then re-run."
                 ;;
         esac
     } > "$loki_dir/COMPLETION.txt" 2>/dev/null || true
