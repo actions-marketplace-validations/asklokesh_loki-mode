@@ -2830,6 +2830,30 @@ _loki_check_workspace_writable() {
 # is missing, when LOKI_SKIP_NET_PREFLIGHT=1, when ANTHROPIC_BASE_URL is set (alt
 # provider endpoint we cannot assume), or for any provider whose endpoint we do
 # not know. It NEVER blocks the build.
+# Alt-provider guard: ANTHROPIC_BASE_URL routes Loki at a non-Anthropic endpoint
+# (OpenRouter, Ollama, LiteLLM, vLLM, self-hosted). The tier aliases Loki resolves
+# by default -- opus / sonnet / haiku -- are Anthropic-only names, and most
+# alt-providers reject them outright, so the run dies at the FIRST model call with
+# a provider-side error that is hard to trace back to the missing override.
+#
+# LOKI_MODEL_OVERRIDE is what makes that path work (providers/claude.sh:520 and
+# loki-ts/src/runner/providers.ts:328 both apply it only when BOTH vars are set).
+# `loki doctor` already warns on this, but doctor is opt-in and the run is not.
+#
+# NON-FATAL by design: a mapping proxy (LiteLLM can do this) legitimately resolves
+# the aliases server-side, so this is a warning and never a block. Emitted once per
+# run, and silent unless an alt endpoint is actually configured.
+_loki_warn_alt_provider_model_alias() {
+    [ -n "${ANTHROPIC_BASE_URL:-}" ] || return 0
+    [ -z "${LOKI_MODEL_OVERRIDE:-}" ] || return 0
+    log_warn "ANTHROPIC_BASE_URL is set (${ANTHROPIC_BASE_URL}) but LOKI_MODEL_OVERRIDE is not."
+    log_warn "  Loki will ask for the Anthropic tier aliases (opus/sonnet/haiku), which most"
+    log_warn "  alt-providers do not serve. Set the exact model id your endpoint expects:"
+    log_warn "    export LOKI_MODEL_OVERRIDE=<model-id>   # e.g. from 'ollama list' or your provider's model page"
+    log_warn "  Ignore this if your gateway maps those aliases for you (LiteLLM can)."
+    return 0
+}
+
 _loki_check_network_reachable() {
     local provider="${1:-claude}"
     [ "${LOKI_SKIP_NET_PREFLIGHT:-}" = "1" ] && return 0
@@ -2874,6 +2898,7 @@ validate_api_keys() {
     if ! _loki_check_network_reachable "$provider"; then
         return 1
     fi
+    _loki_warn_alt_provider_model_alias
 
     # Zero-friction auth preflight for LOCAL runs (must run BEFORE the early
     # return below, which exits for non-Docker/K8s envs). When claude is the
