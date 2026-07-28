@@ -128,6 +128,7 @@ run_test "start-SHA empty-repo capture (council empty_diff blocker)" "$SCRIPT_DI
 run_test "stat portability (GNU-first ordering)" "$SCRIPT_DIR/test-stat-portability.sh"
 run_test "alt-provider model-alias warning (OpenRouter/Ollama/LiteLLM)" "$SCRIPT_DIR/test-alt-provider-warning.sh"
 run_test "bash 3.2 parse compatibility (macOS /bin/bash)" "$SCRIPT_DIR/test-bash32-parse.sh"
+run_test "greenfield diff-stat (report what was built)" "$SCRIPT_DIR/test-greenfield-diffstat.sh"
 run_test "Test Mutation Detector (Gate #9)" "$SCRIPT_DIR/detect-test-mutations.sh"
 run_test "Harness False-Green Regression and Mutation" "$SCRIPT_DIR/test-harness-false-green.sh"
 
