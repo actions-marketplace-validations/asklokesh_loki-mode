@@ -29636,7 +29636,7 @@ except Exception:
             local ml
             ml=$(echo "$match" | cut -d: -f1)
             _ci_add_finding "diff" "$ml" "$sev" "$cat" "$finding" "$suggestion"
-        done < <(echo "$diff_content" | grep -n '^+' | grep -E "$pattern" 2>/dev/null || true)
+        done < <(printf '%s\n' "$diff_content" | grep -n '^+' | grep -E "$pattern" 2>/dev/null || true)
     }
 
     # Hardcoded secrets

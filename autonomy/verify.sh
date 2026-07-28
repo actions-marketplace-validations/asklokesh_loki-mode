@@ -865,6 +865,27 @@ verify_gate_nomock() {
 verify_secret_scan_file() {
     local file="$1"
 
+    # TEMPLATE / FIXTURE / TEST PATHS: a file whose name declares it is an
+    # example, or that exists to TEST the secret scanner, is not a leak.
+    # Kept byte-identical in intent to the same guard in
+    # autonomy/lib/secret-scan.sh, because these two matchers are duplicates and
+    # a fix applied to only one of them is a fix that does not hold.
+    #
+    # Concretely: tests/test-secret-gate-false-positives.sh has to contain
+    # realistic-looking keys to prove the gate still catches real ones. Without
+    # this, adding a test for the scanner FAILS the scanner -- and the CI gate
+    # reported exactly that, two CRITICAL "hardcoded secret" findings pointing
+    # at deliberately fake fixtures.
+    #
+    # Scoped to paths that ANNOUNCE themselves. A real secret in a real source
+    # path is still caught by both tiers below.
+    case "$file" in
+        *.example|*.example.*|*.sample|*.sample.*|*.template|*.template.*|*.dist)
+            return 1 ;;
+        */fixtures/*|*/__fixtures__/*|*/tests/*|*/test/*|*test-*.sh|*.test.*|*_test.*)
+            return 1 ;;
+    esac
+
     # TIER 1: specific formats. No deny filter -- a format match is a finding.
     local tier1=(
         'AKIA[0-9A-Z]{16}'                          # AWS access key id
