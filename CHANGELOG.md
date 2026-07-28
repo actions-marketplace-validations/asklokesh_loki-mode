@@ -5,10 +5,56 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v8.0.0 (unreleased -- feature branch)
+## v8.0.0
 
-Loki's first 8.x. No 8.x has ever been published (npm latest is 7.129.x), so
-everything below ships together as ONE major release. The sections previously
+Loki's first 8.x. No 8.x has ever been published (npm latest was 7.129.5), so
+everything below ships together as ONE major release.
+
+### Fixed before release: regressions found by auditing v8 against v7.129.5
+
+The legacy (non-SDK) engine changed substantially in this release, so it was
+audited line-by-line against v7.129.5 -- the version users are running today --
+specifically for things that WORKED on v7 and would BREAK on v8. Everything
+below was reproduced first, then fixed, then guarded by a registered test.
+
+- **The completion gate called finished apps a secret leak.** v8 added a
+  secret-scan axis to the completion council; v7 had none there. It blocked on
+  FILENAMES alone, so `src/auth/token.ts` -- a routine file in any auth-enabled
+  app, exactly what this engine is asked to build -- failed the gate with
+  nothing secret in it. `.env.example` shipping a placeholder key failed too.
+  The council now judges CONTENT; template and fixture paths are skipped. Real
+  keys in real paths still block (verified against live-shaped keys, an AWS id,
+  and a PEM block). The filename heuristic is retained on the auto-commit path,
+  where refusing to STAGE a `.env` is correct.
+- **A passing test suite could read as "no tests run."** The detector counted
+  TAP output and treated its absence as proof of zero tests, but Node 26
+  defaults to the spec reporter, which emits no TAP. A green suite recorded
+  `inconclusive`, so the loop kept working on a finished job and the user paid
+  for iterations they did not need. Failing tests still block, unchanged.
+- **The tamper-evident audit chain forked itself.** Chain writes were
+  serialized with a thread lock and an import-time tip, so concurrent writer
+  PROCESSES each chained from a stale tip. On one machine 25 of 67 audit files
+  were internally broken across 10,163 entries. Now serialized cross-process
+  with a file lock and a re-read of the true tail.
+- **`loki init --json` emitted invalid JSON on reinit.** The banner went to
+  stdout, so the second `init` in a directory produced prose followed by JSON.
+  Tools parsing it worked once, then broke. Diagnostics now go to stderr.
+- **Codex was unusable on its free tier.** A hardcoded model name is rejected
+  by ChatGPT-account users with HTTP 400. Since Codex is the only agent CLI
+  with a free tier, this broke the one no-cost on-ramp. No model is pinned by
+  default now; explicit overrides still pass through.
+- **The bundled Agent SDK was not recognized as a provider.** `loki doctor`
+  demanded a separate CLI install that Loki already ships internally.
+- **First-pass excellence did not reach the SDK route.** The directive that
+  front-loads a complete first attempt was gated behind a `claude`-binary
+  probe, so it silently vanished on exactly the route v8 promotes.
+
+### Test surface
+
+Registered test suites went from 106 to 259. Roughly two thirds of the suite
+existed but was wired into no runner, and therefore never ran -- which is how
+several of the defects above reached this branch unnoticed. A coverage gate now
+fails CI if a new test file is added without being registered. The sections previously
 drafted under a separate "v8.1.0" heading are folded in here: they were never
 released independently, and shipping a first-ever 8.x as 8.1.0 with a phantom
 8.0.0 beneath it would describe a release history that does not exist.
