@@ -3969,7 +3969,30 @@ except Exception:
         fi
         review_cmd="git diff ${start_sha}..HEAD -- . ':(exclude).loki/'"
     else
-        review_cmd="git diff HEAD -- . ':(exclude).loki/'"
+        # No baseline SHA. This is the GREENFIELD case: the run started in a repo
+        # with no commits, so `git rev-parse --verify HEAD` correctly produced
+        # nothing (see the start-sha capture). Everything the run built is new.
+        #
+        # Without this branch the counts stayed at zero and a user was told
+        # "files_changed: 0" about a run that had produced real, committed,
+        # working code -- observed on a PRD benchmark that built 4 files and
+        # passed 28/28 of its own tests, yet reported 0. Diff against the empty
+        # tree so the summary reports what was actually created.
+        local _empty_tree
+        _empty_tree="$( (cd "${TARGET_DIR:-.}" && git hash-object -t tree /dev/null) 2>/dev/null || true )"
+        if [ -n "$_empty_tree" ] && (cd "${TARGET_DIR:-.}" && git rev-parse --verify HEAD >/dev/null 2>&1); then
+            diff_stat="$( (cd "${TARGET_DIR:-.}" && git diff --stat "${_empty_tree}..HEAD" "${_summary_pathspec[@]}") 2>/dev/null || true )"
+            local _shortstat_new
+            _shortstat_new="$( (cd "${TARGET_DIR:-.}" && git diff --shortstat "${_empty_tree}..HEAD" "${_summary_pathspec[@]}") 2>/dev/null || true )"
+            if [ -n "$_shortstat_new" ]; then
+                files_changed="$(printf '%s\n' "$_shortstat_new" | grep -oE '[0-9]+ file' | grep -oE '[0-9]+' | head -1)"
+                insertions="$(printf '%s\n' "$_shortstat_new" | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' | head -1)"
+                deletions="$(printf '%s\n' "$_shortstat_new" | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+' | head -1)"
+            fi
+            review_cmd="git diff ${_empty_tree}..HEAD -- . ':(exclude).loki/'"
+        else
+            review_cmd="git diff HEAD -- . ':(exclude).loki/'"
+        fi
     fi
     [ -z "$files_changed" ] && files_changed=0
     [ -z "$insertions" ] && insertions=0
