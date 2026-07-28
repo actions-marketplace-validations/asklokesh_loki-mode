@@ -125,6 +125,7 @@ run_test "Orphan Wrapper Reaper (#92 liveness predicate)" "$SCRIPT_DIR/test-orph
 run_test "Mock Detector (Gate #8)" "$SCRIPT_DIR/detect-mock-problems.sh"
 run_test "Mock Detector source-import false positive (subprocess E2E)" "$SCRIPT_DIR/test-mock-detector-source-import.sh"
 run_test "start-SHA empty-repo capture (council empty_diff blocker)" "$SCRIPT_DIR/test-start-sha-empty-repo.sh"
+run_test "stat portability (GNU-first ordering)" "$SCRIPT_DIR/test-stat-portability.sh"
 run_test "Test Mutation Detector (Gate #9)" "$SCRIPT_DIR/detect-test-mutations.sh"
 run_test "Harness False-Green Regression and Mutation" "$SCRIPT_DIR/test-harness-false-green.sh"
 
