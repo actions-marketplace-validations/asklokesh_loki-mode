@@ -97,6 +97,15 @@ echo "engine:  $ENGINE (isolated copy)"
 echo "caps:    max_iters=$MAX_ITERS timeout=${TIMEOUT_S}s"
 echo "started: $STAMP"
 
+# --kill-after: plain `timeout` signals the DIRECT child only. The engine spawns
+# children (provider CLI, gates, app-runner) that can ignore or outlive that
+# TERM -- a run was observed alive 18 minutes AFTER the engine had written
+# completion.json, stalling the whole A/B matrix behind it. Follow up with KILL
+# so the cap is actually enforced.
+#
+# The LOKI_* assignments below are a command-prefix env list for the `timeout`
+# child, so shellcheck's SC2034 ("appears unused") is a false positive here --
+# it cannot see they are passed to another process.
 WALL_START=$(date +%s)
 # Run the build. Non-interactive, hermetic-ish, no dashboard/app-runner to isolate the
 # reason-act-verify loop timing. Council + gates STAY ON (they are the product; we are
@@ -111,11 +120,6 @@ WALL_START=$(date +%s)
   LOKI_APP_RUNNER=false \
   LOKI_NO_NEW_SESSION=1 \
   CI=true \
-  # --kill-after: plain `timeout` sends TERM to the DIRECT child only. The engine
-  # spawns children (provider CLI, gates, app-runner) that can ignore or outlive
-  # that TERM, which is how a run was observed alive 18 minutes AFTER the engine
-  # had already written completion.json -- the harness never returned and the
-  # whole A/B matrix stalled behind it. Follow up with KILL so the cap is real.
   timeout --kill-after=60 "$TIMEOUT_S" bash "$RUN_SH" "$SPEC" > "$WORK/build.log" 2>&1 )
 BUILD_RC=$?
 WALL_END=$(date +%s)
