@@ -2536,8 +2536,7 @@ PYEOF
     # inconclusive pass-through. Opt out LOKI_EVIDENCE_SECRET_GATE=0.
     local secret_fails="false"
     if [ "${LOKI_EVIDENCE_SECRET_GATE:-1}" != "0" ] \
-       && type _commit_scan_secret_file >/dev/null 2>&1 \
-       && type _commit_path_looks_secret >/dev/null 2>&1; then
+       && type _commit_scan_secret_file >/dev/null 2>&1; then
         # Changed files vs run-start SHA (committed) + working-tree (staged/unstaged/
         # untracked), excluding .loki/ (Loki's own state is never project work).
         local _sec_files
@@ -2552,7 +2551,19 @@ PYEOF
         local _sf
         while IFS= read -r _sf; do
             [ -n "$_sf" ] || continue
-            if _commit_path_looks_secret "$_sf" || { [ -f "$_sf" ] && _commit_scan_secret_file "$_sf"; }; then
+            # CONTENT ONLY. The filename heuristic (_commit_path_looks_secret) is
+            # correct for the AUTO-COMMIT path -- refusing to stage a file called
+            # `.env` is cheap and right. It is WRONG as a completion gate, because
+            # it blocks on names alone with no look at what is inside:
+            # `src/auth/token.ts` is a routine file in any auth-enabled app, which
+            # is exactly what this engine is asked to build, and v7.129.5 shipped
+            # such builds without complaint (v7's council had no secret logic at
+            # all). Blocking there tells a user their finished, correct app is a
+            # security leak because of how they named a file.
+            # A real leak is still caught: _commit_scan_secret_file reads the
+            # bytes, and it carries the example/dummy/placeholder deny-filter that
+            # keeps fixtures and .env.example from tripping it.
+            if [ -f "$_sf" ] && _commit_scan_secret_file "$_sf"; then
                 secret_fails="true"
                 log_warn "[Council] Evidence gate: secret-leak match in changed file '${_sf}'"
                 break

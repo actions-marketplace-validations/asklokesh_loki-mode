@@ -414,6 +414,12 @@ run_test "Init Command (templates, --json, --list)" "$SCRIPT_DIR/test-init-comma
 # not, because no runner ever ran it.
 run_test "Anthropic Base URL (override AND-gate, bash)" "$SCRIPT_DIR/test-anthropic-base-url.sh"
 
+# The v8 completion secret gate must not call a finished app a leak. v7.129.5
+# had NO secret logic in the council, so every false positive here is a build
+# that COMPLETED on v7 and BLOCKS on v8. Pairs each relaxation with a real-leak
+# case so the gate cannot be loosened into uselessness.
+run_test "Secret Gate False Positives (templates vs real leaks)" "$SCRIPT_DIR/test-secret-gate-false-positives.sh"
+
 # Batch 6: previously-orphaned suites repaired 2026-07-27. Each was failing for
 # a DIFFERENT reason (a hoisted helper the extractor no longer carried, three
 # retargets to post-v7.89.0 contracts, an incomplete checked-in fixture, and a

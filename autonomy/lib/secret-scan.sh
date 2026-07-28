@@ -19,6 +19,21 @@ _commit_scan_secret_file() {
     local file="${1:-}"
     [ -n "$file" ] && [ -f "$file" ] || return 1
 
+    # TEMPLATE / FIXTURE PATHS: a file whose NAME declares it is an example is
+    # not a leak, it is documentation. `.env.example` shipping
+    # `OPENAI_API_KEY=sk-...` is the correct way to show the expected shape, and
+    # generated apps produce these routinely. Without this, the completion gate
+    # blocks a finished, correct app for shipping its own template -- and the
+    # tier1 matcher below deliberately has no deny filter, so the usual
+    # example/placeholder escape hatch never gets a chance to apply.
+    # Scoped narrowly to paths that ANNOUNCE themselves: *.example, *.sample,
+    # *.template, *.dist, and files under a fixtures/ directory. A real secret
+    # in a real path is still caught by both tiers.
+    case "$file" in
+        *.example|*.example.*|*.sample|*.sample.*|*.template|*.template.*|*.dist|*/fixtures/*|*/__fixtures__/*)
+            return 1 ;;
+    esac
+
     # TIER 1: specific formats. No deny filter -- a format match is a finding.
     local tier1=(
         'AKIA[0-9A-Z]{16}'                          # AWS access key id
