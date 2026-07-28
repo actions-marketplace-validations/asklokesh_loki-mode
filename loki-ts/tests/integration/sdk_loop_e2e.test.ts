@@ -8,10 +8,18 @@
 //   LOKI_SDK_LOOP=1 loki start <spec> -> runAutonomous -> sdkQueryProvider ->
 //   query() -> agentic tool loop -> a real file is created -> completion signal ->
 //   consumeSdkStream writes real .loki state (agents.json + result-cost).
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+// E2E-shaped: drives the real loop, which writes state files and spawns
+// processes. Bun's 5000ms default is fine idle and NOT fine inside a full CI
+// run, where the box is saturated -- tests then fail at exactly ~5000ms and
+// WHICH ones fail changes between runs. That is a timeout signature, not a
+// defect, and it reads as a regression. 30s is far beyond the honest worst
+// case while still catching a genuine hang.
+setDefaultTimeout(30_000);
 
 const ENABLED = process.env["LOKI_E2E_SDK"] === "1";
 

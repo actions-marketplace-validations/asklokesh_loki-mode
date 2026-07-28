@@ -1,9 +1,9 @@
 // v8 Phase 1: sdk_invoker judge-path contract tests. No billable API call --
 // these assert the fail-closed behavior (the load-bearing safety property) and
 // the availability probe. A live smoke test (real API) lives behind an env gate.
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { parsePosInt } from "../../src/commands/internal_sdk_judge.ts";
-import { judgeJson, sdkJudgeAvailable } from "../../src/runner/sdk_invoker.ts";
+import { judgeJson, sdkJudgeAvailable, __resetSdkClientForTests } from "../../src/runner/sdk_invoker.ts";
 
 const SCHEMA = {
   type: "object",
@@ -16,6 +16,15 @@ const savedKey = process.env["ANTHROPIC_API_KEY"];
 afterEach(() => {
   if (savedKey === undefined) delete process.env["ANTHROPIC_API_KEY"];
   else process.env["ANTHROPIC_API_KEY"] = savedKey;
+  __resetSdkClientForTests();
+});
+// The client is a process-lifetime singleton (correct in production: a key can
+// be injected late). Under a test runner every file shares one process, so a
+// SIBLING file that sets ANTHROPIC_API_KEY leaves a live client behind and this
+// file's `delete process.env[...]` no longer makes the probe honest. Reset
+// before each case so the clean-process assumption actually holds.
+beforeEach(() => {
+  __resetSdkClientForTests();
 });
 
 describe("sdk_invoker judge path (fail-closed)", () => {

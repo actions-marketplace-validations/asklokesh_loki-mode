@@ -131,6 +131,25 @@ export function sdkJudgeAvailable(): boolean {
 }
 
 /**
+ * Drop the cached client so the next call re-reads ANTHROPIC_API_KEY.
+ *
+ * TEST SEAM. The singleton is deliberately process-lifetime (see the comment on
+ * `_client`: a key can be injected late, so we must not cache the no-key state).
+ * That is correct in production and wrong under a test runner, where every file
+ * shares one process: a sibling test that sets ANTHROPIC_API_KEY populates the
+ * singleton, and a later test that DELETES the env var still sees a live client.
+ * The failure is order-dependent, so it reproduces in CI and not locally --
+ * exactly the kind of flake that reads as a real regression and costs a release
+ * cycle to chase.
+ *
+ * Production code must never call this; it only exists so a test can restore the
+ * clean-process assumption it is entitled to.
+ */
+export function __resetSdkClientForTests(): void {
+  _client = null;
+}
+
+/**
  * Run a one-shot schema-constrained judge call via the raw Anthropic SDK.
  * Returns the parsed object (typed loosely as Record) or null on any failure.
  */

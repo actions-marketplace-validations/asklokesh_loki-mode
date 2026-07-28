@@ -3,8 +3,16 @@
 // (never silently dropped -- that would be a hidden capability loss under
 // LOKI_SDK_LOOP=1). The runAutonomous delegation itself is covered by the
 // existing loki_start_e2e.test.ts.
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, setDefaultTimeout } from "bun:test";
 import { parseStartArgs } from "../../src/commands/start.ts";
+
+// E2E-shaped: drives the real loop, which writes state files and spawns
+// processes. Bun's 5000ms default is fine idle and NOT fine inside a full CI
+// run, where the box is saturated -- tests then fail at exactly ~5000ms and
+// WHICH ones fail changes between runs. That is a timeout signature, not a
+// defect, and it reads as a regression. 30s is far beyond the honest worst
+// case while still catching a genuine hang.
+setDefaultTimeout(30_000);
 
 const errs: string[] = [];
 const collect = (s: string) => {
