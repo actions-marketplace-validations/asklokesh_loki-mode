@@ -111,7 +111,12 @@ WALL_START=$(date +%s)
   LOKI_APP_RUNNER=false \
   LOKI_NO_NEW_SESSION=1 \
   CI=true \
-  timeout "$TIMEOUT_S" bash "$RUN_SH" "$SPEC" > "$WORK/build.log" 2>&1 )
+  # --kill-after: plain `timeout` sends TERM to the DIRECT child only. The engine
+  # spawns children (provider CLI, gates, app-runner) that can ignore or outlive
+  # that TERM, which is how a run was observed alive 18 minutes AFTER the engine
+  # had already written completion.json -- the harness never returned and the
+  # whole A/B matrix stalled behind it. Follow up with KILL so the cap is real.
+  timeout --kill-after=60 "$TIMEOUT_S" bash "$RUN_SH" "$SPEC" > "$WORK/build.log" 2>&1 )
 BUILD_RC=$?
 WALL_END=$(date +%s)
 WALL_S=$((WALL_END - WALL_START))

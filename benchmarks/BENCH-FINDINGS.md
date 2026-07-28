@@ -81,20 +81,13 @@ Caveats stated plainly:
 * Acceptance here is a file-existence check, so this measures time-to-completion,
   not output quality.
 
-## Status: comparison NOT yet established
+## Superseded: the early single-trial snapshot
 
-One clean v7 trial against one v8 trial that ended `intervention`. That is not a
-comparison. Trials 2 and 3 per arm are required before any claim.
-
-| | v7.129.5 | v8.0.0 (t1) |
-|---|---|---|
-| Engine active time | 10.2 min | 20.0 min |
-| Iterations run | 7 (of 8 cap) | 6 |
-| Working code produced | yes | yes (3 commits, greet.js + tests) |
-| Terminal outcome | completed | **intervention** |
-
-The v8 arm DID produce correct working output. The `intervention` verdict is a
-reporting defect, not a build failure (see F2).
+An earlier revision of this file said the comparison was not yet established,
+on the strength of one v7 trial against one crashed v8 trial. The completed
+7-trial matrix above supersedes it. Kept only as a note that the conclusion
+changed as data arrived: the first v8 trial ended `intervention` and looked
+like a regression; it was the false-positive gate (F5), not the engine.
 
 ## F1 -- exit 141 (SIGPIPE) is classified nowhere. Pre-existing, BOTH versions.
 
@@ -370,6 +363,66 @@ not one that wrongly blocks (lost iterations). It costs ~1s per iteration and
 does not drive re-work. Worth fixing so the signal exists, but it is NOT part of
 the convergence story, and it should not be conflated with the false-positive
 class. Filed, not fixed in this pass.
+
+## PRD RESULT (task-api-prd, v8 post-fix, n=1): built and works, but ESCALATED
+
+The realistic 4-file HTTP service, run to a terminal state.
+
+| | Value |
+|---|---|
+| Iterations | 3 (of 12 cap) |
+| Engine-active time | 42.7 min |
+| Files required by the spec | **4 of 4 built** (server.js, store.js, README.md, *.test.js) |
+| `node --test` on the artifact | **28 pass, 0 fail** |
+| Commits | 2 |
+| Terminal outcome | `intervention` |
+
+**The engine built a genuinely working service.** Verified by running its own
+test suite against the produced artifact, not by trusting the verdict: 28/28
+green. This is NOT the hollow-output failure mode.
+
+### Why it stopped: GATE_ESCALATION, and the gate was RIGHT
+
+`.loki/signals/GATE_ESCALATION.json` -> `{"action":"escalate","gate":"code_review",
+"count":3,"threshold":3}`. Not the PAUSE cap (`GATE_PAUSE_LIMIT` is **10**, and
+only 3 failures occurred) -- the escalate rung, which deliberately does NOT
+convert a blocked gate into a pass.
+
+Review 3 aggregate: `pass_count:3 fail_count:1`, verdicts
+`architecture-strategist:PASS maintainer-mergeability:FAIL performance-oracle:PASS
+dependency-analyst:PASS`. One reviewer blocked, and its [High] finding is
+factually correct -- verified against the artifact:
+
+> `.gitignore` removes the `enriched-tasks.json` ignore line added in prior
+> commit e7521a5, and the diff commits the 68-line artifact it was previously
+> ignoring [...] unrelated to this commit's stated scope.
+
+Confirmed: `enriched-tasks.json` (8008 bytes) is present in the workspace and
+`.gitignore` no longer excludes it. The agent committed a planning artifact as
+scope creep, then contradicted its own ARCHITECTURE.md. Every finding carried a
+file:line citation.
+
+Corroborating signal: the uncertainty ring shows the iteration-1 and iteration-2
+diff hashes IDENTICAL (`d41d8cd9...` = the empty-string hash), i.e. an iteration
+that produced no measurable change. The loop was not converging on this finding.
+
+### What this means -- do not overstate either direction
+
+* **A realistic PRD did NOT converge in 1 iteration**, unlike the CLI spec. The
+  founder's "5 min / 1 iteration" target is met on a trivial spec and is NOT yet
+  demonstrated on a real one. Say so plainly.
+* **The stop was correct behavior, not a defect.** Both blocking gates on this
+  run (`code_review`, `mutation_integrity`) were TRUE positives on real problems.
+  That is the opposite of the F5 false-positive class, and it means the fix did
+  not blind the gates.
+* **The user-facing gap is the REPORT, not the decision.** `outcome:
+  intervention` with `files_changed: 0` tells a user nothing about a build that
+  produced 4 working files and 28 passing tests. The verdict is right; the
+  summary of it is misleading. That is the thing worth fixing next.
+
+n=1, and the v7 arm never ran (the harness wrapper hung 18 min past engine
+completion -- F4 again, because `prd-ab.sh` lacks the `_run_capped` watchdog that
+`run-ab-trials.sh` has). No v7-vs-v8 PRD comparison exists yet.
 
 ## Decision: benchmark a REALISTIC PRD, not just the hello-world CLI
 
