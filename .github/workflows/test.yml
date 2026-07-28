@@ -281,6 +281,14 @@ jobs:
   sdk-tarball-no-binary:
     name: v8.1 SDK judge from packed tarball (no claude binary)
     runs-on: ubuntu-latest
+    # The `secrets` context is NOT available in a step-level `if:` -- referencing
+    # it there makes GitHub reject the whole workflow file at parse time, so ZERO
+    # jobs are created and the run reports the opaque "workflow file issue"
+    # failure. Hoist the secret to job-level env and gate on the env var instead;
+    # `env` IS available in `if:`. A secret-less fork sees an empty string and the
+    # billable steps self-skip exactly as intended.
+    env:
+      HAS_ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -431,7 +439,7 @@ jobs:
           echo "PASS: keyless SDK judge fail-closed cleanly (exit 1) from the tarball -- SDK code shipped"
 
       - name: BILLABLE judge probe (gated on the ANTHROPIC_API_KEY secret)
-        if: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        if: env.HAS_ANTHROPIC_KEY == 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           LOKI_SDK_MODE: judges
@@ -452,7 +460,7 @@ jobs:
       # crashes on a fresh install (the v6.25 dist-excluded bug class, for the loop).
       # Billable + gated on the secret (self-skips on forks / secret-less pushes).
       - name: BILLABLE RARV-loop E2E from the tarball (gated on ANTHROPIC_API_KEY)
-        if: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        if: env.HAS_ANTHROPIC_KEY == 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           LOKI_SDK_LOOP: "1"
