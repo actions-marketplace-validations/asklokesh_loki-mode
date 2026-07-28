@@ -132,6 +132,7 @@ run_test "greenfield diff-stat (report what was built)" "$SCRIPT_DIR/test-greenf
 run_test "PAUSED.md states the pause reason" "$SCRIPT_DIR/test-paused-md-reason.sh"
 run_test "per-outcome next-step guidance" "$SCRIPT_DIR/test-outcome-guidance.sh"
 run_test "Evidence Receipt run-level baseline (signed diff stat)" "$SCRIPT_DIR/test-receipt-run-baseline.sh"
+run_test "no hardcoded home-directory paths in tests" "$SCRIPT_DIR/test-no-hardcoded-paths.sh"
 run_test "Test Mutation Detector (Gate #9)" "$SCRIPT_DIR/detect-test-mutations.sh"
 run_test "Harness False-Green Regression and Mutation" "$SCRIPT_DIR/test-harness-false-green.sh"
 
