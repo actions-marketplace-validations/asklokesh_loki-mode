@@ -20065,7 +20065,17 @@ except Exception:
     fi
 
     if [ "${ITERATION_COUNT:-0}" -eq 0 ] || [ ! -s "$_start_sha_file" ]; then
-        (cd "${TARGET_DIR:-.}" && git rev-parse HEAD 2>/dev/null) > "$_start_sha_file" 2>/dev/null || true
+        # --verify is load-bearing. In a repo with NO commits yet (every
+        # greenfield build: git init, nothing committed), plain
+        # `git rev-parse HEAD` exits 128 but still prints the literal string
+        # "HEAD" ON STDOUT -- so 2>/dev/null does NOT suppress it and the
+        # unresolved ref name gets captured as the start SHA. Every downstream
+        # diff then becomes `git diff HEAD..HEAD`, which is ALWAYS empty: the
+        # completion council blocks with reason "empty_diff" and can never see
+        # the work, so it can never vote done and the run burns to the cap.
+        # `--verify` resolves-or-fails, emitting nothing on failure, which
+        # leaves the file empty and lets consumers apply their no-baseline path.
+        (cd "${TARGET_DIR:-.}" && git rev-parse --verify HEAD 2>/dev/null) > "$_start_sha_file" 2>/dev/null || true
     fi
     _LOKI_RUN_START_SHA="$(cat "$_start_sha_file" 2>/dev/null || echo "")"
     export _LOKI_RUN_START_SHA
@@ -20474,7 +20484,11 @@ except Exception as exc:
         # v7.6.4 B-3a fix: capture iteration-start git SHA so auto_capture_episode
         # can diff against this baseline (not just HEAD, which is empty after
         # loki's per-iteration auto-commit makes the new files HEAD).
-        _LOKI_ITER_START_SHA=$(cd "${TARGET_DIR:-.}" && git rev-parse HEAD 2>/dev/null || echo "")
+        # --verify: without it, a no-commits-yet repo makes `git rev-parse HEAD`
+        # print the literal "HEAD" on STDOUT while exiting 128, so the
+        # `|| echo ""` fallback never fires and the unresolved ref name is
+        # captured as a baseline. See the start-sha capture above.
+        _LOKI_ITER_START_SHA=$(cd "${TARGET_DIR:-.}" && git rev-parse --verify HEAD 2>/dev/null || echo "")
         export _LOKI_ITER_START_SHA
         _LOKI_ITER_START_TREE=$(_loki_snapshot_workspace_tree "${TARGET_DIR:-.}" 2>/dev/null || echo "")
         export _LOKI_ITER_START_TREE

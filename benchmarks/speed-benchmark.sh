@@ -118,7 +118,7 @@ WALL_S=$((WALL_END - WALL_START))
 
 # --- Parse THIS run's timeline from the target's events.jsonl ----------------
 EVENTS="$WORK/project/.loki/events.jsonl"
-python3 - "$EVENTS" "$WORK/build.log" "$WORK/project" "$OUT_JSON" "$LABEL" "$WALL_S" "$BUILD_RC" "$STAMP" <<'PY'
+LOKI_BENCH_SPEC_PATH="$SPEC" python3 - "$EVENTS" "$WORK/build.log" "$WORK/project" "$OUT_JSON" "$LABEL" "$WALL_S" "$BUILD_RC" "$STAMP" <<'PY'
 import json, sys, os
 from datetime import datetime
 events_path, log_path, proj, out_json, label, wall_s, build_rc, stamp = sys.argv[1:9]
@@ -160,10 +160,25 @@ for e in sess:
 # completion: did the engine reach an honest done? build log signals
 log = open(log_path).read() if os.path.exists(log_path) else ''
 completed = ('VERIFIED' in log or 'completion' in log.lower()) and build_rc=='0'
-# acceptance grep (spec-specific hooks; default greet CLI)
+# Acceptance: FILE-EXISTENCE assertions only. This proves the engine produced the
+# artifacts the spec named; it is NOT a judgment of code quality, and must never
+# be reported as one. Keyed off the spec so a custom --spec is not scored against
+# the default CLI's greet.js (which would always report a meaningless failure).
 acc = {}
-greet = os.path.join(proj,'greet.js')
-acc['greet.js_exists'] = os.path.exists(greet)
+spec_txt = ''
+try:
+    spec_txt = open(os.environ.get('LOKI_BENCH_SPEC_PATH','')).read()
+except Exception:
+    pass
+if 'Task API service' in spec_txt:
+    for f in ('server.js','store.js','README.md'):
+        acc[f + '_exists'] = os.path.exists(os.path.join(proj,f))
+    # at least one test file, whatever the build chose to name it
+    acc['test_file_exists'] = any(
+        n.endswith('.test.js') or n.startswith('test-') or n.startswith('test_')
+        for n in (os.listdir(proj) if os.path.isdir(proj) else []))
+else:
+    acc['greet.js_exists'] = os.path.exists(os.path.join(proj,'greet.js'))
 
 metrics = {
   'label': label,
