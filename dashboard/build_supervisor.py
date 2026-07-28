@@ -664,9 +664,19 @@ def _required_path_list(name: str, *, directories: bool) -> tuple[Path, ...]:
     paths = tuple(
         _required_path(name, value, directory=directories) for value in values
     )
-    if len(set(paths)) != len(paths):
-        raise ValueError(f"{name} contains duplicate paths")
-    return paths
+    # De-duplicate rather than reject. _required_path RESOLVES symlinks, so two
+    # genuinely different entries can legitimately collapse to one: on most
+    # Linux distributions /bin is a symlink to /usr/bin (and /sbin to /usr/sbin),
+    # while on macOS they are distinct directories. A caller listing the
+    # conventional four system bin paths is correct on both platforms, and
+    # rejecting it on Linux made this a platform-dependent failure that passes
+    # on a developer Mac and fails in CI.
+    #
+    # Order is preserved (dict.fromkeys, not set) because these become sandbox
+    # profile entries and a stable order keeps the generated profile
+    # byte-reproducible.
+    deduped = tuple(dict.fromkeys(paths))
+    return deduped
 
 
 def _reserved_ports() -> tuple[int, ...]:
