@@ -22987,6 +22987,46 @@ Current state is saved. You can inspect:
 - `.loki/logs/` - Session logs
 EOF
 
+    # Say WHY it paused. The block above is static boilerplate: a user who comes
+    # back to a paused run learns how to resume but not what stopped it, and has
+    # to go spelunking in .loki/signals to find out. Observed on a PRD benchmark
+    # where a gate escalation paused a run that had produced 9 files and 28
+    # passing tests -- the pause was correct, the report told them nothing.
+    # Best-effort and append-only: never let a formatting failure block a pause.
+    {
+        _pause_reason_file="$loki_dir/signals/GATE_ESCALATION"
+        if [ -s "$_pause_reason_file" ]; then
+            printf '\n## Why this paused\n\n'
+            printf 'A quality gate stayed blocked across repeated attempts, so Loki stopped\n'
+            printf 'rather than keep spending on a loop that was not converging.\n\n'
+            _esc_gate="$(python3 -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+    print("%s (failed %s times, threshold %s)" % (d.get("gate","?"), d.get("count","?"), d.get("threshold","?")))
+except Exception:
+    print("")' "$loki_dir/signals/GATE_ESCALATION.json" 2>/dev/null || true)"
+            [ -n "$_esc_gate" ] && printf -- '- Gate: %s\n' "$_esc_gate"
+            _esc_art="$(python3 -c 'import json,sys
+try:
+    print(json.load(open(sys.argv[1])).get("latest_artifact","") or "")
+except Exception:
+    print("")' "$loki_dir/signals/GATE_ESCALATION.json" 2>/dev/null || true)"
+            [ -n "$_esc_art" ] && printf -- '- Findings: %s\n' "$_esc_art"
+            printf '\nRead the findings, fix what they name, then resume. Resuming without a\nchange will most likely stop at the same gate again.\n'
+        fi
+        # What DID get built, so a paused run never reads as "nothing happened".
+        _pause_head="$( (cd "${TARGET_DIR:-.}" && git rev-parse --verify HEAD) 2>/dev/null || true )"
+        if [ -n "$_pause_head" ]; then
+            _pause_base="$( (cd "${TARGET_DIR:-.}" && git hash-object -t tree /dev/null) 2>/dev/null || true )"
+            [ -s "$loki_dir/state/start-sha" ] && _pause_base="$(cat "$loki_dir/state/start-sha" 2>/dev/null)"
+            _pause_stat="$( (cd "${TARGET_DIR:-.}" && git diff --shortstat "${_pause_base}..HEAD" -- . ':(exclude).loki/') 2>/dev/null || true )"
+            if [ -n "$_pause_stat" ]; then
+                printf '\n## What was built before the pause\n\n%s\n' "$_pause_stat"
+                printf '\nReview it with:\n  git diff %s..HEAD -- . ":(exclude).loki/"\n' "$_pause_base"
+            fi
+        fi
+    } >> "$loki_dir/PAUSED.md" 2>/dev/null || true
+
     # Wait for resume signal (unified: file removal, keyboard, or STOP)
     while [ "$PAUSED" = "true" ]; do
         # Check for stop signal
