@@ -76,7 +76,15 @@ jobs:
       - name: Install Python dependencies
         run: |
           python3 -m pip install --upgrade pip
-          python3 -m pip install pydantic httpx fastapi uvicorn
+          # Install from the canonical list, not a hand-maintained subset. This
+          # job previously installed only "pydantic httpx fastapi uvicorn" and
+          # omitted sqlalchemy/aiosqlite, so every shell test that imports
+          # dashboard/server.py died with
+          #   ModuleNotFoundError: No module named 'sqlalchemy'
+          # and reported as a product failure. Five suites were red for that one
+          # missing dependency. Sourcing requirements-test.txt keeps this job and
+          # the python-tests job from drifting apart again.
+          python3 -m pip install -r requirements-test.txt
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
