@@ -424,6 +424,80 @@ n=1, and the v7 arm never ran (the harness wrapper hung 18 min past engine
 completion -- F4 again, because `prd-ab.sh` lacks the `_run_capped` watchdog that
 `run-ab-trials.sh` has). No v7-vs-v8 PRD comparison exists yet.
 
+## HARNESS EVIDENCE vs the documented competitor gap (measured 2026-07-29)
+
+`docs/competitive/bolt-new-analysis.md:411` records the competitor gap as
+"70% done code, no tests, no review, $5-20K remediation". That is the one
+competitive claim in our own analysis that is directly measurable from a real
+build artifact, so it was measured rather than repeated.
+
+Measured on the preserved PRD run (4-file HTTP task service, `.loki/` intact):
+
+| Claim about the category | What our artifact shows |
+|---|---|
+| "no tests" | **2 test files, 28 tests, 0 failures** on `node --test` |
+| "no review" | **9 gates executed**: code_review, doc_coverage, lsp_diagnostics, magic_debate, mock_integrity, mutation_integrity, security_scan, static_analysis, test_suite |
+| "70% done" | run produced 10 files / 1479 insertions and a working service |
+
+The review gate was not decorative on this run: `code_review` BLOCKED it, and
+the blocking finding was correct (a planning artifact committed as scope creep,
+with the `.gitignore` line that had excluded it removed). A gate that stops a
+build for a true reason is the difference between a review step and a review
+that means something.
+
+### What this proves, stated exactly
+
+* **Proven:** on this artifact, the harness produced tests that run green and
+  ran nine independent gates over the result, one of which correctly blocked.
+  That is evidence in the "no tests, no review" category specifically.
+* **NOT proven:** a "10x better across UI, UX, Backend and Harness" claim. Three
+  of those four categories are not measurable from this machine at all -- we
+  cannot instrument a competitor's UI, UX, or backend, and no amount of local
+  benchmarking substitutes for that. One category (harness output) has evidence;
+  the other three do not.
+* A single artifact is not a distribution. This is one run of one spec.
+
+The honest framing for external use is the category claim -- "tests and review
+that actually block, on a real build" -- backed by these numbers, not a
+multiplier across dimensions we never measured.
+
+## MODEL-AGNOSTIC PARITY (measured 2026-07-29)
+
+The claim under test is NOT "loki is fast". It is that the HARNESS delivers a
+verified outcome regardless of which model drives it -- so a user without
+Anthropic's most expensive model still gets a real result.
+
+Same spec, same 8 gates, same acceptance check, same machine. Only the model
+differs.
+
+| Model | Iterations | Wall | Engine work | Exit | Completed | Acceptance |
+|---|---|---|---|---|---|---|
+| haiku  | **1** | 7.7 min | 0.9 min | 0 | yes | PASS |
+| sonnet | **1** | 9.3 min | 0.7 min | 0 | yes | PASS |
+
+Identical on every quality axis: same iteration count, both completed, both
+exit 0, both passed acceptance. The cheap model reached the same verified
+outcome as the expensive one.
+
+### What this does and does not prove
+
+* **Does prove:** the gates, council and evidence path are model-independent on
+  this spec. A user on the cheaper tier is not getting a degraded verification
+  path -- they get the same one.
+* **Does NOT prove** a general "any model works" claim. This is one spec
+  (greet CLI), one trial per model, and acceptance here is a file-existence
+  assertion. It measures time-to-verified-outcome, not code quality.
+* Wall-clock differs by 1.6 min in haiku's favour, which is within the noise
+  band established earlier (v7 spread was 8.5 min across three trials). Do not
+  quote it as a speed result.
+
+### Why this was worth running rather than asserting
+
+An earlier draft of this session claimed model-agnostic support was
+"documented and wired" on the strength of reading `providers/claude.sh` and
+`providers.ts`. Wiring is not evidence. Running the matrix is: it converts a
+design intention into a measured fact, and it cost one benchmark cycle.
+
 ## Decision: benchmark a REALISTIC PRD, not just the hello-world CLI
 
 The 1-iteration result above is on a single-file `greet` CLI. That proves the
