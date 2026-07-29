@@ -43,23 +43,40 @@ echo "=== no hardcoded home-directory paths in tests ==="
 
 # Executable lines only: a comment explaining the historical bad path is fine.
 scan() {
-    # Only a path used as a FILESYSTEM OPERAND is a portability bug. Synthetic
-    # paths inside quoted fixture data (e.g. '/Users/jdoe/.ssh/id_rsa' fed to a
-    # redaction test) are inputs, not reads, and are perfectly portable. Match
-    # the real hazard: an UNQUOTED absolute path that a command acts on.
-    grep -rnE '(^|[[:space:]])(/Users/[a-z0-9_.-]+|/home/[a-z0-9_.-]+)/[^[:space:]"'"'"']*([[:space:]]|$)' "$1"/*.sh 2>/dev/null \
-        | while IFS= read -r line; do
-            body="${line#*:}"; body="${body#*:}"
-            trimmed="$(printf '%s' "$body" | sed 's/^[[:space:]]*//')"
-            case "$trimmed" in
-                '#'*) continue ;;
-            esac
-            # The guard file itself necessarily contains the pattern as a needle.
-            case "$line" in
-                *test-no-hardcoded-paths.sh:*) continue ;;
-            esac
-            printf '%s\n' "$line"
-        done
+    # Implemented in python, not grep: BSD and GNU grep disagree on how
+    # `([[:space:]]|$)` anchors at end-of-line, so a shell version passed on
+    # macOS and reported "detector missed a planted offender" on the Linux CI
+    # runner -- the guard's own non-vacuity probe was the thing that was not
+    # portable. Python's `re` behaves identically on both.
+    #
+    # Flags an absolute home path used as a FILESYSTEM OPERAND. Synthetic paths
+    # inside quoted fixture data (e.g. '/Users/jdoe/.ssh/id_rsa' fed to a
+    # redaction test) are inputs, not reads, and are perfectly portable.
+    python3 - "$1" <<'PYEOF'
+import os, re, sys
+
+d = sys.argv[1]
+# An absolute home path NOT inside quotes: preceded by start-or-space, and not
+# immediately preceded by a quote character.
+pat = re.compile(r"""(?:^|(?<=[\s]))(/Users/[a-z0-9_.-]+|/home/[a-z0-9_.-]+)/[^\s"']*""")
+
+for name in sorted(os.listdir(d)):
+    if not name.endswith(".sh"):
+        continue
+    # This guard necessarily contains the pattern as its own needle.
+    if name == "test-no-hardcoded-paths.sh":
+        continue
+    path = os.path.join(d, name)
+    try:
+        lines = open(path, encoding="utf-8", errors="replace").read().split("\n")
+    except OSError:
+        continue
+    for i, line in enumerate(lines, 1):
+        if line.lstrip().startswith("#"):
+            continue
+        if pat.search(line):
+            print("%s:%d:%s" % (path, i, line.strip()))
+PYEOF
 }
 
 offenders="$(scan "$SCRIPT_DIR")"
