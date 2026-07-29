@@ -11025,6 +11025,13 @@ except Exception:
         fi
     else
         echo -e "  ${YELLOW}WARN${NC}  Bun not found -- 'loki cockpit' uses the text summary + browser dashboard (install bun for the inline-image frame)"
+        # Report the protocol line here too. Without it doctor's Cockpit section
+        # is asymmetric: the bun branch prints BOTH "Inline-image protocol" and
+        # "Render path", the no-bun branch printed only "Render path". A user
+        # reading doctor on a machine without bun could not tell whether the
+        # inline-image path was unsupported by their terminal or simply never
+        # probed. Naming the reason keeps the section self-explanatory.
+        echo -e "  ${DIM}  --  ${NC}  Inline-image protocol: not probed (needs bun to run the cockpit renderer)"
         echo -e "  ${DIM}  --  ${NC}  Render path: text + browser dashboard"
     fi
     echo ""
