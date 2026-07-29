@@ -5,6 +5,40 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v8.0.3
+
+Patch release. Two live status surfaces contradicted each other about whether a
+build was running.
+
+### Dashboard status
+
+Measured on a preserved real run that was genuinely paused on a gate:
+
+- **The WebSocket stream reported "running" while `/api/status` reported
+  "paused" -- for the same run.** The stream derived status from
+  `dashboard-state.json`'s `mode` field, which the engine writes and which goes
+  stale the moment a run pauses; on that run it still read `autonomous`.
+  `/api/status` reads `.loki/PAUSE` and was correct.
+
+  Two live surfaces disagreeing about whether a build is running is worse than
+  either being wrong alone, because the user cannot tell which to believe. The
+  WebSocket now consults the control files (`.loki/STOP`, `.loki/PAUSE`) FIRST
+  and falls back to the engine-written mode only when neither exists.
+
+The pre-existing liveness check is preserved: a dead PID with no control file
+still reports `stopped`, and a corrupt or missing state file no longer breaks
+the stream.
+
+### Evidence Receipt
+
+- **The receipt collected a termination reason and never showed it.** The
+  generator records `facts.execution` (reason / outcome / run_status), but the
+  template rendered it zero times -- so a receipt for a run that stopped on a
+  gate displayed a verdict with no cause. The honesty banner now shows
+  `Stopped: <reason>` beneath the headline when a run did not complete, and
+  stays silent for a clean run. Display-only: the value is whatever the
+  generator recorded, never recomputed in the template.
+
 ## v8.0.2
 
 Patch release. `loki why` -- the command v8.0.1 tells users to run after a
