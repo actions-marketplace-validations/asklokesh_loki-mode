@@ -58,7 +58,16 @@ import os, re, sys
 d = sys.argv[1]
 # An absolute home path NOT inside quotes: preceded by start-or-space, and not
 # immediately preceded by a quote character.
-pat = re.compile(r"""(?:^|(?<=[\s]))(/Users/[a-z0-9_.-]+|/home/[a-z0-9_.-]+)/[^\s"']*""")
+# Home directories AND machine-specific toolchain prefixes. The latter is the
+# same class: tests/test-lsp-diagnostics-regression.sh pinned
+# PY=/opt/homebrew/bin/python3.12 -- one developer's Homebrew install -- and on
+# CI every invocation died with "No such file or directory" while the suite
+# blamed the product ("structural attrs missing").
+pat = re.compile(
+    r"""(?:^|(?<=[\s=]))"""
+    r"""(/Users/[a-z0-9_.-]+|/home/[a-z0-9_.-]+|/opt/homebrew/bin|/usr/local/bin/python)"""
+    r"""[^\s"']*"""
+)
 
 for name in sorted(os.listdir(d)):
     if not name.endswith(".sh"):
