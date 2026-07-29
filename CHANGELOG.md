@@ -5,6 +5,36 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v8.0.2
+
+Patch release. `loki why` -- the command v8.0.1 tells users to run after a
+failure -- was misreporting the run it exists to explain.
+
+### `loki why`
+
+Measured against a preserved real run that produced 9 files and 1300 insertions
+and paused on a gate:
+
+- **"Changes: 0 files (+0/-0)"** on a run that built 9 files. A greenfield run
+  whose baseline never resolved records 0, and `loki why` printed that as fact.
+  A recorded zero is now re-derived from git and only reported as zero when git
+  agrees; a trustworthy non-zero record is printed unchanged.
+- **The blocking gate was never named.** The run stopped on `code_review` after
+  3 failures at threshold 3, and the advice was "Resume with: loki resume" --
+  the exact thing the run's own pause notice warns will stop at the same gate
+  again. It now names the gate, its count and threshold, and says to read the
+  findings first.
+- **The findings pointer was an absolute path from the build machine**, naming
+  a temp directory that no longer existed. It is now workspace-relative, so it
+  resolves for the person reading it.
+- **`inconclusive_spec_contradiction`** -- a real terminal state -- produced
+  "No diagnosis mapping for this status". It now explains the stop and points
+  at `.loki/assumptions/ledger.md`.
+
+No verdict, threshold, or gate logic changed. Every gate decision examined in
+this work was a true positive; the defects were in how correct decisions were
+reported.
+
 ## v8.0.1
 
 Patch release. Every change is a bug fix; no behavior a working v8.0.0 install
