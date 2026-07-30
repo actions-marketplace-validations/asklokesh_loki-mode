@@ -154,6 +154,34 @@ expose something the CLI does not. If a competitor does ship output
 verification, this test is how we would find out, and the claim above would be
 corrected rather than defended.
 
+## 7. Headless latency, five trials per tool
+
+Same task, same machine, artifact verified by content, five trials each:
+
+| CLI | Success | Median | Range |
+| --- | --- | --- | --- |
+| opencode 1.18.9 | 5/5 | 11s | 4s to 265s |
+| codex-cli 0.146.0 | 4/5 | 69s | 48s to 80s (one 300s timeout) |
+
+**Read the range, not just the median.** opencode's first trial took 265
+seconds and the next four took 4 to 12. A new user experiences the 265, not the
+11. Reporting only the median would hide the thing they will actually feel.
+
+**The timeout is kept in.** Dropping codex's one failure would turn 4-of-5 into
+an implied 5-of-5 and overstate reliability.
+
+**Five trials, not one, and that is the point.** An earlier single-shot run of
+this same codex command timed out, and publishing it would have recorded
+"codex: timeout" as a fact about a competitor when the identical command
+completed in 51 seconds minutes later. The spread is the finding.
+
+**What this does not measure.** One trivial file-creation task is not a proxy
+for build quality, multi-iteration work, or brownfield capability. It measures
+headless invocation latency and nothing else. aider, Claude Code and
+cursor-agent have not been run on this task; Devin and Replit Agent ship no
+local CLI. Cost is not compared: codex ran on a free tier and opencode's
+per-call cost was not recorded.
+
 ---
 
 ## What we do not have
