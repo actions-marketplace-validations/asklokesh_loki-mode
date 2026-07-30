@@ -46,11 +46,26 @@
       "total": 289,
       "verified": "executed counts, not just arithmetic"
     },
-    "expected_after": {
-      "shell_tests_s": "~195 (781/4)",
-      "critical_path_s": "~195, near the ~150s the other jobs already take"
+    "safety": "tests/test-shard-coverage.sh (14/14) proves the shards partition the suite list exactly and that an invalid shard spec exits non-zero rather than silently running nothing.",
+    "local_shard_measurement": {
+      "measured_utc": "2026-07-30T20:13:24Z",
+      "shard": "1/4",
+      "suites_run": 72,
+      "elapsed_s": 128,
+      "failures": 0,
+      "note": "Local Mac timing for ONE shard, executed end to end. Confirms the split runs and passes; it is NOT the CI number, since runners are slower than this machine."
     },
-    "not_claimed": "The post-change number is a projection from an exact 4-way split, not yet an observed CI timing. It will be replaced with the measured value on the next run.",
-    "safety": "tests/test-shard-coverage.sh (14/14) proves the shards partition the suite list exactly and that an invalid shard spec exits non-zero rather than silently running nothing."
+    "MEASURED_after": {
+      "measured_utc": "2026-07-30T20:09-20:14",
+      "run": "commit 9d63f16b, 4-way shard matrix",
+      "shard_0_s": 335,
+      "shard_1_s": 153,
+      "shard_2_s": 230,
+      "shard_3_s": 146,
+      "critical_path_s": 335,
+      "before_s": 781,
+      "speedup": "2.33x (781s -> 335s on the slowest shard)",
+      "note": "OBSERVED CI timings, replacing the earlier ~195s projection. The real number is 335s, not 195s: shards are uneven because suite cost varies, so the wall clock is the SLOWEST shard, not the mean. The projection assumed even cost and was optimistic."
+    }
   }
 }

@@ -63,10 +63,14 @@ no such filename exists. Corpus-bound parity cannot detect a latent input-class 
 <p class=note>Shell tests was <b>6x the next slowest job</b> and set the pipeline wall clock by itself.
 Everything else finished inside ~2.5 minutes. The fix is a 4-way shard
 (<code>LOKI_TEST_SHARD=i/n</code>), splitting 289 suites as 73 / 72 / 72 / 72.</p>
-<p class=note class=warn>The post-change figure (~3m 15s) is a <b>projection</b> from an exact 4-way
-split, not yet an observed CI timing. It will be replaced with the measured value once the next run
-completes. A speedup claimed before it is measured is the same mistake as an agent claiming it
-finished before checking.</p>
+<p class=note><b>MEASURED, not projected.</b> Observed shard timings on commit 9d63f16b:
+5m35s / 2m33s / 3m50s / 2m26s. The pipeline wall clock is the <b>slowest</b> shard, so
+13m01s became <b>5m35s: a 2.33x cut</b>.
+<br><br>My earlier projection said ~3m15s and was wrong. It assumed the 289 suites cost the
+same each, so four shards would be a clean quarter. They are not: suite cost varies widely, the
+split is uneven, and the wall clock follows the worst shard rather than the mean. The projection
+is replaced here rather than quietly deleted, because a number that was published and turned out
+optimistic should be visibly corrected.</p>
 <p class=note>Safety, because a faster gate that stops noticing failures is worse than a slow one:
 <code>tests/test-shard-coverage.sh</code> (14/14) proves the shards partition the suite list exactly,
 that every suite lands in exactly one shard, and that an invalid shard spec exits non-zero rather
