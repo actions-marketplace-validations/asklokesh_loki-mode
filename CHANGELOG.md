@@ -5,6 +5,31 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v8.3.3
+
+Patch. **The first-run path is now covered on the shell most users actually have.**
+
+v8.3.2 fixed one bash 4 construct that made `loki quickstart` return zero
+templates on macOS. Fixing one call site does not close the class: any future
+bash-4-only construct anywhere in the first-run path reintroduces the same
+failure, and our test harness runs homebrew bash 5, so the suite structurally
+could not see the shell most users have.
+
+The first-run path is audited clean of `declare -A`, `${var^^}`, `${var,,}`,
+`readarray` and `mapfile`, and `tests/test-first-run-bash32.sh` now walks the
+commands a brand-new user actually runs, in order, under `/bin/bash`
+explicitly. Running them under `$SHELL` would reproduce the exact blind spot
+that let the v8.3.2 bug ship.
+
+Verified under bash 3.2.57: the welcome banner and all three next steps
+render, `loki tour` produces an Evidence Receipt with its honest "VERIFIED
+WITH GAPS" headline, and the quickstart scorer returns three ranked templates
+where it previously returned none.
+
+Nothing requiring a provider, key, network or spend is asserted. The test
+covers what works before a user commits anything, which is also the honest
+boundary of what we advertise as keyless.
+
 ## v8.3.2
 
 Patch. **loki quickstart was returning nothing on every Mac.**
