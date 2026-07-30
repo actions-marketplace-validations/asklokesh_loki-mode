@@ -3971,6 +3971,30 @@ except Exception:
     print('')" "$_app_state_file" 2>/dev/null)"
     fi
 
+    # Time to first preview: how long until the user could SEE something running.
+    #
+    # WRITTEN BUT NEVER READ, until now. app-runner.sh:177 has recorded
+    # seconds_to_first_preview since v8, write-once and atomically, and NOTHING
+    # consumed it -- not this summary, not the receipt, not the dashboard. A
+    # measurement nobody surfaces cannot influence anything, so the number that
+    # research identifies as the delight peak of this whole category (a working
+    # preview at roughly four minutes) was invisible to the person who waited for
+    # it and to us.
+    #
+    # Read-only and best-effort by design: absent file means the app never
+    # previewed (or the run predates the writer), and we render nothing rather
+    # than a zero. A fabricated "0s to preview" would be worse than silence.
+    local first_preview_s=""
+    local _fp_file="$loki_dir/app-runner/first-preview.json"
+    if [ -f "$_fp_file" ]; then
+        first_preview_s="$(python3 -c "import json,sys
+try:
+    v=json.load(open(sys.argv[1])).get('seconds_to_first_preview')
+    print(int(v) if isinstance(v,(int,float)) and v>=0 else '')
+except Exception:
+    print('')" "$_fp_file" 2>/dev/null)"
+    fi
+
     # Branch + diff stats vs the run-start SHA (best-effort; non-git or empty
     # baseline yields empty values, which we render as "unknown"/"0").
     local start_sha="${_LOKI_RUN_START_SHA:-}"
@@ -4100,6 +4124,11 @@ except Exception:
         fi
         printf '%-14s %s\n' "Branch:" "$branch"
         printf '%-14s %s\n' "Files:" "$files_changed (+$insertions / -$deletions)"
+        # Only rendered when the app actually previewed. Silence beats a
+        # fabricated zero for a run where nothing ever came up.
+        if [ -n "$first_preview_s" ]; then
+            printf '%-14s %ss\n' "First preview:" "$first_preview_s"
+        fi
         printf '%-14s %s\n' "Finished:" "$ts"
         if [ -n "$delegate_branch" ]; then
             printf '%-14s %s\n' "Delegate:" "$delegate_branch"

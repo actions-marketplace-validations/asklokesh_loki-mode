@@ -5,6 +5,57 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v8.4.0
+
+Minor release. **Time to first preview is no longer invisible.**
+
+### The number that describes whether the product felt fast
+
+`app-runner.sh` has recorded `seconds_to_first_preview` since v8: write-once,
+atomic, and it already refused absurd values. Nothing ever read it. A grep
+across the whole repository found exactly one reference, the line that writes
+it. Not the run summary, not the Evidence Receipt, not the dashboard.
+
+Research on this category puts the delight peak at a working preview around
+four minutes and the churn peak at a long silent wait, so this is the single
+number that best describes whether a build felt fast. It was invisible to the
+person who waited for it and to us.
+
+The run summary now shows it beside the live app URL:
+
+```
+Files:         1 (+1 / -0)
+First preview: 247s
+```
+
+A run where no app ever came up prints nothing rather than "0s". A fabricated
+zero would claim instant preview for a run that never previewed, which is the
+same false-green the Evidence Receipt exists to prevent. Negative and malformed
+values are refused too, and a corrupt file does not break the summary.
+
+### The efficiency baseline is collectable, proven without spending
+
+`.loki/metrics/efficiency/` was empty in this checkout, which meant every claim
+about speed or cost was intuition with no "before" to compare against. The
+obvious move is to run a real build and see what lands, but that costs money and
+tens of minutes, and a broken recorder means spending both and having nothing.
+
+So the pipeline was proven first with no provider, no key and no spend:
+`track_iteration_complete` writes a complete per-iteration record with the
+DISPATCHED model (not a provider default, a mislabel that once made a
+model-equivalence benchmark unfalsifiable), and `collect_efficiency` folds
+records while keeping the property the whole baseline rests on: an absent
+record reports `usd=None`, a genuine zero reports `0.0`. If those collapsed,
+every published cost figure would be unfalsifiable.
+
+### Also
+
+Four suspected gaps were investigated and found already implemented, so no code
+changed: the simple-tier fast path is fully wired (seven consumers, including a
+doc-suite skip worth roughly 270 seconds per simple build and a council floor
+that drops from three iterations to one), reviewer count already scales with
+complexity, and all three behaviours already had registered passing tests.
+
 ## v8.3.3
 
 Patch. **The first-run path is now covered on the shell most users actually have.**

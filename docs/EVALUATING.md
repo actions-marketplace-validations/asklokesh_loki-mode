@@ -114,6 +114,48 @@ check you run at the end and a check something else can call as a dependency.
 
 ---
 
+## 6. Head to head, on this machine, in ten seconds
+
+The one competitive comparison we will publish, because you can rerun it:
+
+```bash
+bash tests/test-competitor-verify-surface.sh
+```
+
+It runs `--help` on whatever agent CLIs are installed and checks whether any of
+them exposes a command that verifies the agent's OWN output.
+
+Measured 2026-07-30 against every one of the six named competitors that ships
+a local CLI:
+
+| CLI | Verifies its own output |
+| --- | --- |
+| opencode 1.18.9 | no |
+| aider 0.86.2 | no |
+| codex-cli 0.146.0 | no |
+| Claude Code 2.1.220 | no |
+| cursor-agent 2026.05.24 | no |
+| loki-mode 8.3.3 | yes (`loki proof verify`) |
+
+Devin and Replit Agent ship no local CLI, so they are not covered and no claim
+is made about them.
+
+**The detail that makes this honest.** aider matches eight times on
+verify/proof/attest terms. All eight are `--verify-ssl` (TLS certificate
+validation) and `--git-commit-verify` (git pre-commit hooks). Neither verifies
+the agent's output. A count-based comparison would have scored aider 8 against
+our 2 and concluded the opposite of the truth, so the test reads every hit
+instead of counting them.
+
+**Scope.** This inspects the CLI surface of locally installed tools. Devin and
+Replit Agent ship no local CLI and are not covered. Absence from a `--help`
+listing is also not proof of absence from a product: a web UI or an API could
+expose something the CLI does not. If a competitor does ship output
+verification, this test is how we would find out, and the claim above would be
+corrected rather than defended.
+
+---
+
 ## What we do not have
 
 Stating this plainly, because you will find it out anyway and it is cheaper for
@@ -124,11 +166,14 @@ both of us if you find it here.
 - **No independent third-party benchmark placement.** The SWE-bench Verified
   leaderboard is months stale and every entry on it is self-reported, ours would
   be too.
-- **No audit of the closed-source products.** We have verified that seven open
-  harnesses (OpenHands, Cline, Aider, SWE-agent, Roo-Code, OpenCode, Continue)
-  publish no machine-checkable completion artifact. Cursor, Devin, Replit Agent
-  and Claude Code we have **not** audited feature by feature, so treat the
-  receipt as "unclaimed as far as we can verify", not as a proven first.
+- **Only the CLI surface is audited, not whole products.** Section 6 measures
+  every named competitor that ships a local CLI (opencode, aider, codex, Claude
+  Code, cursor-agent) and none exposes output verification. That is a real
+  measurement you can rerun, but it is a measurement of `--help`, not of a
+  product: a web UI or an API could expose something the CLI does not. Devin and
+  Replit Agent ship no local CLI and are not covered at all. Treat this as
+  "unclaimed on every surface we can reach", which is stronger than the earlier
+  "unclaimed as far as we can verify" and still short of a proven first.
 - **Generation is not air-gapped.** See section 2.
 
 ---
