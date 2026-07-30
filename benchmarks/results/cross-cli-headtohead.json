@@ -1,0 +1,41 @@
+{
+  "generated": "2026-07-30T22:53:50Z",
+  "status": "INCONCLUSIVE -- not published as a comparison",
+  "why": "A cross-CLI speed comparison needs a STABLE per-cell measurement. It is not stable yet: the same codex invocation that completed in 72s through the Loki provider layer later timed out at both 200s and 300s on the identical task and machine, while a trivial prompt answered in 9s. The CLI is healthy; the task-level result varies run to run.",
+  "measured_attempts": [
+    {
+      "cli": "codex",
+      "cmd": "codex exec --sandbox workspace-write --skip-git-repo-check",
+      "cap_s": 200,
+      "elapsed_s": 201,
+      "artifact_correct": false,
+      "rc": 124
+    },
+    {
+      "cli": "codex",
+      "cmd": "same",
+      "cap_s": 300,
+      "elapsed_s": 300,
+      "artifact_correct": false,
+      "rc": 124
+    },
+    {
+      "cli": "codex",
+      "cmd": "trivial prompt (reply OK)",
+      "cap_s": 90,
+      "elapsed_s": 9,
+      "rc": 0,
+      "note": "proves the CLI and auth are healthy; the variance is task-level"
+    },
+    {
+      "cli": "codex",
+      "via": "providers/codex.sh provider_invoke",
+      "elapsed_s": 72,
+      "artifact_correct": true,
+      "rc": 0,
+      "note": "earlier same-day run, recorded in free-onramp.json"
+    }
+  ],
+  "what_would_make_it_publishable": "N trials per cell with median and spread, not a single sample. A one-sample-per-cell table would have reported 'codex: timeout' as a fact about codex when the same command had already succeeded in 72s, which would be a fabricated competitive claim.",
+  "not_claimed": "No speed or quality ranking between CLIs is asserted. Nothing here compares tools."
+}

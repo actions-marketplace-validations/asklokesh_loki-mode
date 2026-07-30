@@ -5,6 +5,58 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v8.5.1
+
+Patch. **The free on-ramp is proven by a build, not by a tier label.**
+
+Codex is the only free on-ramp left since Gemini's free tier ended on
+2026-06-18, and this project had it pinned at "Tier 3" on v0.98 assumptions
+while the installed CLI had moved to 0.146.0. The label was the stale part, not
+the code.
+
+Measured on 2026-07-30, one complete invocation through the Loki provider layer
+rather than as a direct CLI call, because a raw CLI call proves nothing about
+whether Loki can drive it:
+
+```
+provider    codex-cli 0.146.0, ChatGPT auth, no API key
+task        create hello.txt containing exactly "hi"
+wall clock  72s
+tokens      55,889
+API cost    $0.00
+artifact    hello.txt present with exactly the expected content
+```
+
+A keyless path that demonstrably completes a build is the strongest answer to
+"why would I install this", and it is the model-agnostic claim made concrete
+instead of architectural.
+
+`benchmarks/results/free-onramp.json` records it with an explicit scope limit:
+one task, one invocation, not a quality or speed comparison against a flagship
+and not a multi-iteration build.
+
+The accompanying test deliberately does not invoke the provider. CI has no
+ChatGPT auth, and a test requiring a login would be skipped forever and rot.
+It asserts what breaks silently instead: that `provider_invoke` is defined after
+loading, that the autonomous flag is non-empty (an empty one makes codex run
+interactively and hang a build), and that `--sandbox` and `--model` exist on the
+installed binary rather than in documentation.
+
+### A comparison we chose not to publish
+
+A cross-CLI speed table was attempted and deliberately withheld. The same codex
+command that completed in 72 seconds later timed out at both 200 and 300
+seconds on the identical task and machine, while a trivial prompt answered in 9
+seconds, so the CLI is healthy and the variance is task-level.
+
+A one-sample-per-cell table would have recorded "codex: timeout" as a fact about
+a competitor when that exact command had already succeeded. That is a fabricated
+competitive claim, and a comparison that makes a competitor look bad on an
+unstable sample is worse than no comparison: it gets caught, and it takes the
+credibility of every other number with it. Recorded as INCONCLUSIVE in
+`benchmarks/results/cross-cli-headtohead.json` with the contradiction and what
+would make it publishable.
+
 ## v8.5.0
 
 Minor release. **Know what you paid for, and what the wait was.**
