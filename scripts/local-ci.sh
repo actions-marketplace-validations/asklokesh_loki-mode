@@ -1,0 +1,1406 @@
+#!/usr/bin/env bash
+#
+# local-ci.sh
+#
+# Mirrors EVERY GitHub Actions workflow check locally. Run this before
+# every push or release. If anything here fails, do not push.
+#
+# Per the user-mandated rule (CLAUDE.md "Local CI before push"):
+# every change is validated on this Mac before it reaches the remote.
+#
+# Usage:
+#   bash scripts/local-ci.sh                    # FAST tier (default, < 2 min)
+#   LOCAL_CI_TIER=full bash scripts/local-ci.sh # FULL tier (pre-push gate)
+#   bash scripts/local-ci.sh --full             # same as LOCAL_CI_TIER=full
+#   bash scripts/local-ci.sh --verbose          # show full output
+#
+# TIERS (LOCAL_CI_TIER=fast|full, default fast)
+#
+#   fast -- the inner-loop tier. Syntax, structural and trust-core checks only:
+#           every receipt / proof / council / verify suite runs, unchanged, with
+#           the same assertions. A dozen known-slow checks are DEFERRED and each
+#           one is PRINTED in the Skipped block with its measured cost. FAST is
+#           NOT push authorization; see the verdict line.
+#
+#   full -- every check, unchanged. This is the CLAUDE.md pre-push gate. Nothing
+#           about full's behaviour changed when the fast tier was added: the
+#           denylist below is consulted only when the tier is fast.
+#
+# WHY A TIER AND NOT A FASTER GATE: the slow items are slow because of what they
+# check, not how. tests/run-all-tests.sh (282 suites), the pytest blanket (1793
+# tests) and run-shellcheck.sh (~118s measured) cannot be made sub-second without
+# checking less, which is the exact false-green this product exists to prevent.
+# So they are deferred by NAME and reported, never silently trimmed.
+#
+# Exit code 0 = green; nonzero = at least one check failed (printed loudly).
+
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT" || exit 2
+
+FAST=0
+VERBOSE=0
+# LOCAL_CI_SERIAL=1 forces the fully-serial path (the pre-parallelization
+# behaviour). This is the bisect lever: if a future flake appears, run with
+# LOCAL_CI_SERIAL=1 to determine whether it is parallel-induced or a real
+# logic regression, without reverting the parallelization.
+SERIAL="${LOCAL_CI_SERIAL:-0}"
+
+# Tier. Default fast (the inner loop); full is the CLAUDE.md pre-push gate.
+# NOTE: --fast is a PRE-EXISTING, UNRELATED flag (it skips only the SBOM step,
+# see section 11). It is deliberately NOT an alias for the fast TIER -- two
+# things named "fast" that mean different things is how a full run gets
+# mistaken for a fast one. The tier is set by LOCAL_CI_TIER or --full only.
+TIER="${LOCAL_CI_TIER:-fast}"
+for arg in "$@"; do
+  case "$arg" in
+    --fast)    FAST=1 ;;
+    --full)    TIER=full ;;
+    --verbose) VERBOSE=1 ;;
+    --serial)  SERIAL=1 ;;
+  esac
+done
+case "$TIER" in
+  fast|full) ;;
+  *) echo "local-ci: unknown LOCAL_CI_TIER='$TIER' (want fast|full)" >&2; exit 2 ;;
+esac
+
+# SINGLE INSTANCE. Two concurrent gate runs starve each other's timing-sensitive
+# suites and produce failures that vanish on an isolated re-run.
+#
+# MEASURED on 2026-07-30, every one of these "failures" passed alone:
+#   tests/cli/test-alias-forwarding.sh   FAIL under load -> 213 passed, 0 failed
+#   tests/test-plan-command.sh           FAIL under load ->  27 passed, 0 failed
+#   tests/test-proven-pr-receipt.sh      FAIL under load ->  14 passed, 0 failed
+#   tests/test-heal-assess-readiness.sh  FAIL under load ->   8 passed, 0 failed
+#
+# Hours were spent treating those as defects. Worse, a phantom failure trains the
+# reader to distrust the gate, which is exactly how a REAL failure gets waved
+# through. Refusing to start is cheaper than a verdict nobody believes.
+#
+# A stale lock from a killed run is self-healing: the PID inside is checked for
+# liveness, so a crash never wedges the next run. Override with
+# LOCAL_CI_ALLOW_CONCURRENT=1 if you genuinely want two.
+_lci_lock="${TMPDIR:-/tmp}/loki-local-ci.lock"
+if [ "${LOCAL_CI_ALLOW_CONCURRENT:-0}" != "1" ]; then
+    if [ -f "$_lci_lock" ]; then
+        _lci_prev="$(cat "$_lci_lock" 2>/dev/null || echo "")"
+        if [ -n "$_lci_prev" ] && kill -0 "$_lci_prev" 2>/dev/null; then
+            echo "local-ci is already running (pid $_lci_prev)." >&2
+            echo "Two concurrent runs starve each other and produce phantom failures." >&2
+            echo "Wait for it, or: kill $_lci_prev   (or LOCAL_CI_ALLOW_CONCURRENT=1 to override)" >&2
+            exit 3
+        fi
+        # Stale lock from a killed run: reclaim it rather than wedge forever.
+    fi
+    printf '%s' "$$" > "$_lci_lock" 2>/dev/null || true
+    _lci_owner="$$"
+    # Release ONLY from the process that took the lock. A bare `trap ... EXIT`
+    # fires in every subshell too, and this script runs many -- so a finishing
+    # child test deleted the parent's lock, after which the next invocation saw
+    # no lock and started concurrently. Observed live: lock held 33475 while a
+    # second parent (70402) was running anyway.
+    trap '[ "$$" = "$_lci_owner" ] && rm -f "$_lci_lock" 2>/dev/null || true' EXIT
+fi
+
+# ---------------------------------------------------------------------------
+# FAST-tier KEEP list (allowlist)
+# ---------------------------------------------------------------------------
+# WHY AN ALLOWLIST AND NOT A DENYLIST. The first cut of this tier deferred a
+# dozen known-slow checks and still took >10 minutes. Measured cause: the gate's
+# cost is NOT a few slow checks, it is ~113 shell suites at a mean of 2.6s
+# (measured: 63 non-deferred suites summed 166.1s, projecting ~298s serial).
+# Deferring 16 items cannot reach 120s; only running FEWER checks can. So the
+# fast tier states positively what it DOES run, and everything else is deferred
+# and printed. A denylist would also silently admit every newly-added suite into
+# the fast tier, which is how a fast pass quietly becomes a slow one again.
+#
+# What FAST keeps, and why each earns its place:
+#   1. every structural/syntax lane (bash -n, JSON, YAML, emoji, git-add,
+#      heredoc, completions coverage) -- already parallel-safe, already cheap;
+#   2. the 14 per-file proof/bench/dashboard pytest gates -- the receipt layer;
+#   3. every trust-core shell suite (proof/receipt/council/verify/evidence) --
+#      the moat. These can NEVER be deferred; the guard below enforces it.
+#
+# Matching is substring-against-LABEL, consulted ONLY when TIER=fast. The full
+# tier never consults this array and is byte-for-byte its pre-tiering self.
+declare -a _FAST_KEEP=(
+  # 1. syntax + structure (cheap, already background lanes)
+  "bash -n "
+  "JSON validation"
+  "workflow YAML parse"
+  "no emojis in modified files"
+  "no git add -A in workflows"
+  "no unescaped \$<digit>"
+  "shell completions cover every dispatch command"
+  "local-ci tiering"
+  # 2. trust core: proof / receipt / evidence-gate / verify / council.
+  #    Measured (by name, this Mac): the pytest gates run ~15s as parallel
+  #    lanes; the shell suites ~60s serial. Both stay, in full, unchanged.
+  "tests/test_proof_"
+  "tests/test_own_render.py"
+  "tests/test_effort_estimate.py"
+  "tests/test_bench_"
+  "tests/dashboard/test_proofs_routes.py"
+  "tests/cli/test-proof-command.sh"
+  "tests/test-evidence-gate"
+  "tests/test-evidence-boot-axis.sh"
+  "tests/test-evidence-secret-axis.sh"
+  "tests/test-verify.sh"
+  "tests/test-verify-scope-record.sh"
+  "tests/test-verify-setup-recipe.sh"
+  "tests/test-council-"
+  "tests/test-heuristic-council-affirmative.sh"
+  "tests/test-playwright-verify-as-evidence.sh"
+  "tests/test-proven-pr-receipt.sh"
+  "tests/test-checklist-"
+  "tests/test_checklist_"
+  # 3. every MEASURED sub-second suite. Cheap enough that deferring them buys
+  #    nothing, so the fast tier runs them and the deferred list stays honest
+  #    about being slow-only. Times measured by name on this Mac (2026-07-30);
+  #    a suite whose cost was NOT measured is deliberately left deferred rather
+  #    than guessed into the fast tier.
+  "tests/test-bench-honest-degrade.sh"        # 100ms
+  "tests/test-build-home-isolation.sh"        # 107ms
+  "tests/test-codex-model-trusted.sh"         # 134ms
+  "tests/test-loki-steer.sh"                  # 179ms
+  "tests/test-loki-dir-double-path.sh"        # 195ms
+  "tests/test-first-preview-metric.sh"        # 197ms
+  "tests/test-approval-phase-gate.sh"         # 259ms
+  "tests/test-auto-tune-interval.sh"          # 87ms
+  "tests/test-checkpoint-index-rebuild.sh"    # 312ms
+  "tests/test-bundled-sdk-provider.sh"        # 372ms
+  "tests/test-loki-why-stall.sh"              # 473ms
+  "tests/test-mergeability-review.sh"         # 519ms
+  "tests/cli/test-loki-next.sh"               # 549ms
+  "tests/test-allowed-paths-sandbox-mount.sh" # 634ms
+  "tests/test-export-overwrite-noninteractive.sh" # 668ms
+  "tests/run-checkpoint-worktree-bundle-tests.sh" # 742ms
+  "tests/cli/test-provider-offer.sh"          # 869ms
+  "tests/test-emit-json-escape.sh"            # 870ms
+  "tests/test-bash-bun-parity.sh"             # 997ms
+  # CLAUDE.md cleanup mandate: sub-second, and the whole point is that it runs
+  # on every invocation, not only the slow one.
+  "no /tmp/loki-* /tmp/test-* leftovers"
+)
+
+# Returns 0 when the check should RUN in the fast tier.
+_fast_keeps() {
+  local label="$1" pat
+  for pat in "${_FAST_KEEP[@]}"; do
+    case "$label" in *"$pat"*) return 0 ;; esac
+  done
+  return 1
+}
+
+# Returns 0 (defer) when TIER=fast and the label is NOT on the keep list.
+_should_defer() {
+  [ "$TIER" = "fast" ] || return 1
+  _fast_keeps "$1" && return 1
+  return 0
+}
+
+# TRUST-CORE INVARIANT (the reason this tiering is allowed to exist at all).
+# The moat is the receipt/proof/council/verify layer, so the fast tier must run
+# ALL of it. The dangerous future edit is not someone deferring a trust-core
+# check by name -- it is someone ADDING a new trust-core suite to local-ci and
+# not adding it to _FAST_KEEP, at which point the fast tier silently stops
+# covering the moat. So the guard runs in the direction that catches it: scan
+# this script for every trust-core suite path it invokes, and abort if any one
+# of them is not matched by the keep list.
+_trust_core_unkept=""
+while read -r _p; do
+  [ -n "$_p" ] || continue
+  _fast_keeps "$_p" || _trust_core_unkept="$_trust_core_unkept $_p"
+done <<< "$(grep -oE 'tests/[a-z0-9/_-]*(proof|receipt|council|verify|evidence|redaction)[a-z0-9/_-]*\.(sh|py)' "$0" | sort -u)"
+if [ -n "$_trust_core_unkept" ]; then
+  echo "local-ci: FATAL -- trust-core suite(s) not covered by _FAST_KEEP:$_trust_core_unkept" >&2
+  echo "The fast tier must run every receipt/proof/council/verify suite. Add them to _FAST_KEEP." >&2
+  exit 2
+fi
+unset _trust_core_unkept _p
+
+declare -a FAILED=()
+declare -a PASSED=()
+declare -a SKIPPED=()
+
+CYAN=$'\e[0;36m'
+GREEN=$'\e[0;32m'
+RED=$'\e[0;31m'
+YELLOW=$'\e[1;33m'
+DIM=$'\e[2m'
+NC=$'\e[0m'
+
+if [ -n "${NO_COLOR:-}" ]; then
+  CYAN=''; GREEN=''; RED=''; YELLOW=''; DIM=''; NC=''
+fi
+
+START=$(date +%s)
+
+run_check() {
+  local label="$1"
+  shift
+  local cmd="$*"
+  # FAST tier: route deferred checks through skip_check so they land in the
+  # SKIPPED block and get printed at the end. Never silently dropped.
+  if _should_defer "$label"; then
+    skip_check "$label" "DEFERRED by fast tier (not trust-core/syntax) -- run LOCAL_CI_TIER=full"
+    return
+  fi
+  echo
+  echo "${CYAN}== $label${NC}"
+  echo "${DIM}$cmd${NC}"
+  local out
+  if [ "$VERBOSE" = "1" ]; then
+    if eval "$cmd"; then
+      PASSED+=("$label"); echo "${GREEN}PASS:${NC} $label"
+    else
+      FAILED+=("$label"); echo "${RED}FAIL:${NC} $label"
+    fi
+  else
+    if out=$(eval "$cmd" 2>&1); then
+      PASSED+=("$label"); echo "${GREEN}PASS:${NC} $label"
+    else
+      FAILED+=("$label")
+      echo "${RED}FAIL:${NC} $label"
+      echo "$out" | tail -30
+      # Most checks are written as `bash tests/foo.sh 2>&1 | tail -3`, so the
+      # `tail -30` above can only ever show those same 3 lines -- which are the
+      # SUMMARY, never the failing assertion. Diagnosing a failure then costs a
+      # full 40-minute re-run to learn nothing, and a load-flake that passes in
+      # isolation is undiagnosable. On failure only, re-run with the inner
+      # truncation stripped and surface the actual FAIL lines.
+      local _bare="${cmd%% | tail -*}"
+      if [ "$_bare" != "$cmd" ]; then
+        local _full
+        _full=$(eval "$_bare" 2>&1) || true
+        local _hits
+        _hits=$(printf '%s\n' "$_full" | grep -aiE '^[[:space:]]*(\[?FAIL\]?|not ok|✗|FAILED)' | head -15)
+        if [ -n "$_hits" ]; then
+          echo "${YELLOW}  failing assertions:${NC}"
+          printf '%s\n' "$_hits" | sed 's/^/    /'
+        fi
+      fi
+    fi
+  fi
+}
+
+skip_check() {
+  local label="$1"
+  local reason="$2"
+  SKIPPED+=("$label ($reason)")
+  echo
+  echo "${YELLOW}SKIP:${NC} $label -- $reason"
+}
+
+# ---------------------------------------------------------------------------
+# Parallel-lane infrastructure (re-land of local-ci parallelization, #588)
+# ---------------------------------------------------------------------------
+# History: a prior attempt to parallelize this gate made it NON-DETERMINISTIC
+# and was reverted. Two failure classes appeared ONLY under concurrency:
+#   (a) state-contending suites (test-model-override.sh and any reader of
+#       .loki/state) clobbered each other's .loki/state and $HOME/.loki config;
+#   (b) the doctor/network probes (bun test) timed out when bun's own
+#       concurrency plus parallel shell lanes plus an agent storm all ran at
+#       once.
+# A gate that flips PASS/FAIL is a DEFECT, not flaky tests. The safe re-land:
+#   1. ONLY provably-independent, read-only checks run in concurrent background
+#      lanes: bash -n syntax, shellcheck, JSON/YAML/emoji/git-add structural
+#      checks, and the read-only web-app/dashboard static-asset checks.
+#   2. Everything that spawns a loki process, kills processes (the stop block),
+#      hits the network (bun test / doctor), runs pytest, or shares mutable state
+#      stays on a SERIAL spine in the original order.
+#   3. pytest stays serial-inline (NOT a lane): the blanket run and the per-file
+#      gates collect the SAME files, so backgrounding would double-execute them
+#      concurrently, and a pytest lane would still be live during `bun test` ->
+#      reintroducing failure class (b). The two state-contending suites
+#      (model-override, plan-command) also stay serial; serialization removes the
+#      class-(a) race, so no temp HOME is needed (and temp HOME breaks the
+#      model-override fastapi import -- see the note above the helper region).
+#
+# CRITICAL correctness note: a background subshell CANNOT mutate the parent's
+# PASSED/FAILED arrays (the appends happen in a copy and are lost). So every
+# parallel lane routes its verdict and buffered output through the filesystem,
+# and harvest_lanes folds them back into the parent arrays IN FIXED ORDER after
+# wait. This also keeps output non-interleaved and the FAIL tails readable.
+
+declare -a _LANE_LABELS=()
+declare -a _LANE_PIDS=()
+LANE_DIR=""
+
+# Launch one parallel lane. Identical PASS/FAIL semantics to run_check, but the
+# verdict + captured output go to files; the parent reads them in harvest_lanes.
+run_check_bg() {
+  local label="$1"; shift
+  local cmd="$*"
+  if _should_defer "$label"; then
+    skip_check "$label" "DEFERRED by fast tier (not trust-core/syntax) -- run LOCAL_CI_TIER=full"
+    return
+  fi
+  # Serial fallback: behave exactly like run_check (the bisect lever).
+  if [ "$SERIAL" = "1" ]; then
+    run_check "$label" "$cmd"
+    return
+  fi
+  if [ -z "$LANE_DIR" ]; then
+    LANE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/loki-localci-lanes-XXXXXX")
+  fi
+  local idx="${#_LANE_LABELS[@]}"
+  _LANE_LABELS+=("$label")
+  local out_file="$LANE_DIR/$idx.out"
+  local status_file="$LANE_DIR/$idx.status"
+  local cmd_file="$LANE_DIR/$idx.cmd"
+  printf '%s' "$cmd" > "$cmd_file"
+  (
+    if out=$(eval "$cmd" 2>&1); then
+      printf '%s' "$out" > "$out_file"
+      printf 'PASS' > "$status_file"
+    else
+      printf '%s' "$out" > "$out_file"
+      printf 'FAIL' > "$status_file"
+    fi
+  ) &
+  _LANE_PIDS+=("$!")
+}
+
+# Wait for all parallel lanes, then fold their verdicts into PASSED/FAILED in
+# fixed launch order and replay their buffered output. Idempotent / safe to call
+# when no lanes were launched.
+harvest_lanes() {
+  [ "${#_LANE_LABELS[@]}" -eq 0 ] && return 0
+  local pid
+  for pid in "${_LANE_PIDS[@]}"; do
+    wait "$pid" 2>/dev/null || true
+  done
+  echo
+  echo "${CYAN}== parallel lanes (${#_LANE_LABELS[@]}) -- results folded in launch order${NC}"
+  local idx label status out cmd
+  for idx in "${!_LANE_LABELS[@]}"; do
+    label="${_LANE_LABELS[$idx]}"
+    status=$(cat "$LANE_DIR/$idx.status" 2>/dev/null || echo "FAIL")
+    cmd=$(cat "$LANE_DIR/$idx.cmd" 2>/dev/null || echo "")
+    echo
+    echo "${CYAN}== $label${NC}"
+    echo "${DIM}$cmd${NC}"
+    if [ "$status" = "PASS" ]; then
+      PASSED+=("$label"); echo "${GREEN}PASS:${NC} $label"
+      if [ "$VERBOSE" = "1" ]; then cat "$LANE_DIR/$idx.out" 2>/dev/null; fi
+    else
+      FAILED+=("$label")
+      echo "${RED}FAIL:${NC} $label"
+      out=$(cat "$LANE_DIR/$idx.out" 2>/dev/null || true)
+      echo "$out" | tail -30
+    fi
+  done
+  rm -rf "$LANE_DIR" 2>/dev/null || true
+  _LANE_LABELS=(); _LANE_PIDS=(); LANE_DIR=""
+}
+
+# Tier-aware dispatch for the per-file pytest gates (proof / bench / dashboard).
+#
+# Those gates are pinned SERIAL in the full tier for one specific reason stated
+# at section 3: the blanket `pytest -q` run collects the SAME files, so
+# backgrounding them would double-execute the same tests concurrently. That
+# hazard is a property of the blanket run, not of the gates.
+#
+# In the FAST tier the blanket run is deferred, so no other process collects
+# those files and the hazard is structurally absent -- verified: every per-file
+# target in this script is distinct (no target appears twice). They can then run
+# as parallel lanes, which turns ~20 sequential python interpreter startups into
+# one wave WITHOUT changing a single assertion: same files, same pytest, same
+# pass counts, only the scheduling differs.
+#
+# Full tier keeps the original serial behaviour exactly.
+run_check_pyfile() {
+  if [ "$TIER" = "fast" ]; then
+    run_check_bg "$@"
+  else
+    run_check "$@"
+  fi
+}
+
+# Per-suite HOME hermeticity was prototyped here for the state-contending suites
+# (model-override, plan-command) but removed: serial pinning already eliminates
+# the only concurrency those suites could contend under (the read-only pool is
+# drained before the serial spine), so a temp HOME guards a race that no longer
+# exists. It also actively BREAKS the model-override suite, whose dashboard leg
+# does `from dashboard import server` -> imports fastapi from the HOME-relative
+# user site (~/Library/Python/.../site-packages); overriding HOME makes that
+# import fail. The suites self-isolate their own .loki/state in mktemp WORK dirs.
+# Conclusion (#588): real HOME + serial == deterministic; no helper needed.
+
+# ---------------------------------------------------------------------------
+# 0. Working tree sanity
+# ---------------------------------------------------------------------------
+echo "${CYAN}Loki Mode local-ci -- mirrors every GitHub Actions workflow${NC}"
+echo "Started: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "Repo:    $REPO_ROOT"
+echo "VERSION: $(cat VERSION 2>/dev/null || echo MISSING)"
+[ "$FAST" = "1" ] && echo "Mode:    --fast (SBOM SKIPPED)"
+if [ "$TIER" = "fast" ]; then
+  echo "Tier:    FAST -- trust core + syntax + structure. Slow checks deferred and listed at the end."
+  echo "         NOT a pre-push gate. Pre-push: LOCAL_CI_TIER=full bash scripts/local-ci.sh"
+else
+  echo "Tier:    FULL -- every check (the CLAUDE.md pre-push gate)"
+fi
+
+# ---------------------------------------------------------------------------
+# 1. Bash syntax (mirrors release.yml gate.bash-syntax-validation)
+# ---------------------------------------------------------------------------
+# PARALLEL: pure syntax checks, read-only, no shared state. These lanes launch
+# now and run concurrently with the read-only pool below (shellcheck, pytest,
+# JSON/YAML/emoji). The whole pool is drained by harvest_lanes BEFORE the serial
+# spine (bun test, cli-commands, stop block) starts, so no lane is ever live
+# during the process-killing / network-probing checks.
+run_check_bg "bash -n autonomy/run.sh" "bash -n autonomy/run.sh"
+run_check_bg "bash -n autonomy/loki"   "bash -n autonomy/loki"
+run_check_bg "bash -n autonomy/completion-council.sh" "bash -n autonomy/completion-council.sh"
+
+# ---------------------------------------------------------------------------
+# 2. shellcheck on workflow + script bash blocks (best-effort)
+# ---------------------------------------------------------------------------
+if command -v shellcheck >/dev/null 2>&1; then
+  # CI PARITY: the GitHub "Tests" workflow runs tests/run-all-tests.sh, which
+  # runs tests/run-shellcheck.sh -- and that linter fails on WARNINGS too, not
+  # just errors. Running only `-S error` here let a warning-level SC2166 in this
+  # very file pass local-ci and then go red in CI (the exact "local passes / CI
+  # is the discovery channel" gap CLAUDE.md forbids). So we run the SAME linter
+  # CI runs, as the authoritative gate, plus keep the fast error-level subset.
+  # PARALLEL: shellcheck is read-only static analysis.
+  run_check_bg "shellcheck (CI parity: tests/run-shellcheck.sh)" 'bash tests/run-shellcheck.sh'
+  run_check_bg "shellcheck loki-ts fixtures (errors)" 'find loki-ts/tests/fixtures/build_prompt -name env.sh -print0 | xargs -0 shellcheck -S error'
+else
+  skip_check "shellcheck" "shellcheck not installed (brew install shellcheck)"
+fi
+
+# ---------------------------------------------------------------------------
+# 3. Python tests (mirrors release.yml gate.python-tests)
+# ---------------------------------------------------------------------------
+# SERIAL (inline): pytest gates stay on the serial spine, NOT in background
+# lanes. Two reasons, both load-bearing for determinism:
+#   1. The blanket run below collects the entire tests/ tree, which INCLUDES the
+#      per-file gates (test_proof_*, test_bench_*, dashboard/*) run by name just
+#      after. Backgrounding them would execute the SAME files concurrently with
+#      the blanket run -- a state-contention double-execution hazard.
+#   2. Running pytest inline keeps the pytest<->bun-test ordering identical to
+#      the original serial script (pytest first, never concurrent with bun's
+#      network/doctor probes). A single pytest background lane would still be
+#      live during `bun test`, recreating the doctor-timeout-under-load flake.
+# The parallelism win is still real: the bash -n and shellcheck lanes launched
+# ABOVE run concurrently with this pytest block. The per-name array entries the
+# comments below justify are preserved.
+if command -v python3.12 >/dev/null 2>&1; then
+  run_check "python3.12 -m pytest -q" "python3.12 -m pytest -q 2>&1 | tail -10"
+elif command -v python3 >/dev/null 2>&1; then
+  run_check "python3 -m pytest -q" "python3 -m pytest -q 2>&1 | tail -10"
+else
+  skip_check "pytest" "no python3 on PATH"
+fi
+
+# v7.9.0 (R1 proof-of-run): explicit per-file gates so a regression in the
+# proof generator, the redaction chokepoint, the self-contained HTML, or the
+# dashboard routes surfaces by name (not buried in the blanket pytest tail).
+# Resolve a python that prefers 3.12 (dashboard route test imports fastapi,
+# which is not installed for 3.14). The redaction/generator/html tests are pure
+# stdlib and run under either interpreter.
+if command -v python3.12 >/dev/null 2>&1; then
+  PROOF_PY=python3.12
+elif command -v python3 >/dev/null 2>&1; then
+  PROOF_PY=python3
+else
+  PROOF_PY=""
+fi
+if [ -n "$PROOF_PY" ]; then
+  # SERIAL (inline): per-file proof + bench pytest gates. Same files as the
+  # blanket run above; kept inline so they never execute concurrently with it.
+  # THE GATE: redaction corpus + end-to-end no-leak + refuse-if-bypassed.
+  run_check_pyfile "tests/test_proof_redaction.py (R1 redaction gate)" "$PROOF_PY -m pytest -q tests/test_proof_redaction.py 2>&1 | tail -5"
+  # Schema + integrity hash + include-diffs + graceful degradation.
+  run_check_pyfile "tests/test_proof_generator.py (R1 generator schema/hash)" "$PROOF_PY -m pytest -q tests/test_proof_generator.py 2>&1 | tail -5"
+  # Rank 6: per-build effort_estimate (work-based hours, fail-open heuristic,
+  # honest LLM gate, deterministic inputs_hash). Two-scope separation gate.
+  run_check_pyfile "tests/test_effort_estimate.py (Rank 6 effort estimator)" "$PROOF_PY -m pytest -q tests/test_effort_estimate.py 2>&1 | tail -5"
+  # Evidence Receipt verifier: tamper + drift re-check (loki proof verify).
+  run_check_pyfile "tests/test_proof_verify.py (Evidence Receipt verify: tamper/drift)" "$PROOF_PY -m pytest -q tests/test_proof_verify.py 2>&1 | tail -5"
+  run_check_pyfile "tests/test_own_render.py (finish-and-own honesty: never green unless verified)" "$PROOF_PY -m pytest -q tests/test_own_render.py 2>&1 | tail -5"
+  # Self-contained page: no external resource refs; all Tier1-4 fields render.
+  run_check_pyfile "tests/test_proof_html.py (R1 self-contained page)" "$PROOF_PY -m pytest -q tests/test_proof_html.py 2>&1 | tail -5"
+  # R2 benchmark harness gates (mocked adapters, no paid API calls).
+  # Task-spec hash determinism + held-out anti-contamination + offline loader.
+  run_check_pyfile "tests/test_bench_taskspec.py (R2 task-spec + hash)" "$PROOF_PY -m pytest -q tests/test_bench_taskspec.py 2>&1 | tail -5"
+  # Runner + grader: success set ONLY by held-out acceptance, N-trial aggregate.
+  run_check_pyfile "tests/test_bench_runner.py (R2 runner + grader)" "$PROOF_PY -m pytest -q tests/test_bench_runner.py 2>&1 | tail -5"
+  # Adapters never report success/quality; manual adapter requires provenance.
+  run_check_pyfile "tests/test_bench_adapters.py (R2 adapters boundary)" "$PROOF_PY -m pytest -q tests/test_bench_adapters.py 2>&1 | tail -5"
+  # Report is data-driven: a Loki-loses fixture renders the competitor as winner.
+  run_check_pyfile "tests/test_bench_report.py (R2 report non-rigged)" "$PROOF_PY -m pytest -q tests/test_bench_report.py 2>&1 | tail -5"
+  # bench CLI list/verify on the bash route.
+  run_check_pyfile "tests/test_bench_cli.py (R2 bench CLI)" "$PROOF_PY -m pytest -q tests/test_bench_cli.py 2>&1 | tail -5"
+  run_check_pyfile "tests/test_bench_mergeability.py (Rank 12 mergeability score)" "$PROOF_PY -m pytest -q tests/test_bench_mergeability.py 2>&1 | tail -5"
+else
+  skip_check "proof-of-run python gates" "no python3 on PATH"
+fi
+# Dashboard proof routes need fastapi (python3.12 only).
+if command -v python3.12 >/dev/null 2>&1; then
+  run_check_pyfile "tests/dashboard/test_proofs_routes.py (R1 proof routes + traversal)" "python3.12 -m pytest -q tests/dashboard/test_proofs_routes.py 2>&1 | tail -5"
+  # v7.34.0 Phase 1: /api/status surfaces claude_session_id from claude-session.json.
+  run_check_pyfile "tests/dashboard/test_claude_session_status.py (v7.34.0 claude_session_id)" "python3.12 -m pytest -q tests/dashboard/test_claude_session_status.py 2>&1 | tail -5"
+else
+  skip_check "proof routes dashboard gate" "python3.12 not on PATH (fastapi)"
+fi
+
+# ---------------------------------------------------------------------------
+# 4. JSON validation (mirrors release.yml prepublishOnly)
+# ---------------------------------------------------------------------------
+# PARALLEL: read-only structural validation (JSON/YAML/emoji/git-add).
+run_check_bg "JSON validation" "python3 -c 'import json; json.load(open(\"package.json\")); json.load(open(\"vscode-extension/package.json\")); json.load(open(\"loki-ts/tsconfig.json\"))'"
+
+# ---------------------------------------------------------------------------
+# 5. YAML validation for every workflow
+# ---------------------------------------------------------------------------
+run_check_bg "workflow YAML parse" 'for f in .github/workflows/*.yml; do python3 -c "import yaml; yaml.safe_load(open(\"$f\"))" || { echo "BAD: $f"; exit 1; }; done'
+
+# ---------------------------------------------------------------------------
+# 6. CLAUDE.md compliance: no emojis, no `git add -A`
+# ---------------------------------------------------------------------------
+run_check_bg "no emojis in modified files" '! git diff HEAD --name-only | xargs -I{} grep -lP "[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}]" {} 2>/dev/null | grep -v "^$"'
+run_check_bg "no git add -A in workflows" '! grep -rn "git add -A" .github/workflows/ 2>/dev/null | grep -v "^.*#"'
+run_check_bg 'no unescaped $<digit> in python3 -c bodies (v7.41 heredoc footgun)' 'bash tests/check-heredoc-dollar-digit.sh'
+run_check_bg 'shell completions cover every dispatch command (no drift)' 'bash tests/cli/test-completions-coverage.sh'
+# Guards this script's own FAST/FULL tiering: that a fast pass can never read as
+# push authorization, and that the fast tier still covers every trust-core
+# suite. Static assertions, sub-second, so it runs in the fast tier too --
+# a tier guard that only ran in the slow tier would be useless.
+run_check_bg 'local-ci tiering (fast is not push authorization; trust core kept)' 'bash tests/test-local-ci-tiers.sh'
+
+# ---------------------------------------------------------------------------
+# Harvest the read-only parallel pool BEFORE the serial-sensitive spine. The
+# spine below spawns loki processes (cli-commands, alias-forwarding,
+# bun-parity), kills processes machine-wide (the stop block), and runs the
+# network/doctor probes (bun test). The prior parallelization flaked precisely
+# because those ran under concurrent CPU + lane load. Draining the pool here
+# means the serial tail runs with nothing else live, which is the determinism
+# guarantee. The small web-app/dashboard static pool launched later is harvested
+# at the very end.
+# ---------------------------------------------------------------------------
+harvest_lanes
+
+# ---------------------------------------------------------------------------
+# 7. loki-ts typecheck + tests (mirrors test.yml bun-tests)
+# ---------------------------------------------------------------------------
+if command -v bun >/dev/null 2>&1; then
+  run_check "bun run typecheck" "(cd loki-ts && bun run typecheck) 2>&1 | tail -5"
+  run_check "bun test" "(cd loki-ts && bun test) 2>&1 | tail -5"
+  # dist freshness: the committed loki-ts/dist/loki.js is the artifact npm/Docker
+  # ship from and the bin/loki shim runs when newer than src. A stale or mangled
+  # dist passes every other gate (bun tests import from src), so a forgotten
+  # rebuild silently ships old behavior (bit v7.68.0; nearly v7.69.0). Rebuild
+  # and assert the committed bundle matches a fresh build, ignoring only the
+  # per-build debugId line which legitimately varies.
+  run_check "dist/loki.js is a fresh build of src" '
+    cd loki-ts
+    cp dist/loki.js /tmp/loki-ci-dist-committed.js
+    bun run build >/dev/null 2>&1
+    if diff <(grep -v "debugId" /tmp/loki-ci-dist-committed.js) <(grep -v "debugId" dist/loki.js) >/dev/null; then
+      cp /tmp/loki-ci-dist-committed.js dist/loki.js
+      rm -f /tmp/loki-ci-dist-committed.js
+      echo "dist matches fresh build (committed bundle is not stale)"
+    else
+      cp /tmp/loki-ci-dist-committed.js dist/loki.js
+      rm -f /tmp/loki-ci-dist-committed.js
+      echo "DIST STALE: committed loki-ts/dist/loki.js differs from a fresh build of src. Run: cd loki-ts \&\& bun run build, then git add -f loki-ts/dist/loki.js"
+      exit 1
+    fi
+  '
+else
+  skip_check "bun typecheck/test" "bun not installed"
+fi
+
+# ---------------------------------------------------------------------------
+# 8. Bash CLI tests both routes (mirrors test.yml bun-tests CLI steps)
+# ---------------------------------------------------------------------------
+run_check "tests/test-cli-commands.sh (Bun route)" "bash tests/test-cli-commands.sh 2>&1 | tail -3"
+run_check "tests/test-cli-commands.sh (LOKI_LEGACY_BASH=1)" "LOKI_LEGACY_BASH=1 bash tests/test-cli-commands.sh 2>&1 | tail -3"
+
+# Acceptance #8 (SDK-default flip gate): a resumed run must not repeat an
+# irreversible action. Stubs `gh` on PATH and uses a local bare remote, so it
+# never touches the network. Mirrored in test.yml's v8 SDK bridge step.
+run_check "tests/test-acceptance-resume-idempotence.sh" "bash tests/test-acceptance-resume-idempotence.sh 2>&1 | tail -3"
+
+# CLI consolidation (Phase A): deprecated-alias back-compat contract + help
+# structure. Data-driven; runs on BOTH routes (Bun-native alias tokens like
+# stats must emit the deprecation line on the Bun route, not bypass it).
+run_check "tests/cli/test-alias-forwarding.sh (Bun route)" "LOKI_ROUTE=bun bash tests/cli/test-alias-forwarding.sh 2>&1 | tail -3"
+run_check "tests/cli/test-alias-forwarding.sh (bash route)" "LOKI_ROUTE=bash bash tests/cli/test-alias-forwarding.sh 2>&1 | tail -3"
+
+# Export overwrite guard: the prompt must never block a non-interactive run.
+# This gate exists because an unguarded "Overwrite? [y/N]" read wedged local-ci
+# for 40+ minutes (runner at 0.0% CPU in state S). Every case runs under
+# `timeout`, so a re-introduced hang fails loudly instead of stalling the lane.
+run_check "tests/test-export-overwrite-noninteractive.sh (prompt never hangs)" "bash tests/test-export-overwrite-noninteractive.sh 2>&1 | tail -3"
+
+# Time-to-first-preview: the number that most predicts whether someone keeps
+# using the product. Guards that it is write-once (a restart cannot overwrite a
+# real slow first preview with a fast one) and never invented from a missing or
+# absurd baseline.
+run_check "tests/test-first-preview-metric.sh (write-once, never invented)" "bash tests/test-first-preview-metric.sh 2>&1 | tail -3"
+
+# The v8 SDK-default-flip audit concluded there is no cross-iteration context to
+# regress BECAUSE these knobs ship OFF. If anything ever turns one on, that
+# conclusion silently becomes wrong -- so the fact is guarded, not just written
+# down in docs/V8-RUNTIME-TRUTH-2026-07-25.md.
+run_check "tests/test-session-knobs-default-off.sh (audit premise holds)" "bash tests/test-session-knobs-default-off.sh 2>&1 | tail -3"
+
+# P4-2: AUTOMATED bash<->Bun runtime parity. Extracts the load-bearing
+# invariants from BOTH routes (autonomy-override text, PHASE_KEYS, effort-per-tier,
+# model-fallback, LOKI_GATE_* toggle set) and asserts equality, failing with a
+# diff on drift. Replaces the prior manual-review-only parity check that was a
+# recurring drift source. Skips cleanly if bun is absent.
+run_check "tests/test-bash-bun-parity.sh (runtime bash<->Bun parity)" "bash tests/test-bash-bun-parity.sh 2>&1 | tail -8"
+
+# v7.5.15: sentrux gate unit tests (fake on-PATH binary; safe on every host).
+# Mirrors the test.yml shell-tests job; fast, no network, no real sentrux dep.
+run_check "tests/test-sentrux-gate.sh (unit, fake binary)" "bash tests/test-sentrux-gate.sh 2>&1 | tail -3"
+
+# Loop 4 secure-by-default gate: engine precision (bad/safe matrix + FP guards),
+# run_secure_scan wiring (advisory default / LOKI_SECURE_GATE=block / waiver), and
+# the `loki secure` waiver CLI shape. Fast, no network, throwaway temp fixtures.
+run_check "tests/test-secure-scan.sh (secure-by-default gate)" "bash tests/test-secure-scan.sh 2>&1 | tail -3"
+run_check "tests/test-build-home-isolation.sh (in-build app exec sandbox)" "bash tests/test-build-home-isolation.sh 2>&1 | tail -3"
+run_check "tests/test-proven-pr-receipt.sh (PR-body honesty + no false green)" "bash tests/test-proven-pr-receipt.sh 2>&1 | tail -3"
+run_check "tests/test-proven-pr-check.sh (advisory check-run, cannot block merge)" "bash tests/test-proven-pr-check.sh 2>&1 | tail -3"
+run_check "tests/test-proven-pr-installed-layout.sh (verify-yourself on shipped routes)" "bash tests/test-proven-pr-installed-layout.sh 2>&1 | tail -3"
+run_check "tests/test-proven-pr-detached.sh (detached --pr/--ship -d carries receipt)" "bash tests/test-proven-pr-detached.sh 2>&1 | tail -3"
+
+# Telemetry disclosure-before-egress under a real pty (council cH_r1 AC7). Locks
+# in the on-by-default TTY fix: interactivity resolved once at the entry point
+# (LOKI_TTY_INTERACTIVE), never re-probed `-t` in FD-detached subshells, so a real
+# interactive user is disclosed-to before any egress on BOTH routes and never
+# covertly. Hermetic (unroutable endpoint, fresh HOME, no real network send).
+run_check "tests/test-telemetry-disclosure-pty.sh (TTY signal + no covert egress)" "bash tests/test-telemetry-disclosure-pty.sh 2>&1 | tail -3"
+
+# First-run funnel privacy: asserts WHAT REACHES THE WIRE by stubbing curl (the
+# last hop) and reading the real POST body, given path-shaped, space-containing
+# and glob-containing input. Guards the leak reverted in a0f835bc: the fixed
+# allowlist at the boundary, the quoted-array transport, disclosure-before-egress
+# on the early-exit path, zero egress with the gates shut, and route parity.
+run_check "tests/test-funnel-privacy.sh (allowlist at the wire, zero-egress default)" "bash tests/test-funnel-privacy.sh 2>&1 | tail -4"
+
+# ---------------------------------------------------------------------------
+# STOP-SUITE FOREIGN-KILL REGRESSION GUARD (fix/local-ci-sentinel)
+# ---------------------------------------------------------------------------
+# History: the stop suites below exercise `loki stop --all`, whose blanket
+# `pkill -f "loki-run-"` matches ANY process with "loki-run-" in its argv,
+# machine-wide. Before the scoping fix, running test-stop-scoping.sh would
+# SIGKILL an unrelated live loki-run-* on the same box (e.g. a long SWE-bench
+# instance). The fix made the suite scope `--all` to its own unique marker via
+# LOKI_STOP_ALL_PATTERN. This guard proves, on EVERY local-ci run, that the stop
+# suites do not kill a foreign loki run: we spawn a sentinel that faithfully
+# mimics one (a /tmp/loki-run-SENTINEL-*.sh group leader from a foreign cwd),
+# run the suites, then assert the sentinel is still alive BY PID (kill -0, never
+# pgrep). If it died, the run fails loudly. The sentinel is reaped by PID at the
+# end of this section.
+SENTINEL_PARENT_PID=""
+SENTINEL_CHILD_PID=""
+# Sentinel lifetime, and when it started. Both are read by the assertion so a
+# dead sentinel can be classified as EXPIRED vs KILLED.
+SENTINEL_LIFETIME=7200
+SENTINEL_SPAWN_EPOCH=0
+SENTINEL_SCRIPT=""
+SENTINEL_CWD=""
+_spawn_stop_sentinel() {
+  SENTINEL_SPAWN_EPOCH=$(date +%s)
+  SENTINEL_CWD=$(mktemp -d "${TMPDIR:-/tmp}/loki-sentinel-cwd-XXXXXX") || return 1
+  local _rand="$$-${RANDOM}-${RANDOM}"
+  SENTINEL_SCRIPT="${TMPDIR:-/tmp}/loki-run-SENTINEL-${_rand}.sh"
+  cat > "$SENTINEL_SCRIPT" <<SENT
+#!/usr/bin/env bash
+# local-ci stop-suite foreign-kill sentinel. Marker: LOKI-CI-SENTINEL-${_rand}
+echo \$\$ > "${SENTINEL_CWD}/parent.pid"
+# Lifetime must outlive the WHOLE local-ci run, not just the stop suites.
+# It was 900s (15 min). A full run takes 25-37 min here and grows as suites are
+# added, so on any slow run the sentinel simply EXPIRED mid-run and the guard
+# below reported "a stop suite killed the sentinel" -- a false DO-NOT-PUSH that
+# is indistinguishable from the real regression it exists to catch.
+# Measured: 25m40s and 26m48s runs SURVIVED; 35m10s and 36m40s runs "failed".
+# 7200s (2h) is far beyond any plausible run and the sentinel is reaped by PID
+# at the end of the stop section, so a longer sleep costs nothing.
+sleep ${SENTINEL_LIFETIME} &
+echo \$! > "${SENTINEL_CWD}/child.pid"
+# Touch a heartbeat AFTER the sleep starts so the guard can tell "still the
+# process we spawned" from "PID recycled onto something else".
+echo alive > "${SENTINEL_CWD}/started"
+wait
+SENT
+  chmod +x "$SENTINEL_SCRIPT"
+  # Launch as its own session/process-group leader from a foreign cwd, mimicking
+  # run.sh's setsid launcher (autonomy/run.sh:14096-14114). Prefer setsid, then
+  # python3, then plain background.
+  if command -v setsid >/dev/null 2>&1; then
+    ( cd "$SENTINEL_CWD" && nohup setsid bash "$SENTINEL_SCRIPT" >/dev/null 2>&1 & )
+  elif command -v python3 >/dev/null 2>&1; then
+    ( cd "$SENTINEL_CWD" && nohup python3 -c 'import os,sys; os.setsid(); os.execvp("bash",["bash",sys.argv[1]])' "$SENTINEL_SCRIPT" >/dev/null 2>&1 & )
+  else
+    ( cd "$SENTINEL_CWD" && nohup bash "$SENTINEL_SCRIPT" >/dev/null 2>&1 & )
+  fi
+  local _t=0
+  while [ "$_t" -lt 30 ]; do
+    SENTINEL_PARENT_PID=$(cat "$SENTINEL_CWD/parent.pid" 2>/dev/null || true)
+    SENTINEL_CHILD_PID=$(cat "$SENTINEL_CWD/child.pid" 2>/dev/null || true)
+    [ -n "$SENTINEL_PARENT_PID" ] && [ -n "$SENTINEL_CHILD_PID" ] && break
+    sleep 0.2; _t=$((_t + 1))
+  done
+}
+_reap_stop_sentinel() {
+  # Reap strictly by recorded PID, never by pattern, so we never touch a real
+  # foreign loki-run-*.
+  [ -n "${SENTINEL_CHILD_PID:-}" ] && kill -9 "$SENTINEL_CHILD_PID" 2>/dev/null || true
+  [ -n "${SENTINEL_PARENT_PID:-}" ] && kill -9 "$SENTINEL_PARENT_PID" 2>/dev/null || true
+  [ -n "${SENTINEL_SCRIPT:-}" ] && rm -f "$SENTINEL_SCRIPT" 2>/dev/null || true
+  [ -n "${SENTINEL_CWD:-}" ] && rm -rf "$SENTINEL_CWD" 2>/dev/null || true
+}
+_spawn_stop_sentinel
+if [ -n "$SENTINEL_PARENT_PID" ] && kill -0 "$SENTINEL_PARENT_PID" 2>/dev/null; then
+  echo "${DIM}stop-suite sentinel spawned: parent=$SENTINEL_PARENT_PID child=$SENTINEL_CHILD_PID script=$SENTINEL_SCRIPT${NC}"
+else
+  echo "${YELLOW}WARN: stop-suite sentinel failed to spawn; the foreign-kill guard cannot run${NC}"
+fi
+
+# v7.7.30: folder-scoped `loki stop`, `loki stop --all`, per-project dashboard
+# stop endpoint, and the switcher Stop button. Headline T2 reproduces the
+# cross-folder kill bug and asserts it is fixed (stop A leaves B alive).
+run_check "tests/test-stop-scoping.sh (stop scoping + per-project stop)" "bash tests/test-stop-scoping.sh 2>&1 | tail -3"
+
+# CI-PARITY (v7.84.0): run the FULL tests/run-all-tests.sh -- the exact suite the
+# CI "Shell tests" job runs -- as the authoritative shell gate. Cherry-picking
+# suites by name (the prior approach) kept missing the gap: a new test could pass
+# standalone here yet fail inside the harness in CI (e.g. test-ship-review-scope
+# assumed git default branch 'main'; CI defaults 'master', so it went red only in
+# CI). Running the whole harness closes that class for good. The per-name entries
+# below are kept as a FAST fail-early subset for the most-edited suites.
+if [ "${LOKI_LOCALCI_FULL_SHELL:-1}" = "1" ]; then
+  run_check "tests/run-all-tests.sh (FULL CI shell suite -- authoritative)" "bash tests/run-all-tests.sh 2>&1 | tail -6"
+fi
+
+# Fast fail-early subset (also covered by the full suite above):
+run_check "tests/test-state-baseline-lifecycle.sh (run 2+ baseline freshness)" "bash tests/test-state-baseline-lifecycle.sh 2>&1 | tail -3"
+run_check "tests/test-reuse-done-recognition.sh (no-PRD reuse done-recognition gate)" "bash tests/test-reuse-done-recognition.sh 2>&1 | tail -3"
+run_check "tests/run-checkpoint-worktree-bundle-tests.sh (V2 refs/loki/cp bundle sync)" "bash tests/run-checkpoint-worktree-bundle-tests.sh 2>&1 | tail -3"
+run_check "tests/test-allowed-paths-sandbox-mount.sh (V3 sandbox workspace fail-closed)" "bash tests/test-allowed-paths-sandbox-mount.sh 2>&1 | tail -3"
+run_check "tests/test-sandbox-deprecation.sh (v8.1 microVM binary-hosting deprecation; isolation retained)" "bash tests/test-sandbox-deprecation.sh 2>&1 | tail -3"
+run_check "tests/test-queue-consumer.sh (V5 redis/file consumer + flag-injection guard)" "bash tests/test-queue-consumer.sh 2>&1 | tail -3"
+run_check "tests/test-loki-why.sh (B5 failure/outcome diagnosis)" "bash tests/test-loki-why.sh 2>&1 | tail -3"
+run_check "tests/cli/test-loki-next.sh (loki next resolver)" "bash tests/cli/test-loki-next.sh 2>&1 | tail -3"
+run_check "tests/cli/test-ship-review-scope.sh (ship review scope)" "bash tests/cli/test-ship-review-scope.sh 2>&1 | tail -3"
+run_check "tests/cli/test-cli-flag-guards.sh (budget/plan-json/memory/temp-prd/flag-value guards)" "bash tests/cli/test-cli-flag-guards.sh 2>&1 | tail -3"
+run_check "tests/test-rate-limit-detection.sh (rate-limit false-positive guard)" "bash tests/test-rate-limit-detection.sh 2>&1 | tail -3"
+run_check "tests/test-config-map-fallback.sh (no-yq YAML nested-path + quote handling)" "bash tests/test-config-map-fallback.sh 2>&1 | tail -3"
+run_check "tests/test-sdk-mode.sh (v8.1 one-switch SDK resolver + bash<->TS fixture parity)" "bash tests/test-sdk-mode.sh 2>&1 | tail -3"
+run_check "tests/test-council-track-iteration.sh (convergence counter + stagnation force-stop)" "bash tests/test-council-track-iteration.sh 2>&1 | tail -3"
+run_check "tests/test-council-structured-done-signal.sh (structured claim counts as done signal -> valve arms)" "bash tests/test-council-structured-done-signal.sh 2>&1 | tail -3"
+run_check "tests/test-tier-routing.sh (Task6: complexity->model routing, dev-tier never below sonnet)" "bash tests/test-tier-routing.sh 2>&1 | tail -3"
+run_check "tests/test-auto-tune-interval.sh (Task6: council interval auto-tune by complexity)" "bash tests/test-auto-tune-interval.sh 2>&1 | tail -3"
+run_check "tests/test-self-heal-injection.sh (Task6: LAST_ERROR heal hint injected once + archived)" "bash tests/test-self-heal-injection.sh 2>&1 | tail -3"
+run_check "tests/test-review-diff-moat.sh (review diff exclusion + partial NO_OUTPUT block)" "bash tests/test-review-diff-moat.sh 2>&1 | tail -3"
+run_check "tests/test-review-assurance-tail.sh (deadline, requirements, speculative DA)" "bash tests/test-review-assurance-tail.sh 2>&1 | tail -3"
+run_check "tests/test-evidence-gate-rc.sh (evidence-gate rc propagation, fail-closed)" "bash tests/test-evidence-gate-rc.sh 2>&1 | tail -3"
+run_check "tests/test-playwright-verify-as-evidence.sh (playwright pass/fail distinction)" "bash tests/test-playwright-verify-as-evidence.sh 2>&1 | tail -3"
+run_check "tests/test-enforce-mutation-integrity.sh (mutation-integrity HIGH block)" "bash tests/test-enforce-mutation-integrity.sh 2>&1 | tail -3"
+run_check "tests/test-start-bash-diversion.sh (T3 loop-flip: orchestration flags divert to bash)" "bash tests/test-start-bash-diversion.sh 2>&1 | tail -3"
+run_check "tests/test-checklist-gate-failclosed.sh (council checklist gate fail-closed on corrupt results)" "bash tests/test-checklist-gate-failclosed.sh 2>&1 | tail -3"
+run_check "tests/test-council-aggregate-votes.sh (council completion tally threshold + stdout hygiene)" "bash tests/test-council-aggregate-votes.sh 2>&1 | tail -3"
+run_check "tests/test-checklist-determine-item-status.py (item-status aggregator: inconclusive never verified)" "python3 -m pytest tests/test-checklist-determine-item-status.py -q 2>&1 | tail -3"
+run_check "tests/test-checklist-run-check-arms.py (http_check never True on error + 4 arms)" "python3 -m pytest tests/test-checklist-run-check-arms.py -q 2>&1 | tail -3"
+run_check "tests/test_checklist_main_summary.py (main() summary counting end-to-end)" "python3 -m pytest tests/test_checklist_main_summary.py -q 2>&1 | tail -3"
+run_check "tests/test-heuristic-council-affirmative.sh (heuristic test_auditor requires affirmative pass evidence)" "bash tests/test-heuristic-council-affirmative.sh 2>&1 | tail -3"
+run_check "tests/test-checkpoint-index-rebuild.sh (single-python index rebuild, byte-identical + 1 spawn)" "bash tests/test-checkpoint-index-rebuild.sh 2>&1 | tail -3"
+run_check "tests/test-evidence-boot-axis.sh (completion gate blocks when the built app does not run)" "bash tests/test-evidence-boot-axis.sh 2>&1 | tail -3"
+run_check "tests/test-evidence-secret-axis.sh (completion gate blocks a secret leak in changed files)" "bash tests/test-evidence-secret-axis.sh 2>&1 | tail -3"
+run_check "tests/test-loki-steer.sh (loki steer writes the file the loop reads; dead steering.md hint removed)" "bash tests/test-loki-steer.sh 2>&1 | tail -3"
+run_check "tests/test-loki-why-stall.sh (loki why names the real stall reason: UNCERTAINTY_ESCALATION + convergence signal, suggests loki steer)" "bash tests/test-loki-why-stall.sh 2>&1 | tail -3"
+run_check "tests/test-spec-expand.sh (OpenAPI/GraphQL/Postman contract expands to a per-operation checklist; no ops lost to prompt truncation; non-contract untouched)" "bash tests/test-spec-expand.sh 2>&1 | tail -3"
+run_check "tests/test-spec-contract-drift.sh (contract locks one requirement per operation; mutating one response schema drifts exactly that operationId, exit 1)" "bash tests/test-spec-contract-drift.sh 2>&1 | tail -3"
+run_check "tests/test-spec-contradiction-confident.sh (a flaky single-sample spec-contradiction verdict must reproduce across N samples before it can terminal-fail a run)" "bash tests/test-spec-contradiction-confident.sh 2>&1 | tail -3"
+run_check "tests/test-spec-contradiction-classify.sh (ambiguity under a contradiction-ish grill section is NOT mislabeled a contradiction; real conflicts still are)" "bash tests/test-spec-contradiction-classify.sh 2>&1 | tail -3"
+run_check "tests/test-failure-learn-forward.sh (learn-forward: prior failure archived to append-only bounded history before clear; completion.json carries error_class+brief)" "bash tests/test-failure-learn-forward.sh 2>&1 | tail -3"
+run_check "tests/test-bench-honest-degrade.sh (L4 packaged-install bench UX)" "bash tests/test-bench-honest-degrade.sh 2>&1 | tail -3"
+run_check "tests/test-emit-json-escape.sh (C0 control-char escaping + UTF-8)" "bash tests/test-emit-json-escape.sh 2>&1 | tail -3"
+run_check "tests/test-codex-model-trusted.sh (LOKI_CODEX_MODEL verbatim, generic validated)" "bash tests/test-codex-model-trusted.sh 2>&1 | tail -3"
+
+# Completion-trust core: the devil's advocate must read the structured test
+# signal (.loki/quality/test-results.json), not a log path nothing writes, so a
+# genuine unanimous COMPLETE is not always vetoed to CONTINUE. Mutation guard
+# included.
+run_check "tests/test-council-devils-advocate.sh (structured test-evidence, no spurious veto)" "bash tests/test-council-devils-advocate.sh 2>&1 | tail -3"
+run_check "tests/test-council-da-veto.sh (anti-sycophancy DA veto forces CONTINUE)" "bash tests/test-council-da-veto.sh 2>&1 | tail -3"
+
+# v7.7.31: STOP-aware countdown + dead-pid authoritative + autonomy override
+# (--append-system-prompt) parity. Verifies the dashboard Stop button responds
+# promptly and the autonomous agent does not refuse work due to global CLAUDE.md.
+run_check "tests/test-autonomy-and-stop.sh (stop responsiveness + agent autonomy)" "bash tests/test-autonomy-and-stop.sh 2>&1 | tail -3"
+
+# DESIGN-1: the OSS design-archetype library (references/design-archetypes.md) is
+# the positive half of the first-pass DESIGN directive. Verifies it is appended
+# byte-identically on both routes, is iteration-1-only, fails open when absent,
+# and names only real Google Fonts families / real Radix Colors steps.
+run_check "tests/test-design-archetypes.sh (OSS design library, both-route parity)" "bash tests/test-design-archetypes.sh 2>&1 | tail -3"
+
+# v7.7.32: /api/tasks must pass through task enrichment (description,
+# acceptance_criteria, logs, provider) so the dashboard task-detail modal is
+# populated, not just the title.
+run_check "tests/test-task-modal-fields.sh (task modal field passthrough)" "bash tests/test-task-modal-fields.sh 2>&1 | tail -3"
+
+# v7.7.33: dashboard Stop must be authoritative - reap orchestrators by cwd so a
+# stale loki.pid cannot yield a false "stopped" while the process keeps running.
+run_check "tests/test-dashboard-stop-authoritative.sh (cwd-scoped authoritative stop)" "bash tests/test-dashboard-stop-authoritative.sh 2>&1 | tail -3"
+
+# v7.7.34: Stop must kill the AGENT, not just the orchestrator. The agent shares
+# the orchestrator process group; a group-kill (kill -- -PGID) reaps the
+# orphan-prone agent child atomically. Sentinel sweep is the backstop.
+run_check "tests/test-stop-process-group.sh (group-kill agent teardown)" "bash tests/test-stop-process-group.sh 2>&1 | tail -3"
+
+# FOREIGN-KILL REGRESSION ASSERTION (fix/local-ci-sentinel): after every stop
+# suite has run, the sentinel that mimics a foreign loki run MUST still be alive.
+# Checked BY PID (kill -0), never by pgrep -- pgrep-as-liveness false-negatives
+# on a live run, which is the anti-pattern that masked this bug originally. If
+# the sentinel is dead, a stop suite reaped a foreign loki-run-* and the build
+# fails loudly.
+# A dead sentinel has TWO possible causes and they must not be conflated:
+# a stop suite killed it (the regression this guard exists for), or it simply
+# reached the end of its own sleep (a harness bug that produces a FALSE
+# DO-NOT-PUSH). The original check reported "killed" for both, and on a 36m run
+# with a 900s sentinel that fired every time -- costing several full CI cycles
+# chasing a regression that was never there.
+# The sentinel's own script is the discriminator: _reap_stop_sentinel deletes it,
+# and nothing else does. If the script is still on disk and the PIDs are gone,
+# the sentinel EXPIRED (or was killed). We now also record its start so the
+# elapsed time can be compared against the configured lifetime.
+run_check "stop suites do NOT kill a foreign loki run (sentinel alive by PID)" \
+  'if [ -z "'"$SENTINEL_PARENT_PID"'" ]; then echo "sentinel never spawned -- cannot verify"; exit 1; fi; if kill -0 '"$SENTINEL_PARENT_PID"' 2>/dev/null && kill -0 '"$SENTINEL_CHILD_PID"' 2>/dev/null; then echo "sentinel parent='"$SENTINEL_PARENT_PID"' child='"$SENTINEL_CHILD_PID"' SURVIVED the stop suites"; else _el=$(( $(date +%s) - '"${SENTINEL_SPAWN_EPOCH:-0}"' )); if [ "$_el" -ge '"${SENTINEL_LIFETIME:-7200}"' ]; then echo "SENTINEL EXPIRED after ${_el}s (lifetime '"${SENTINEL_LIFETIME:-7200}"'s) -- this is a HARNESS limit, not a foreign-kill regression. Raise SENTINEL_LIFETIME in _spawn_stop_sentinel."; exit 1; fi; echo "FOREIGN-KILL REGRESSION: a stop suite killed the sentinel after only ${_el}s of a '"${SENTINEL_LIFETIME:-7200}"'s lifetime (parent='"$SENTINEL_PARENT_PID"' alive=$(kill -0 '"$SENTINEL_PARENT_PID"' 2>/dev/null && echo yes || echo no), child='"$SENTINEL_CHILD_PID"' alive=$(kill -0 '"$SENTINEL_CHILD_PID"' 2>/dev/null && echo yes || echo no))"; exit 1; fi'
+# Reap the sentinel by PID now that the assertion is done (scoped, never pgrep).
+_reap_stop_sentinel
+
+# v7.8.0: additive Claude Code flag adoptions (--setting-sources,
+# --include-partial-messages) gated + with stream-json parser de-dup.
+run_check "tests/test-claude-adoptions.sh (setting-sources + partial-messages)" "bash tests/test-claude-adoptions.sh 2>&1 | tail -3"
+
+# v7.8.1: staleness-aware generated-PRD reuse (codebase signature + decision).
+run_check "tests/test-prd-reuse.sh (codebase signature + PRD reuse decision)" "bash tests/test-prd-reuse.sh 2>&1 | tail -3"
+# PRD-reuse end-to-end stub proof: run 1 makes a CODEBASE_ANALYSIS_MODE call and
+# generates; run 2 (reuse) makes ZERO re-analysis calls and reuses the byte-
+# identical PRD with a disclosure. Hermetic stub provider, MAX_ITERATIONS bounded.
+run_check "tests/test-prd-reuse-stub.sh (reuse hit = zero re-analysis provider calls)" "bash tests/test-prd-reuse-stub.sh 2>&1 | tail -3"
+
+# v7.9.0 (R1 proof-of-run): `loki proof list|show|open|share` bash route against
+# a fixture proofs dir. Faked gh/open on PATH -> no network, no browser launch.
+# Asserts share does NOT publish without confirm and DOES with --yes.
+run_check "tests/cli/test-proof-command.sh (proof list/show/open/share)" "bash tests/cli/test-proof-command.sh 2>&1 | tail -3"
+
+# task 562: `loki mcp` launcher (autonomy/mcp-launch.sh) + server.py SDK
+# detection. Stub-based, ZERO real installs / ZERO real server launches: a stub
+# python3 controls SDK-present/missing deterministically. Asserts --help exit 0,
+# no-python3 exit 2, SDK-missing non-TTY + LOKI_NO_INSTALL_OFFER exit 2 (no
+# install), and the server.py both-layouts detection unit.
+run_check "tests/cli/test-mcp-launch.sh (MCP launcher + SDK detection)" "bash tests/cli/test-mcp-launch.sh 2>&1 | tail -3"
+
+# task 562: real MCP stdio handshake. Only runs when the pip MCP SDK is actually
+# importable on this host (the namespace-collision fix in mcp/server.py needs
+# the genuine SDK present). Spawns the server exactly like the shipped launcher
+# (autonomy/mcp-launch.sh): file-exec of mcp/server.py with PYTHONPATH=repo from
+# a NON-repo cwd (the decoy dir), completes initialize -> tools/list, and
+# asserts the server boots and lists >0 tools.
+# This is the ONLY check that proves FastMCP truly loads (a file-exists probe is
+# a false positive under the local-vs-SDK `mcp` shadowing). Skipped (PASS) when
+# the SDK is not installed so CI without it stays green.
+run_check "MCP stdio handshake (initialize -> tools/list; skips if SDK absent)" '
+  (
+    repo="$PWD"
+    if ! python3 -m mcp.server --check-sdk >/dev/null 2>&1; then
+      echo "MCP SDK not importable on host; handshake skipped (OK)."
+      exit 0
+    fi
+    hsdir="$(mktemp -d -t loki-mcp-hs-XXXX)"
+    trap "rm -rf \"$hsdir\"" EXIT
+    out="$(cd "$hsdir" && python3 - "$repo" <<PYHS 2>&1
+import asyncio, os, sys
+repo = sys.argv[1]
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+async def run():
+    env = dict(os.environ)
+    env["PYTHONPATH"] = repo + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    params = StdioServerParameters(command=sys.executable,
+        args=[os.path.join(repo, "mcp", "server.py"), "--transport", "stdio"], env=env)
+    async with stdio_client(params) as (r, w):
+        async with ClientSession(r, w) as s:
+            await s.initialize()
+            tl = await s.list_tools()
+            return len(tl.tools)
+n = asyncio.run(run())
+print("handshake OK: %d tools" % n)
+sys.exit(0 if n > 0 else 1)
+PYHS
+    )"
+    code=$?
+    echo "$out" | tail -2
+    exit "$code"
+  )
+'
+
+# task 566: real MCP stdio handshake for the LSP PROXY. The proxy carried the
+# same `mcp` namespace collision as server.py and silently degraded to a no-op
+# shim under MCP SDK 1.x (package-dir FastMCP), so its LSP tools never loaded
+# for consumers. This is the faithful old-vs-new guard (a file-exists probe is
+# a false positive). Spawns `python -m mcp.lsp_proxy` over stdio, completes
+# initialize -> tools/list, asserts >0 tools. Skipped (PASS) when the SDK is
+# not importable on the host so CI without it stays green.
+run_check "MCP LSP-proxy stdio handshake (initialize -> tools/list; skips if SDK absent)" '
+  (
+    repo="$PWD"
+    if ! python3 -m mcp.server --check-sdk >/dev/null 2>&1; then
+      echo "MCP SDK not importable on host; lsp-proxy handshake skipped (OK)."
+      exit 0
+    fi
+    hsdir="$(mktemp -d -t loki-mcp-lsp-hs-XXXX)"
+    trap "rm -rf \"$hsdir\"" EXIT
+    out="$(cd "$hsdir" && python3 - "$repo" <<PYHS 2>&1
+import asyncio, os, sys
+repo = sys.argv[1]
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+async def run():
+    params = StdioServerParameters(command=sys.executable,
+        args=["-m","mcp.lsp_proxy","--transport","stdio"], cwd=repo, env=dict(os.environ))
+    async with stdio_client(params) as (r, w):
+        async with ClientSession(r, w) as s:
+            await s.initialize()
+            tl = await s.list_tools()
+            return len(tl.tools)
+n = asyncio.run(run())
+print("lsp-proxy handshake OK: %d tools" % n)
+sys.exit(0 if n > 0 else 1)
+PYHS
+    )"
+    code=$?
+    echo "$out" | tail -2
+    exit "$code"
+  )
+'
+
+# v7.29.0: inline provider install offer (autonomy/provider-offer.sh). Stub-based,
+# ZERO real installs: a controlled PATH without provider CLIs + a stub npm that
+# records argv. Asserts the offer renders, non-TTY/CI never prompt and exit
+# honestly, the exact install argv, npm-missing degraded copy, and the
+# start/demo gate.
+run_check "tests/cli/test-provider-offer.sh (provider install offer + gate)" "bash tests/cli/test-provider-offer.sh 2>&1 | tail -3"
+
+# T1: the bundled Claude Agent SDK counts as a provider ONLY when usable
+# (extracted binary + credentials + SDK loop active). Fixture node_modules via
+# the LOKI_SDK_NODE_MODULES test seam; asserts every fail-closed branch and that
+# detect_any_provider stays PATH-only (demo/quick run on the bash route).
+run_check "tests/test-bundled-sdk-provider.sh (bundled SDK provider, fail-closed)" "bash tests/test-bundled-sdk-provider.sh 2>&1 | tail -3"
+
+# v7.29.0: quickstart guided interview (autonomy/quickstart.sh). Stub-based,
+# ZERO spend / ZERO build: source-level harness overrides _qs_non_interactive
+# and stubs show_prd_plan / provider_offer_gate / cmd_start / cmd_dashboard_open.
+# Asserts --help exit 0, non-TTY/CI exit 2 (timeout-guarded, no hang), the full
+# Enter x4 flow writes ./prd.md and invokes cmd_start --yes --no-plan, the
+# deterministic template scorer (run1==run2, design top-3, empty default), and
+# the existing-prd.md fallback to prd-quickstart.md.
+run_check "tests/cli/test-quickstart.sh (guided interview composition)" "bash tests/cli/test-quickstart.sh 2>&1 | tail -3"
+
+# v7.28.0: held-out spec evals. Deterministic ~25% checklist reservation,
+# exclusion from the build prompt feed, and the completion council held-out gate.
+run_check "tests/test-heldout-evals.sh (held-out selection + council gate)" "bash tests/test-heldout-evals.sh 2>&1 | tail -3"
+
+# v7.28: completion-claim DROP-FIX. The completion-promise chain must evaluate
+# the claim exactly ONCE per iteration (check_completion_promise consumes the
+# signal); arms test _completion_claimed. Guards against the multi-call drop.
+run_check "tests/test-completion-claim.sh (completion-claim single-evaluation)" "bash tests/test-completion-claim.sh 2>&1 | tail -3"
+
+# v7.28.0: living spec. `loki spec` lock/status/sync, drift-report.json, and the
+# SPEC_DRIFT finding surfaced by `loki verify`.
+run_check "tests/test-spec.sh (living spec lock/status/sync + drift finding)" "bash tests/test-spec.sh 2>&1 | tail -3"
+
+# v7.27.0: verified-completion evidence gate (diff baseline, inconclusive
+# disclosure lifecycle) and the deterministic `loki verify` pipeline. Wired in
+# v7.28.0 after a council reviewer caught both suites missing from local-ci.
+run_check "tests/test-evidence-gate.sh (evidence gate + inconclusive lifecycle)" "bash tests/test-evidence-gate.sh 2>&1 | tail -3"
+run_check "tests/test-nomock-data-render.sh (static catalogs pass, operational mocks block)" "bash tests/test-nomock-data-render.sh 2>&1 | tail -3"
+run_check "tests/test-evidence-gate-no-tests.sh (P1-1 no-tests not affirmative)" "bash tests/test-evidence-gate-no-tests.sh 2>&1 | tail -3"
+run_check "tests/test-verify.sh (loki verify deterministic gates)" "bash tests/test-verify.sh 2>&1 | tail -3"
+run_check "tests/test-verify-scope-record.sh (rank 10 locality scope record, advisory-first)" "bash tests/test-verify-scope-record.sh 2>&1 | tail -3"
+run_check "tests/test-verify-setup-recipe.sh (rank 7 setup-recipe writer, env NAMES not values)" "bash tests/test-verify-setup-recipe.sh 2>&1 | tail -3"
+run_check "tests/test-node-test-detection.sh (task #79: node --test detection, run.sh + verify.sh false-negative)" "bash tests/test-node-test-detection.sh 2>&1 | tail -3"
+run_check "tests/test-loki-dir-double-path.sh (#80 double-.loki COMPLETED guard)" "bash tests/test-loki-dir-double-path.sh 2>&1 | tail -3"
+run_check "tests/test-zero-test-inconclusive.sh (#82: zero-test-file -> inconclusive, run.sh + verify.sh + council)" "bash tests/test-zero-test-inconclusive.sh 2>&1 | tail -3"
+run_check "tests/test-heal-assess-readiness.sh (rank 13 loki heal --assess read-only triage)" "bash tests/test-heal-assess-readiness.sh 2>&1 | tail -3"
+run_check "tests/dashboard/test_tenant_isolation.py (P3-7 tenant boundary enforcement)" "python3 -m unittest tests.dashboard.test_tenant_isolation 2>&1 | tail -3"
+
+# P0 verification-credibility sweep (docs/P0-SWEEP-PLAN.md): the static
+# acceptance gate (gates WIRED) + the behavioral gate (mock/mutation detectors
+# actually BLOCK, LOKI_SCAN_DIR redirects the scan to the target fixture).
+run_check "tests/test-p0-verification-sweep.sh (P0 sweep acceptance: gates wired)" "bash tests/test-p0-verification-sweep.sh 2>&1 | tail -3"
+run_check "tests/test-p0-gate-behavior.sh (P0 mock/mutation gates actually block)" "bash tests/test-p0-gate-behavior.sh 2>&1 | tail -3"
+run_check "tests/test-spec-interrogation.sh (P2 spec interrogation + assumption ledger gate)" "bash tests/test-spec-interrogation.sh 2>&1 | tail -3"
+run_check "tests/dashboard/test_oidc_rbac_mapping.py (OIDC RBAC: no-claim defaults to viewer, not admin)" "python3 tests/dashboard/test_oidc_rbac_mapping.py 2>&1 | tail -3"
+run_check "tests/test-semantic-test-detector.sh (P1-3 semantic test-authenticity detector)" "bash tests/test-semantic-test-detector.sh 2>&1 | tail -3"
+run_check "tests/test-coverage-measurement.sh (P0-1 FixA real coverage + P3-5 run manifest)" "bash tests/test-coverage-measurement.sh 2>&1 | tail -3"
+run_check "tests/test-coverage-artifact-default-off.sh (v7.51 coverage.json written measured:false at default-off)" "bash tests/test-coverage-artifact-default-off.sh 2>&1 | tail -3"
+run_check "tests/test-evidence-gate-details-consumer.sh (v7.51 P1-1 run.sh surfaces evidence-gate-details WARN/INFO/silent)" "bash tests/test-evidence-gate-details-consumer.sh 2>&1 | tail -3"
+run_check "tests/test-approval-phase-gate.sh (v7.51 P3-3 check_policy approval wait: advisory default + enforce arms)" "bash tests/test-approval-phase-gate.sh 2>&1 | tail -3"
+run_check "tests/test-semantic-gate-bash-route.sh (v7.53 P1-3 bash route default-off guard + blocking semantics)" "bash tests/test-semantic-gate-bash-route.sh 2>&1 | tail -3"
+run_check "tests/test-no-deprecated-codex-flag.sh (v7.52 guard: no live codex --full-auto reintroduced)" "bash tests/test-no-deprecated-codex-flag.sh 2>&1 | tail -3"
+run_check "tests/test-oracle-triangulation.sh (P2-3 spec-vs-reality oracle)" "bash tests/test-oracle-triangulation.sh 2>&1 | tail -3"
+run_check "tests/test-oracle-source-grounded.sh (rank 2: routes/LSP-symbols/invariant)" "bash tests/test-oracle-source-grounded.sh 2>&1 | tail -3"
+run_check "tests/test-rarv-parallel-build-prompt.sh (rank 16+8: mode-aware rarv + PARALLEL_TOOL_CALLS)" "bash tests/test-rarv-parallel-build-prompt.sh 2>&1 | tail -3"
+run_check "tests/test-mergeability-review.sh (rank 9: mergeability reviewer + weighted quality score)" "bash tests/test-mergeability-review.sh 2>&1 | tail -3"
+run_check "tests/test-council-convergence-floor.sh (rank 15: no-claim early-check convergence floor)" "bash tests/test-council-convergence-floor.sh 2>&1 | tail -3"
+run_check "tests/test-spec-structure-validation.sh (P2-5 spec-structure validation)" "bash tests/test-spec-structure-validation.sh 2>&1 | tail -3"
+run_check "tests/test-spec-drift-severity.sh (P2-6 spec-drift blocking)" "bash tests/test-spec-drift-severity.sh 2>&1 | tail -3"
+run_check "tests/test-contradiction-detection.sh (P2-4 contradiction detection)" "bash tests/test-contradiction-detection.sh 2>&1 | tail -3"
+run_check "tests/test-invariant-detector.sh (P1-4 spec-independent invariants)" "bash tests/test-invariant-detector.sh 2>&1 | tail -3"
+run_check "tests/test-secret-scan.sh (P3-4 secret scan blocks)" "bash tests/test-secret-scan.sh 2>&1 | tail -3"
+run_check "tests/test-static-analysis-languages.sh (P1-6 static analysis language coverage)" "bash tests/test-static-analysis-languages.sh 2>&1 | tail -3"
+
+# v7.28.0: cost-capture root cause. Authoritative result-line cost capture
+# (result-cost-<iter>.json), efficiency writer precedence, budget breaker trip,
+# and the slug-sanitization fix (underscore/dot/space paths). Regression guard
+# for the SWE-bench Pro pilot $0-cost / never-tripped-cap bug.
+run_check "tests/test-cost-capture.sh (result-line cost + budget breaker + slug)" "bash tests/test-cost-capture.sh 2>&1 | tail -3"
+
+# Fable model + mid-flight model switching: override file read/allowlist/
+# invalid-ignored/clear semantics, LOKI_FABLE_ARCHITECT default-off routing,
+# fable pricing rows at $10/$50 (2x Opus) across all model-keyed tables, the
+# catalog claude-fable-5 entry, and the security-review model guard. Never
+# invokes a real model. The dashboard endpoints are covered by the pytest gate
+# (tests/dashboard/test_session_model_endpoint.py).
+# SERIAL: this suite and the plan suite below read .loki/state/model-override
+# and resolve the dashboard pricing leg via `from dashboard import server`. They
+# stay on the serial spine, NOT in background lanes. Serialization is the
+# determinism mechanism: harvest_lanes (above) drains the entire read-only pool
+# BEFORE this spine, so when these suites run nothing else is live and the
+# class-(a) state contention that broke the prior parallelization cannot occur.
+# NOTE: we deliberately do NOT wrap these in a throwaway HOME. The #588 task
+# sketched a temp-HOME hermeticity helper, but serial pinning is the stronger
+# mechanism and makes temp HOME redundant (no concurrent suite to contend with).
+# Worse, a temp HOME empirically BREAKS this suite: fastapi lives in the
+# HOME-relative user site (~/Library/Python/.../site-packages), so overriding
+# HOME makes `from dashboard import server` (it imports fastapi) fail, the
+# dashboard pricing leg returns empty, and 15 of 66 cases mismatch. The suites
+# already self-isolate their .loki/state in their own mktemp WORK dirs, so no
+# extra isolation is needed. Real HOME + serial == deterministic (verified 66/66).
+run_check "tests/test-model-override.sh (fable + mid-flight model switch)" "bash tests/test-model-override.sh 2>&1 | tail -3"
+
+# Cost/iteration estimator (loki plan): complexity detection, LOKI_COMPLEXITY
+# force, and the fable-quote path. Wired here so the plan suite is a pre-push
+# gate alongside the model-override suite it shares pricing with.
+run_check "tests/test-plan-command.sh (plan estimator + complexity force)" "bash tests/test-plan-command.sh 2>&1 | tail -3"
+
+# v7.33.0 Claude Code 2.1.170 flag embeds (bash route): --strict-mcp-config
+# (EMBED 1), --bare on cheap non-main subcalls (EMBED 2), --disallowedTools on
+# reviewer/adversarial subcalls (EMBED 3). Stub-based: a fake claude on PATH
+# records argv; asserts each flag IS passed at the right sites, ABSENT at the
+# wrong sites (main RARV loop never gets --bare), and the opt-out env kills it.
+run_check "tests/test-cli-embeds-v733.sh (strict-mcp + bare-subcalls + review-tool-guard)" "bash tests/test-cli-embeds-v733.sh 2>&1 | tail -3"
+
+# v7.34.0 Phase 1: Claude session-id stamping (correlation-only). Asserts the
+# deterministic per-run UUIDv5, the run-start metadata file, the DEFAULT argv
+# being byte-identical to v7.33 (no --session-id), the opt-in per-iteration
+# DISTINCT --session-id (no continuity leak), main-loop-only (never on subcalls),
+# bash<->Bun uuid parity, and FIX D --no-session-persistence opt-in.
+run_check "tests/test-cli-session-v734.sh (session stamp + uuid parity + FIX D)" "bash tests/test-cli-session-v734.sh 2>&1 | tail -3"
+
+# ---------------------------------------------------------------------------
+# 9. bun-parity local equivalent (mirrors bun-parity.yml matrix)
+# ---------------------------------------------------------------------------
+if command -v bun >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+  # v7.7.5 follow-up: retry-on-flake. Empirically the matrix has a
+  # first-run failure mode immediately after step 8 (test-cli-commands.sh)
+  # that does not reproduce in isolation -- pass on the second attempt
+  # with identical code. Cause hypothesized as state cooldown in the
+  # shared cwd .loki/ dir from the test-cli-commands run; root cause
+  # not yet found. The retry below makes the gate deterministic so
+  # local-ci ergonomics are not blocked while the deeper investigation
+  # continues (tracked in UT2-10).
+  run_check "bun-parity matrix (local)" '
+    set -uo pipefail
+    PARITY_TMP=$(mktemp -d)
+    trap "rm -rf $PARITY_TMP" EXIT
+    # Flake-capture: when a parity attempt fails we copy the offending
+    # bash/bun pair (raw + normalized + unified diff) into a persistent
+    # directory under .loki/local-ci-flake/<UTC-timestamp>/ BEFORE the
+    # tmp trap wipes them. This converts the next real flake into root
+    # cause evidence instead of another lost data point (tracked in
+    # UT2-10 -- v7.7.6 added retry, root cause still unknown after 100
+    # tight-loop reproductions failed to trigger).
+    FLAKE_DIR=".loki/local-ci-flake/$(date -u +%Y%m%dT%H%M%SZ)"
+    MATRIX=("version|--version|text" "provider-show|provider show|text" "provider-list|provider list|text" "memory-list|memory list|text" "status|status|text" "status-json|status --json|json" "stats|stats|text" "stats-json|stats --json|json" "doctor|doctor|text" "doctor-json|doctor --json|json")
+    ATTEMPT=0
+    while [ "$ATTEMPT" -lt 2 ]; do
+      ATTEMPT=$((ATTEMPT + 1))
+      BAD=0
+    for entry in "${MATRIX[@]}"; do
+      label="${entry%%|*}"; rest="${entry#*|}"; args="${rest%|*}"; mode="${rest##*|}"
+      LOKI_LEGACY_BASH=1 bash bin/loki $args > "$PARITY_TMP/$label.bash" 2>&1 || true
+      # v7.7.11 root-cause fix for the recurring first-attempt flake:
+      # bin/loki resolves to loki-ts/dist/loki.js when present, which has
+      # __LOKI_BUILD_VERSION__ baked in at build time. Whenever VERSION is
+      # bumped locally but dist not rebuilt, the bun route reports the
+      # stale build-time version, producing a doctor-json / version diff
+      # vs bash (which reads VERSION live). BUN_FROM_SOURCE=1 forces the
+      # shim to use src/cli.ts which calls readFileSync(VERSION) live so
+      # both routes see the same value. Safe: src/ is always present in
+      # the repo, and CI never runs local-ci.sh from an npm install.
+      BUN_FROM_SOURCE=1 bash bin/loki $args > "$PARITY_TMP/$label.bun" 2>&1 || true
+      if [ "$mode" = "json" ]; then
+        # v7.4.12: also floor the disk.available_gb value because Python
+        # json.dumps emits 58.0 while JS JSON.stringify emits 58 -- same
+        # number, different representation -- and the underlying df read
+        # can drift by 1GB between two near-simultaneous calls.
+        jq -S "if .disk?.available_gb? != null then .disk.available_gb = (.disk.available_gb | floor) else . end" "$PARITY_TMP/$label.bash" > "$PARITY_TMP/$label.bash.s" 2>/dev/null || true
+        jq -S "if .disk?.available_gb? != null then .disk.available_gb = (.disk.available_gb | floor) else . end" "$PARITY_TMP/$label.bun"  > "$PARITY_TMP/$label.bun.s"  2>/dev/null || true
+        if ! diff -q "$PARITY_TMP/$label.bash.s" "$PARITY_TMP/$label.bun.s" >/dev/null 2>&1; then
+          echo "DIFF: $label (attempt $ATTEMPT)"
+          BAD=$((BAD+1))
+          mkdir -p "$FLAKE_DIR" 2>/dev/null || true
+          cp "$PARITY_TMP/$label.bash"   "$FLAKE_DIR/$label.bash.raw"  2>/dev/null || true
+          cp "$PARITY_TMP/$label.bun"    "$FLAKE_DIR/$label.bun.raw"   2>/dev/null || true
+          cp "$PARITY_TMP/$label.bash.s" "$FLAKE_DIR/$label.bash.norm" 2>/dev/null || true
+          cp "$PARITY_TMP/$label.bun.s"  "$FLAKE_DIR/$label.bun.norm"  2>/dev/null || true
+          diff -u "$PARITY_TMP/$label.bash.s" "$PARITY_TMP/$label.bun.s" > "$FLAKE_DIR/$label.attempt${ATTEMPT}.diff" 2>/dev/null || true
+        fi
+      else
+        # v7.4.12: normalize jittery disk-space values (1GB drift can
+        # happen between bash and Bun reads on busy systems).
+        # v7.5.1: also strip the Runtime route block (added in v7.5.1 fix
+        # B23). The block is intentionally environment-dependent (reports
+        # "Bash" on the bash route and "Bun" on the Bun route, plus any
+        # active LOKI_LEGACY_BASH / LOKI_TS_ENTRY / BUN_FROM_SOURCE env)
+        # so it can never be byte-identical across the two routes. We
+        # use sed range deletion: from the Runtime route header line to
+        # the next empty line. Substring match handles ANSI color codes.
+        # Also normalize doctor Summary counts which shift slightly when
+        # LOKI_LEGACY_BASH is set vs not.
+        # v7.31: strip the optional "Dashboard:" status line. It is
+        # environment-dependent, not route-dependent: loki status (text mode)
+        # prints it only when a dashboard pid file holds a LIVE pid. The bash
+        # text path checks only the project-local pid file while the Bun path
+        # (and the bash --json path) also check ~/.loki/dashboard/dashboard.pid,
+        # so when the operator standalone dashboard is up the line appears on
+        # the Bun side and not the bash side -- a deterministic, environment-
+        # induced diff that has nothing to do with route logic. Deleting the
+        # line on both sides keeps the matrix honest (it never hides a real
+        # route divergence: presence of the line is governed by external
+        # dashboard state, not by the two routes formatting status differently).
+        for src in "$PARITY_TMP/$label.bash" "$PARITY_TMP/$label.bun"; do
+          dst="${src}.norm"
+          # Cockpit block: route-dependent (the bash doctor probes the cockpit
+          # renderer; the Bun doctor does not emit this section), so strip it on
+          # both sides -- parity with .github/workflows/bun-parity.yml:182 which
+          # already deletes it. Without this, local-ci flagged a diff the CI gate
+          # does not (the CI normalizer strips it), a local-ci-only false failure.
+          sed -E "s/Disk space: [0-9]+GB/Disk space: NGB/g" "$src" \
+            | sed -E "/Runtime route:/,/^$/d" \
+            | sed -E "/Phase 1 artifacts:/,/^$/d" \
+            | sed -E "/Cockpit:/,/^$/d" \
+            | sed -E "/Dashboard:.*http/d" \
+            | sed -E "s/[0-9]+ passed/N passed/g; s/[0-9]+ failed/N failed/g; s/[0-9]+ warnings/N warnings/g" \
+            > "$dst"
+        done
+        if ! diff -q "$PARITY_TMP/$label.bash.norm" "$PARITY_TMP/$label.bun.norm" >/dev/null 2>&1; then
+          echo "DIFF: $label (attempt $ATTEMPT)"
+          BAD=$((BAD+1))
+          mkdir -p "$FLAKE_DIR" 2>/dev/null || true
+          cp "$PARITY_TMP/$label.bash"      "$FLAKE_DIR/$label.bash.raw"  2>/dev/null || true
+          cp "$PARITY_TMP/$label.bun"       "$FLAKE_DIR/$label.bun.raw"   2>/dev/null || true
+          cp "$PARITY_TMP/$label.bash.norm" "$FLAKE_DIR/$label.bash.norm" 2>/dev/null || true
+          cp "$PARITY_TMP/$label.bun.norm"  "$FLAKE_DIR/$label.bun.norm"  2>/dev/null || true
+          diff -u "$PARITY_TMP/$label.bash.norm" "$PARITY_TMP/$label.bun.norm" > "$FLAKE_DIR/$label.attempt${ATTEMPT}.diff" 2>/dev/null || true
+        fi
+      fi
+    done
+      if [ "$BAD" = "0" ]; then
+        break
+      fi
+      if [ "$ATTEMPT" -lt 2 ]; then
+        echo "bun-parity attempt $ATTEMPT had $BAD mismatch(es); flake artifacts in $FLAKE_DIR; retrying once after 1s cooldown..."
+        sleep 1
+      fi
+    done
+    if [ "$BAD" != "0" ]; then
+      echo "bun-parity both attempts failed; investigate $FLAKE_DIR/*.diff" >&2
+    elif [ "$ATTEMPT" -gt 1 ]; then
+      echo "bun-parity passed on attempt $ATTEMPT; first-attempt flake artifacts preserved in $FLAKE_DIR for root cause analysis"
+    fi
+    [ "$BAD" = "0" ]
+  '
+else
+  skip_check "bun-parity matrix" "bun or jq missing"
+fi
+
+# ---------------------------------------------------------------------------
+# 10. Pre-publish 3a: npm pack tarball includes expected files
+# ---------------------------------------------------------------------------
+run_check "npm pack tarball contents" 'npm pack --dry-run 2>&1 | grep -E "loki-ts/dist/loki.js|bin/loki|dashboard/static/index.html|web-app/dist/index.html|autonomy/provider-offer.sh|autonomy/quickstart.sh" | wc -l | grep -qE "[6-9]|[1-9][0-9]"'
+
+# 10a-v8. The Agent SDK (@anthropic-ai/claude-agent-sdk) is a DYNAMIC import in
+# dist/loki.js (the opt-in LOKI_SDK_LOOP=1 RARV loop) + a per-platform native
+# binary, so it is NOT bundled into dist and MUST be a declared dependency npm
+# can resolve at install time; otherwise npm/Docker users who set LOKI_SDK_LOOP=1
+# hit ERR_MODULE_NOT_FOUND (fail-closed, but dead-on-arrival). This check would
+# have caught the whole-arc council's packaging finding. It must stay pinned to
+# the same version loki-ts/package.json uses.
+run_check "Agent SDK is a resolvable root dependency (LOKI_SDK_LOOP packaging)" '
+  root_ver=$(python3 -c "import json; d=json.load(open(\"package.json\")); print((d.get(\"dependencies\",{}) | d.get(\"optionalDependencies\",{})).get(\"@anthropic-ai/claude-agent-sdk\",\"\"))")
+  src_ver=$(python3 -c "import json; print(json.load(open(\"loki-ts/package.json\"))[\"dependencies\"][\"@anthropic-ai/claude-agent-sdk\"])")
+  [ -n "$root_ver" ] && [ "$root_ver" = "$src_ver" ] &&
+  grep -q "claude-agent-sdk" Dockerfile'
+
+# ---------------------------------------------------------------------------
+# 10b. Phase Merge-3: web-app dist must be built with base: '/lab/'
+# ---------------------------------------------------------------------------
+# PARALLEL: read-only static asset checks.
+run_check_bg "web-app dist baked with /lab/ base" 'test -f web-app/dist/index.html && grep -q "/lab/assets/" web-app/dist/index.html'
+run_check_bg "no hardcoded /api/ or /ws literals in web-app/src/" '! grep -rnE "['"'"'\"]/(api|ws|proxy)/" web-app/src/ --include="*.ts" --include="*.tsx" 2>/dev/null | grep -v "\.test\." | grep -q .'
+
+# ---------------------------------------------------------------------------
+# 10c. Dashboard SPA inline JavaScript must PARSE (no SyntaxError)
+# ---------------------------------------------------------------------------
+# A prior build regression (build-standalone.js corrupting backslash escapes)
+# shipped a dashboard/static/index.html whose inline <script> blocks threw a
+# SyntaxError in the browser. The file still served HTTP 200 and contained the
+# expected markers, so every existing presence/compose check passed while the
+# SPA was dead. This gate extracts each INLINE <script> block (skips src=,
+# importmap/json data islands) and parses it via Node's vm. FAIL on any
+# SyntaxError. Proven to FAIL on the old broken build and PASS on the fixed one.
+if command -v node >/dev/null 2>&1; then
+  run_check_bg "dashboard SPA inline scripts parse (node)" "node scripts/check-inline-scripts.js dashboard/static/index.html"
+else
+  skip_check "dashboard SPA inline scripts parse" "node not installed"
+fi
+
+# ---------------------------------------------------------------------------
+# 10d. Dashboard fresh-repo integrated UX harness (v7.18.0)
+# ---------------------------------------------------------------------------
+# The v7.17.x verification ran the dashboard SEEDED + in isolation and shipped a
+# cold-repo 404 flood, an early-abort timeout, and iframe theme clashes. This
+# harness boots the server against a FRESH repo (no .loki) and drives the real
+# browser: asserts no cold-load console 404s/AbortErrors and that the trust
+# iframe matches the SPA theme in light AND after the Dark toggle. Requires
+# python3.12 (fastapi) + the dashboard-ui playwright + chromium; skips cleanly
+# when absent so the gate never blocks an environment that lacks them.
+_DASH_PY=""
+command -v python3.12 >/dev/null 2>&1 && _DASH_PY=python3.12
+if [ -n "$_DASH_PY" ] && command -v node >/dev/null 2>&1 \
+   && [ -d dashboard-ui/node_modules/playwright ] \
+   && { [ -d "$HOME/Library/Caches/ms-playwright" ] || [ -d "$HOME/.cache/ms-playwright" ]; }; then
+  run_check "dashboard fresh-repo integrated UX harness" 'bash scripts/run-dashboard-fresh-repo-harness.sh'
+else
+  skip_check "dashboard fresh-repo integrated UX harness" "needs python3.12 + dashboard-ui playwright + chromium"
+fi
+
+# ---------------------------------------------------------------------------
+# 11. SBOM workflow equivalent (mirrors sbom.yml)
+# ---------------------------------------------------------------------------
+if [ "$FAST" = "1" ]; then
+  skip_check "SBOM generation" "--fast mode"
+else
+  run_check "SBOM cyclonedx-npm against npm pack tarball" '
+    set -uo pipefail
+    SBOM_TMP=$(mktemp -d)
+    trap "rm -rf $SBOM_TMP loki-mode-*.tgz" EXIT
+    npm pack >/dev/null 2>&1
+    tar xzf loki-mode-*.tgz -C "$SBOM_TMP"
+    cd "$SBOM_TMP/package"
+    npm install --omit=dev --no-package-lock --silent >/dev/null 2>&1
+    npx --yes @cyclonedx/cyclonedx-npm --omit dev --output-format JSON --output-file /tmp/sbom-local.cdx.json --spec-version 1.5 >/dev/null 2>&1
+    test -s /tmp/sbom-local.cdx.json
+    rm -f /tmp/sbom-local.cdx.json
+  '
+fi
+
+# ---------------------------------------------------------------------------
+# 12. License audit (direct + transitive)
+# ---------------------------------------------------------------------------
+run_check "license-audit.sh" "bash scripts/license-audit.sh 2>&1 | tail -5"
+
+# ---------------------------------------------------------------------------
+# 13. npm audit (mirrors security-audit.yml)
+# ---------------------------------------------------------------------------
+run_check "npm audit (production deps, high+)" "
+  set -uo pipefail
+  AUDIT_TMP=\$(mktemp -d)
+  trap 'rm -rf \$AUDIT_TMP' EXIT
+  cp package.json \$AUDIT_TMP/
+  cd \$AUDIT_TMP && npm install --silent --no-audit --no-fund >/dev/null 2>&1
+  # audit-check.sh mirrors --audit-level=high but waives documented, not-reachable
+  # advisories (see the script header). A NEW high advisory still fails the gate.
+  bash \"$REPO_ROOT/scripts/audit-check.sh\"
+"
+
+# ---------------------------------------------------------------------------
+# 14. Cleanup probe (CLAUDE.md mandate)
+# ---------------------------------------------------------------------------
+run_check "no /tmp/loki-* /tmp/test-* leftovers" 'ls /tmp/loki-* /tmp/test-* 2>&1 | grep -q "No such file" || ! ls /tmp/loki-* /tmp/test-* 2>/dev/null | grep -q .'
+
+# ---------------------------------------------------------------------------
+# Harvest parallel lanes: wait for all background lanes launched above, then
+# fold their verdicts into PASSED/FAILED in fixed launch order. MUST run before
+# the summary so the counts include the parallel lanes.
+# ---------------------------------------------------------------------------
+harvest_lanes
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+END=$(date +%s)
+ELAPSED=$((END - START))
+
+echo
+echo "${CYAN}===============================================================${NC}"
+echo "${CYAN}local-ci summary  [tier: $(echo "$TIER" | tr '[:lower:]' '[:upper:]')]  ($(printf '%dm%02ds' $((ELAPSED/60)) $((ELAPSED%60))))${NC}"
+echo "${CYAN}===============================================================${NC}"
+echo "${GREEN}Passed:  ${#PASSED[@]}${NC}"
+echo "${YELLOW}Skipped: ${#SKIPPED[@]}${NC}"
+echo "${RED}Failed:  ${#FAILED[@]}${NC}"
+
+if [ "${#SKIPPED[@]}" -gt 0 ]; then
+  echo
+  echo "Skipped:"
+  for s in "${SKIPPED[@]}"; do echo "  - $s"; done
+fi
+
+if [ "${#FAILED[@]}" -gt 0 ]; then
+  echo
+  echo "${RED}Failed:${NC}"
+  for f in "${FAILED[@]}"; do echo "  - $f"; done
+  echo
+  echo "${RED}DO NOT PUSH. Fix the failures above and re-run (tier: $TIER).${NC}"
+  exit 1
+fi
+
+echo
+# The verdict must never let a FAST pass be mistaken for a FULL one. CLAUDE.md
+# mandates the full gate before every push; a fast run that printed "safe to
+# push" would make the tiering itself the false-green it was meant to avoid.
+if [ "$TIER" = "fast" ]; then
+  echo "${GREEN}All FAST-tier local-ci checks passed.${NC}"
+  echo "${YELLOW}This is NOT push authorization.${NC}"
+  # The deferred list is long. A summary nobody reads is how a fast pass gets
+  # mistaken for a full one, so name the scale of what was NOT checked -- in
+  # particular the blanket pytest run, which is where a pre-existing red hides.
+  echo "${YELLOW}${#SKIPPED[@]} check(s) deferred${NC} (listed above), covering roughly:"
+  echo "  - tests/run-all-tests.sh   282 shell suites   (~10+ min, measured)"
+  echo "  - blanket pytest -q        1793 tests         (128s, measured)"
+  echo "  - tests/run-shellcheck.sh  repo-wide lint     (118s, measured)"
+  echo "  - SBOM / npm audit / license-audit / bun-parity / MCP handshakes"
+  echo "FAST covers syntax, structure and the full trust core (proof, receipt,"
+  echo "council, verify, evidence) -- nothing else. Before push or release:"
+  echo "    LOCAL_CI_TIER=full bash scripts/local-ci.sh"
+else
+  echo "${GREEN}All FULL-tier local-ci checks passed.${NC}"
+  echo "Safe to commit + push."
+fi
+exit 0

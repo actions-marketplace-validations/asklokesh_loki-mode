@@ -9,7 +9,7 @@ Guide for contributing to Loki Mode.
 ### Prerequisites
 
 - **Bash 4+** (macOS ships with 3.x; install via `brew install bash`)
-- **Node.js 16+** (for dashboard frontend)
+- **Node.js 22 LTS** (supported runtime; for the dashboard frontend and Bun-route tooling)
 - **Python 3.10+** (for dashboard backend and memory system)
 - **jq** (`brew install jq` or `apt-get install jq`)
 - **Git**
@@ -50,7 +50,7 @@ loki-mode/
   CHANGELOG.md           # Release history
 
   autonomy/              # Runtime and CLI (run.sh, loki, completion-council.sh)
-  providers/             # Multi-provider support (Claude, Codex, Gemini)
+  providers/             # Multi-provider support (Claude, Codex, Cline, Aider)
   skills/                # On-demand skill modules
   references/            # Detailed documentation
   memory/                # Memory system (Python)
@@ -265,7 +265,7 @@ Use the [issue templates](https://github.com/asklokesh/loki-mode/issues/new/choo
 
 ## License
 
-Loki Mode is MIT licensed. By contributing, you agree that your contributions will be licensed under MIT.
+Loki Mode is source-available under the [Business Source License 1.1](../LICENSE) (converts to Apache 2.0 on March 19, 2030). External contributions are accepted only under a signed Contributor License Agreement (CLA) per [COMMERCIAL-TERMS.md](../COMMERCIAL-TERMS.md); contributions without a signed CLA grant the Licensor no rights and may be removed.
 
 ---
 

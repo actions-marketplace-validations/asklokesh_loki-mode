@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Loki Mode pre-push hook
+#
+# Runs before `git push` to catch the failure modes that have actually
+# burned us in past releases:
+#   1. A pre-existing test asserts on a contract you changed (v6.77.1 hot-fix)
+#   2. A bash syntax error slips into autonomy/run.sh or autonomy/loki
+#   3. The WRONG git identity (Disney murel002) leaking onto a github.com push
+#      -- a real past incident: a commit landed as murel002 instead of asklokesh
+#      because the repo-local .git/config was not set before committing.
+#
+# git passes the remote name + URL on argv: $1=<name> $2=<url>.
+#
+# Install:  ./scripts/install-hooks.sh
+# Skip once: PRE_PUSH_SKIP=1 git push   (use sparingly; CI will catch you)
+
+set -euo pipefail
+
+if [[ "${PRE_PUSH_SKIP:-0}" == "1" ]]; then
+    echo "[pre-push] PRE_PUSH_SKIP=1 set, skipping"
+    exit 0
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+failures=0
+
+# --- Identity guard: never push to github.com under the Disney identity -------
+# The global gitconfig defaults to murel002 (github.disney.com); a repo that
+# forgot to set its local user.email would silently push commits authored as
+# murel002 to github.com/asklokesh. Deterministic, no model, fires at the last
+# gate before the identity reaches GitHub. Only enforces for github.com remotes
+# (github.disney.com pushes legitimately use murel002 and are exempt).
+remote_url="${2:-$(git remote get-url --push "${1:-origin}" 2>/dev/null || echo "")}"
+if [[ "$remote_url" == *"github.com"* ]]; then
+    id_email="$(git config user.email 2>/dev/null || echo "")"
+    id_name="$(git config user.name 2>/dev/null || echo "")"
+    if [[ "$id_email" != "lokeshmure@live.com" || "$id_name" != "asklokesh" ]]; then
+        echo "[pre-push] FAIL: github.com push requires identity asklokesh <lokeshmure@live.com>" >&2
+        echo "[pre-push]   current repo identity: ${id_name:-<unset>} <${id_email:-<unset>}>" >&2
+        echo "[pre-push]   fix: git config user.name asklokesh && git config user.email lokeshmure@live.com" >&2
+        failures=$((failures + 1))
+    fi
+fi
+
+echo "[pre-push] bash -n autonomy/run.sh"
+if ! bash -n autonomy/run.sh; then
+    echo "[pre-push] FAIL: autonomy/run.sh has syntax errors" >&2
+    failures=$((failures + 1))
+fi
+
+echo "[pre-push] bash -n autonomy/loki"
+if ! bash -n autonomy/loki; then
+    echo "[pre-push] FAIL: autonomy/loki has syntax errors" >&2
+    failures=$((failures + 1))
+fi
+
+if command -v python3 >/dev/null 2>&1 && [[ -f pytest.ini ]]; then
+    echo "[pre-push] python3 -m pytest -q"
+    if ! python3 -m pytest -q 2>&1 | tail -25; then
+        echo "[pre-push] FAIL: python tests failed (full output above)" >&2
+        failures=$((failures + 1))
+    fi
+fi
+
+if [[ $failures -gt 0 ]]; then
+    echo "[pre-push] $failures check(s) failed -- aborting push" >&2
+    echo "[pre-push] Re-run after fixing, or skip with PRE_PUSH_SKIP=1 git push" >&2
+    exit 1
+fi
+
+echo "[pre-push] all checks passed"

@@ -18,6 +18,7 @@
 - [[Notifications]]
 - [[Dashboard]]
 - [[Completion Council]]
+- [[Quality Gates]]
 - [[Cross-Project Learning]]
 - [[Knowledge Compounding]]
 - [[Checkpoints]]
@@ -28,6 +29,8 @@
 - [[Sandbox Mode]]
 - [[Security]]
 - [[Audit Logging]]
+- [[Network Security]]
+- [[Prometheus Metrics]]
 
 ### Architecture
 - [[Architecture]]
@@ -40,6 +43,6 @@
 
 ---
 
-**Version:** 5.35.0
+**Version:** 8.0.0
 
-[GitHub](https://github.com/asklokesh/loki-mode) | [npm](https://www.npmjs.com/package/loki-mode)
+[Autonomi](https://www.autonomi.dev/) | [GitHub](https://github.com/asklokesh/loki-mode) | [npm](https://www.npmjs.com/package/loki-mode)

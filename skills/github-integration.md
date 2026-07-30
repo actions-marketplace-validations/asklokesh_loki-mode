@@ -1,6 +1,6 @@
-# GitHub Integration (v5.25.0)
+# GitHub Integration (v5.41.0)
 
-**When:** Importing issues from GitHub, creating PRs, syncing task status
+**When:** Importing issues from GitHub, creating PRs, syncing task status back
 
 > **Requires:** `gh` CLI authenticated (`gh auth status`)
 
@@ -10,9 +10,13 @@
 
 | Action | Command | Result |
 |--------|---------|--------|
-| Import issues as tasks | `LOKI_GITHUB_IMPORT=true` | Fetches open issues, creates pending tasks |
+| Import issues as tasks | `loki start --github` or `LOKI_GITHUB_IMPORT=true` | Fetches open issues, creates pending tasks |
 | Create PR on completion | `LOKI_GITHUB_PR=true` | Auto-creates PR with task summaries |
-| Sync status back | `LOKI_GITHUB_SYNC=true` | Comments progress on source issues |
+| Sync status back | `LOKI_GITHUB_SYNC=true` | Comments progress on source issues (deduplicated) |
+| Manual sync | `loki github sync` | Sync completed tasks to GitHub now |
+| Export tasks | `loki github export` | Create GitHub issues from local tasks |
+| Manual PR | `loki github pr "feature name"` | Create PR from current work |
+| Check status | `loki github status` | Show config, sync history, imported count |
 | Import from URL | `LOKI_GITHUB_REPO=owner/repo` | Specify repo if not auto-detected |
 
 ---
@@ -167,13 +171,98 @@ LOKI_GITHUB_IMPORT=true \
 
 ---
 
-## Integration with Dashboard
+## Multiple issues at once (parallel, reliably)
 
-The dashboard shows GitHub-sourced tasks with:
-- GitHub icon badge
-- Direct link to issue
-- Sync status indicator
-- "Import from GitHub" button (calls `gh issue list`)
+There are two safe ways to work several issues; pick by whether you want them
+concurrent.
+
+### Sequential (simplest, one process, one checkout)
+
+Import all open issues into one queue and let a single run drain them one at a
+time. No worktree/state collisions because there is only one run.
+
+```bash
+LOKI_GITHUB_IMPORT=true loki start        # drains .loki/queue sequentially
+```
+
+### Concurrent (one isolated run PER issue)
+
+To run N issues at the SAME time, each run needs its OWN git worktree AND its
+OWN state dir. `--pr`/`--worktree` isolates the git branch, but two runs in the
+same checkout still share one `.loki/` unless you also set a distinct `LOKI_DIR`.
+Give each issue its own checkout + `LOKI_DIR`:
+
+```bash
+for n in 101 102 103; do
+  git worktree add "../repo-issue-$n" -b "loki/issue-$n" >/dev/null
+  ( cd "../repo-issue-$n" \
+      && LOKI_DIR="$PWD/.loki" \
+         loki start "owner/repo#$n" --pr --detach )
+done
+loki status --all       # watch all runs
+```
+
+Each run is fully isolated: separate working tree, branch, and `.loki/` state, so
+they cannot corrupt each other's branches or worktrees.
+
+DO NOT run several `loki start ... --detach` from the SAME directory with a shared
+`.loki/`. The runs collide on shared (non-namespaced) worktree paths and state,
+which produces missing branches, "claimed worktree missing", and a repeating
+`Merge requested: testing/docs` log (the auxiliary sub-streams, not your issues).
+
+### Inside a Claude Code session (the Loki Mode skill)
+
+When you invoke Loki Mode from inside Claude Code, Loki detects the nested agent
+(`CLAUDECODE`) and automatically disables its internal `testing`/`docs`
+worktree sub-streams (they would spawn further nested `claude` sessions that
+collide) -- your issue work still runs. To fan out across several issues from a
+Claude Code session, prefer the per-issue-isolated loop above (each with its own
+worktree + `LOKI_DIR`), or let Claude Code orchestrate one Loki run per issue.
+Re-enable the sub-streams explicitly with `LOKI_PARALLEL_TESTING=true` /
+`LOKI_PARALLEL_DOCS=true` only if you know the checkout is not shared.
+
+Notes:
+- `--pr` leaves the PR for you to merge (auto-merge OFF). Use `--ship` to
+  auto-merge. Either way the "Merge requested" line now logs once, not on a loop.
+- `loki status --all` and `loki stop --all` operate across all runs/projects.
+
+---
+
+## CLI Commands
+
+```bash
+# Check GitHub integration status
+loki github status
+
+# Sync completed task statuses back to GitHub issues
+loki github sync
+
+# Export local tasks as new GitHub issues
+loki github export
+
+# Create PR from completed work
+loki github pr "Add user authentication"
+```
+
+---
+
+## Dashboard API
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/github/status` | GET | Integration config, repo, sync count |
+| `/api/github/tasks` | GET | All GitHub-sourced tasks with sync status |
+| `/api/github/sync-log` | GET | History of status updates sent to issues |
+
+---
+
+## Sync Behavior
+
+- **On session start** (`LOKI_GITHUB_IMPORT=true`): Imports issues, posts "in_progress" comment
+- **After each iteration** (`LOKI_GITHUB_SYNC=true`): Syncs completed GitHub tasks
+- **On session end** (`LOKI_GITHUB_PR=true`): Final sync + creates PR with `Closes #N` references
+- **Deduplication**: Sync log at `.loki/github/synced.log` prevents duplicate comments
+- **Manual**: `loki github sync` can be run anytime outside a session
 
 ---
 
@@ -215,4 +304,4 @@ gh repo set-default owner/repo
 
 ---
 
-**v5.25.0 | GitHub Integration | ~100 lines**
+**v5.41.0 | GitHub Integration (full sync-back) | ~250 lines**

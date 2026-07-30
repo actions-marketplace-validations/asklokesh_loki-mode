@@ -47,7 +47,6 @@ cleanup() {
     rm -rf "$TEST_DIR"
     rm -f /tmp/loki-memory-test-*.json 2>/dev/null || true
     # Clean up any test processes
-    pkill -f "test-memory-cli" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -133,7 +132,7 @@ fi
 # Test 7: Memory Search
 log_test "memory search command"
 output=$("$LOKI_CLI" memory search "test" 2>&1 | strip_ansi || true)
-if echo "$output" | grep -q "Search Results\|No results"; then
+if grep -qE "Search Results|No results" <<< "$output"; then
     pass "memory search command"
 else
     fail "memory search command - unexpected output: $output"

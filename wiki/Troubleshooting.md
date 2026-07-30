@@ -68,7 +68,7 @@ loki start ./prd.md
 1. **Install Claude CLI:**
    ```bash
    npm install -g @anthropic-ai/claude-code
-   claude login
+   claude auth login
    ```
 
 2. **Check provider:**
@@ -213,14 +213,14 @@ loki dashboard start
 
 3. **Use token correctly:**
    ```bash
-   curl -H "Authorization: Bearer loki_xxx..." http://localhost:8420/api/status
+   curl -H "Authorization: Bearer loki_xxx..." http://localhost:57374/api/status
    ```
 
 ### API Connection Refused
 
 **Symptom:**
 ```
-curl: (7) Failed to connect to localhost port 8420
+curl: (7) Failed to connect to localhost port 57374
 ```
 
 **Solutions:**
@@ -297,7 +297,7 @@ Error: Provider 'codex' not installed
 ```bash
 # Install the missing CLI
 npm install -g @openai/codex-cli
-codex auth
+codex login
 ```
 
 ---

@@ -2,13 +2,11 @@
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "startup|resume",
+        "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/autonomy/hooks/session-init.sh",
-            "timeout": 30,
-            "statusMessage": "Initializing Loki Mode..."
+            "command": "bash autonomy/hooks/session-init.sh"
           }
         ]
       }
@@ -19,43 +17,29 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/autonomy/hooks/validate-bash.sh",
-            "timeout": 10
+            "command": "bash autonomy/hooks/validate-bash.sh"
           }
         ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash|Edit|Write|Read",
+        "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/autonomy/hooks/track-metrics.sh",
-            "async": true,
-            "timeout": 5
+            "command": "bash autonomy/hooks/track-metrics.sh"
           }
         ]
       }
     ],
     "Stop": [
       {
+        "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/autonomy/hooks/quality-gate.sh",
-            "timeout": 30
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/autonomy/hooks/store-episode.sh",
-            "timeout": 60
+            "command": "bash autonomy/hooks/store-episode.sh"
           }
         ]
       }

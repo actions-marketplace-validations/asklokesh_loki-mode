@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Test Loki Mode MCP server
 
 set -uo pipefail
@@ -23,21 +23,24 @@ fail() { ((TESTS_FAILED++)); echo "[FAIL] $1"; }
 # Setup
 setup() {
     mkdir -p "$TEST_DIR/.loki/state" "$TEST_DIR/.loki/memory" "$TEST_DIR/.loki/metrics"
-    cd "$TEST_DIR"
+    cd "$TEST_DIR" || exit 1
 }
 
 # Test 1: MCP module imports
 test_mcp_import() {
     log_test "MCP module imports successfully"
-    if python3 -c "from mcp import server" 2>/dev/null; then
-        pass "MCP module imports"
-    else
-        # Check if MCP SDK is installed
-        if ! python3 -c "import mcp" 2>/dev/null; then
-            echo "[SKIP] MCP SDK not installed (pip install mcp)"
-            return
+    # Check if pip mcp SDK is installed in site-packages (not our local mcp/ package)
+    # Use PYTHONPATH="" to avoid finding the local mcp/ directory
+    if PYTHONPATH="" python3 -c "import mcp" 2>/dev/null; then
+        # SDK is installed; test that our server module also imports cleanly
+        if python3 -c "from mcp import server" 2>/dev/null; then
+            pass "MCP module imports"
+        else
+            fail "MCP module import failed"
         fi
-        fail "MCP module import failed"
+    else
+        echo "[SKIP] MCP SDK not installed (pip install mcp)"
+        return
     fi
 }
 

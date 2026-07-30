@@ -20,7 +20,7 @@ GSD is the closest competitor -- a context engineering system that spawns fresh 
 | Adoption | 594 stars, 6K/wk npm | 11,903 stars, 21K/wk npm | GSD (20x) |
 | Simplicity | Complex (5.4K-line run.sh, 12 Python modules) | Simple (markdown agents + slash commands) | GSD |
 | Full autonomy | Walk away, come back to deployed product | Human checkpoints at discuss/verify/milestone | Loki |
-| Quality gates | 7-gate + Completion Council + anti-sycophancy | User verification only | Loki |
+| Quality gates | 8-gate + Completion Council + anti-sycophancy | User verification only | Loki |
 | Memory system | Episodic/semantic/procedural + vector search | None | Loki |
 | Context management | Standard | Fresh subagent contexts per task (core innovation) | GSD |
 | Time to value | Learn architecture, understand CLI flags | `npx get-shit-done-cc` and go | GSD |
@@ -37,15 +37,15 @@ GSD is the closest competitor -- a context engineering system that spawns fresh 
 |---------|-----------|-------------|---------|--------|--------------|-------|
 | **GitHub Stars** | 594 | 13,700 | 62,400 | 25,000+ | N/A (Commercial) | N/A (Commercial) |
 | **Agent Count** | 41 types | 64+ agents | 5 roles | Unlimited | 8 parallel | 1 autonomous |
-| **Parallel Execution** | Yes (100+) | Yes (swarms) | Sequential | Yes (crews) | Yes (8 worktrees) | Yes (fleet) |
-| **Published Benchmarks** | **98.78% HumanEval (multi-agent)** | None | 85.9-87.7% HumanEval | None | ~250 tok/s | 15% complex tasks |
-| **SWE-bench Score** | **99.67% patch gen (299/300)** | Unknown | Unknown | Unknown | Unknown | 15% complex |
+| **Parallel Execution** | Yes (multi-agent) | Yes (swarms) | Sequential | Yes (crews) | Yes (8 worktrees) | Yes (fleet) |
+| **Published Benchmarks** | 98.78% HumanEval (self-reported, max 3 retries) | None | 85.9-87.7% HumanEval | None | ~250 tok/s | 15% complex tasks |
+| **SWE-bench Score** | Not measured (patch generation harness exists; official evaluator not run, so no resolve rate exists) | Unknown | Unknown | Unknown | Unknown | 15% complex |
 | **Full SDLC** | Yes (8 phases) | Yes | Partial | Partial | No | Partial |
 | **Business Ops** | **Yes (8 agents)** | No | No | No | No | No |
 | **Enterprise Security** | `--dangerously-skip-permissions` | MCP sandboxed | Sandboxed | Audit logs, RBAC | Staged autonomy | Sandboxed |
 | **Cross-Project Learning** | No | AgentDB | No | No | No | Limited |
 | **Observability** | Dashboard + STATUS.txt | Real-time tracing | Logs | Full tracing | Built-in | Full |
-| **Pricing** | Free (OSS) | Free (OSS) | Free (OSS) | $25+/mo | $20-400/mo | $20-500/mo |
+| **Pricing** | Free (source-available) | Free (OSS) | Free (OSS) | $25+/mo | $20-400/mo | $20-500/mo |
 | **Production Ready** | Experimental | Production | Production | Production | Production | Production |
 | **Resource Monitoring** | Yes (v2.18.5) | Unknown | No | No | No | No |
 | **State Recovery** | Yes (checkpoints) | Yes (AgentDB) | Limited | Yes | Git worktrees | Yes |
@@ -85,7 +85,7 @@ GSD is the closest competitor -- a context engineering system that spawns fresh 
 
 **Strengths:**
 - 85.9-87.7% Pass@1 on HumanEval
-- 100% task completion rate in evaluations
+- High task completion rate in evaluations (100% reported by MetaGPT authors; not independently verified)
 - Standard Operating Procedures (SOPs) reduce hallucinations
 - Assembly line paradigm with role specialization
 - Low cost: ~$1.09 per project completion
@@ -213,49 +213,30 @@ GSD is the closest competitor -- a context engineering system that spawns fresh 
 
 **Failed Problems (after RARV):** HumanEval/32, HumanEval/50
 
-### SWE-bench Lite Results (Full 300 Problems)
+### SWE-bench Lite: Honest Status
 
-**Direct Claude (Single Agent Baseline):**
+**Loki Mode has NO SWE-bench score.** What exists: a harness that GENERATED candidate
+patches for 299 of 300 SWE-bench Lite problems (Claude Opus 4.5; single-agent run
+6.17h, 4-agent RARV pipeline 3.5h). Patch GENERATION only means a diff was produced.
+It does NOT mean the patch fixes the issue. The official SWE-bench evaluator (apply
+patch, run the repo's test suite) was never run, so there is no resolve rate, and
+generation rates must not be compared against other tools' task-resolution rates
+(e.g. Devin's independently-tested task success). For context, frontier model resolve
+rates on SWE-bench Verified are in the ~85-90 percent range; any higher number from
+any tool should be treated with suspicion, including ours.
 
-| Metric | Value |
-|--------|-------|
-| **Patch Generation** | **99.67%** |
-| Generated | 299/300 problems |
-| Errors | 1 |
-| Model | Claude Opus 4.5 |
-| Time | 6.17 hours |
-
-**Loki Mode Multi-Agent (with RARV):**
-
-| Metric | Value |
-|--------|-------|
-| **Patch Generation** | **99.67%** |
-| Generated | 299/300 problems |
-| Errors/Timeouts | 1 |
-| Model | Claude Opus 4.5 |
-| Time | 3.5 hours |
-
-**Three-Way Comparison:**
-
-| System | SWE-bench Patch Gen | Notes |
-|--------|---------------------|-------|
-| **Direct Claude** | **99.67%** (299/300) | Single agent, minimal overhead |
-| **Loki Mode (multi-agent)** | **99.67%** (299/300) | 4-agent pipeline with RARV |
-| Devin | ~15% complex tasks | Commercial, different benchmark |
-
-**Key Finding:** After timeout optimization (Architect: 60s->120s), the multi-agent RARV pipeline matches direct Claude's performance on SWE-bench. Both achieve 99.67% patch generation rate.
-
-**Note:** Patches generated; full validation (resolve rate) requires running the Docker-based SWE-bench harness to apply patches and execute test suites.
+**What a fair claim looks like:** "A reproducible patch-generation harness exists;
+resolve rate is not yet measured." Nothing stronger.
 
 ---
 
 ## Critical Gaps to Address
 
-### Priority 1: Benchmarks (COMPLETED)
-- **Gap:** ~~No published HumanEval or SWE-bench scores~~ RESOLVED
-- **Result:** 98.17% HumanEval Pass@1 (beats MetaGPT by 10.5%)
-- **Result:** 99.67% SWE-bench Lite patch generation (299/300)
-- **Next:** Run full SWE-bench harness for resolve rate validation
+### Priority 1: Benchmarks (PARTIAL)
+- **Real:** 98.78% HumanEval Pass@1 with RARV (162/164, reproducible harness; 98.17% single-agent baseline)
+- **NOT real:** SWE-bench. Patch generation ran (299/300 diffs produced); the official
+  evaluator never ran, so there is NO resolve rate and no comparable score.
+- **Next:** run a contamination-resistant evaluator end-to-end (or publish nothing for SWE-bench)
 
 ### Priority 2: Security Model (Critical for Enterprise)
 - **Gap:** Relies on `--dangerously-skip-permissions`

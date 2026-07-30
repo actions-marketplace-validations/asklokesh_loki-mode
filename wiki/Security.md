@@ -15,9 +15,9 @@ Loki Mode is designed with security in mind:
 
 ---
 
-## Security Hardening (v5.25.0)
+## Security Hardening (v5.25.0 - v5.38.0)
 
-The following security fixes were applied in v5.25.0:
+The following security fixes were applied in v5.25.0 - v5.38.0:
 
 | Vulnerability | Fix | Details |
 |---------------|-----|---------|
@@ -27,6 +27,12 @@ The following security fixes were applied in v5.25.0:
 | **Memory Leak** | Resource cleanup | Fixed a memory leak in the SSE (Server-Sent Events) endpoint where client disconnections were not properly releasing resources |
 | **Signal Blocking** | Signal handler hardening | Signal handlers (SIGTERM, SIGINT) are now properly configured to prevent signal blocking during critical shutdown operations |
 | **Unrestricted CORS** | Configurable origins | CORS is now configurable via the `LOKI_DASHBOARD_CORS` environment variable. Default is localhost-only (`http://localhost:57374,http://127.0.0.1:57374`) |
+| **WebSocket Auth Gap** | Token query param | WS /ws endpoint requires auth token when enterprise/OIDC enabled |
+| **SETUID/SETGID Caps** | Capability removal | Docker sandbox no longer grants SETUID/SETGID capabilities |
+| **CORS Wildcard** | Runtime warning | Warning logged when LOKI_DASHBOARD_CORS=* (overly permissive) |
+| **Log Tampering** | Chain hashing | SHA-256 hash chain on audit entries, verify_log_integrity() |
+| **Shell Injection** | Input validation | Budget limit check uses numeric validation + sys.argv passing |
+| **Direct Main Commits** | Branch protection | Agent sessions auto-create feature branches (LOKI_BRANCH_PROTECTION) |
 
 ### Configuring CORS
 
@@ -47,7 +53,7 @@ When not set, the default is `http://localhost:57374,http://127.0.0.1:57374` (lo
 | Data | Sent | Notes |
 |------|------|-------|
 | Your code | Yes | Sent to AI provider for analysis |
-| PRD content | Yes | Required for task understanding |
+| Spec content (PRD/issue/YAML) | Yes | Required for task understanding |
 | Learnings | No | Stored locally only |
 | API keys | No | Never logged or transmitted |
 | Credentials | No | Should be in .env (gitignored) |
@@ -70,13 +76,10 @@ Loki Mode uses your existing CLI authentication:
 
 ```bash
 # Claude
-claude login
+claude auth login
 
 # Codex
-codex auth
-
-# Gemini
-gemini auth
+codex login
 ```
 
 Credentials are managed by the provider CLIs, not Loki Mode.
@@ -97,6 +100,21 @@ curl -H "Authorization: Bearer loki_xxx..." http://localhost:57374/status
 ```
 
 Tokens are SHA256 hashed before storage.
+
+### RBAC Roles (v5.37.1)
+
+Tokens support role-based access control:
+
+| Role | Access Level |
+|------|-------------|
+| `admin` | Full access (all scopes) |
+| `operator` | Session control, read/write |
+| `viewer` | Read-only |
+| `auditor` | Read + audit log access |
+
+```bash
+loki enterprise token generate viewer-bot --role viewer --expires 30
+```
 
 ---
 
@@ -178,7 +196,7 @@ export LOKI_ENTERPRISE_AUDIT=true
 
 | Event | Data Captured |
 |-------|---------------|
-| Session start/stop | Timestamp, user, PRD path |
+| Session start/stop | Timestamp, user, spec path (PRD/issue ref) |
 | API requests | Endpoint, method, status |
 | Token usage | Token name, action |
 | Errors | Error type, context |
@@ -193,6 +211,32 @@ ls ~/.loki/dashboard/audit/
 loki enterprise audit tail
 ```
 
+### Log Integrity (v5.38.0)
+
+Audit entries include SHA-256 chain hashes for tamper detection:
+
+```json
+{
+  "timestamp": "2026-02-12T18:00:00Z",
+  "event": "session.start",
+  "chain_hash": "a1b2c3..."
+}
+```
+
+Each entry's hash includes the previous entry's hash, creating a tamper-evident chain. Use `verify_log_integrity()` to validate the chain programmatically.
+
+### Syslog Forwarding (v5.37.1)
+
+Forward audit events to external syslog servers:
+
+```bash
+export LOKI_AUDIT_SYSLOG_HOST=syslog.example.com
+export LOKI_AUDIT_SYSLOG_PORT=514
+export LOKI_AUDIT_SYSLOG_PROTO=udp  # or tcp
+```
+
+Security-relevant actions are forwarded at WARNING level to facility LOG_LOCAL0.
+
 ---
 
 ## Best Practices
@@ -200,7 +244,7 @@ loki enterprise audit tail
 ### For Individual Developers
 
 1. **Use .gitignore** - Never commit `.env`, `.loki/`, credentials
-2. **Review PRDs** - Check PRD content before sharing
+2. **Review specs** - Check spec content (PRDs, issue bodies, YAML briefs) before sharing
 3. **Update regularly** - Keep Loki Mode and provider CLIs updated
 4. **Use strong tokens** - Generate unique tokens for each use case
 
@@ -236,6 +280,7 @@ These files contain sensitive data and should be protected:
 | `~/.loki/dashboard/tokens.json` | API tokens (hashed) | chmod 600 |
 | `~/.loki/learnings/*.jsonl` | Project patterns | Review before sharing |
 | `.loki/logs/*.log` | Session logs | May contain code snippets |
+| `.loki/logs/agent-audit.jsonl` | Agent action log | Chain-hashed, chmod 600 |
 
 ---
 

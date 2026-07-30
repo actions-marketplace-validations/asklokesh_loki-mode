@@ -5,17 +5,21 @@ Events are written to .loki/events/pending/ and processed by subscribers.
 This enables CLI, API, VS Code, and MCP to communicate without shared memory.
 """
 
+import hashlib
 import json
+import logging
 import os
 import time
 import uuid
-import fcntl
+from collections import OrderedDict
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Generator, List, Optional, Set, Callable
+from typing import Generator, List, Optional, Callable
 import threading
+
+logger = logging.getLogger(__name__)
 
 
 class EventType(str, Enum):
@@ -72,13 +76,85 @@ class LokiEvent:
 
     @classmethod
     def from_dict(cls, data: dict) -> 'LokiEvent':
-        """Create event from dictionary."""
+        """Create event from dictionary.
+
+        Handles compound types like 'session_start' by splitting on underscore
+        and using the first token as the event type.
+
+        Tolerates two on-disk schemas:
+          - The pending/archive schema written by bus.py / bus.ts / emit.sh:
+            ``{id, type, source, timestamp, payload, version}``.
+          - The flat events.jsonl schema written by run.sh's emit_event /
+            emit_event_json (and read by the dashboard):
+            ``{timestamp, type, data: {...}}`` -- here ``source`` lives inside
+            ``data`` (or is absent) and the body is ``data``, not ``payload``.
+        Without this fallback, import_from_jsonl() would coerce every
+        run.sh-written line to source=cli with an empty payload, silently
+        dropping the source attribution and the entire event body.
+        """
+        raw_type = data.get('type', '')
+
+        # Body: prefer the canonical `payload`; fall back to the flat
+        # events.jsonl `data` object so run.sh-written lines keep their fields.
+        payload = data.get('payload')
+        nested = data.get('data')
+        if payload is None:
+            payload = nested if isinstance(nested, dict) else {}
+
+        # Source: prefer top-level `source`; otherwise lift it from the nested
+        # `data.source` used by the flat events.jsonl schema.
+        raw_source = data.get('source', '')
+        if not raw_source and isinstance(nested, dict):
+            raw_source = nested.get('source', '')
+
+        # Parse event type, handling compound values like "session_start"
+        try:
+            event_type = EventType(raw_type) if raw_type else EventType.STATE
+        except ValueError:
+            # Try splitting compound type on underscore
+            first_token = raw_type.split('_')[0] if raw_type else ''
+            try:
+                event_type = EventType(first_token)
+            except ValueError:
+                event_type = EventType.STATE
+
+        # Parse event source with fallback
+        try:
+            event_source = EventSource(raw_source) if raw_source else EventSource.CLI
+        except ValueError:
+            event_source = EventSource.CLI
+
+        # ID: prefer the canonical `id`. Flat events.jsonl lines (run.sh
+        # emit_event / emit_event_json) carry NO id, so __post_init__ would mint
+        # a fresh random uuid on every parse -- defeating import_from_jsonl()
+        # dedup (_processed_ids + pending-file glob) and re-importing every flat
+        # line on each call. Derive a DETERMINISTIC id from the record content
+        # so repeated imports of the same line are idempotent.
+        #
+        # Width: the digest source is user-controllable (timestamp + type +
+        # payload). An 8-hex-char (32-bit) truncation collides at the birthday
+        # bound around ~77k distinct events (sqrt(2^32)); a collision makes two
+        # DISTINCT events share an id, so dedup (_processed_ids + pending glob)
+        # silently DROPS the second event. Widen to 16 hex chars (64 bits) so
+        # the collision bound moves to ~4 billion distinct events -- well past
+        # any realistic events.jsonl. This deterministic-derivation path is
+        # Python-only (bus.ts has no jsonl import and mints a random id when one
+        # is absent), so widening here needs no cross-language parity change.
+        event_id = data.get('id', '')
+        if not event_id:
+            digest_src = '%s|%s|%s' % (
+                data.get('timestamp', ''),
+                raw_type,
+                json.dumps(payload, sort_keys=True),
+            )
+            event_id = hashlib.sha1(digest_src.encode('utf-8')).hexdigest()[:16]
+
         return cls(
-            id=data.get('id', ''),
-            type=EventType(data['type']) if data.get('type') else EventType.STATE,
-            source=EventSource(data['source']) if data.get('source') else EventSource.CLI,
+            id=event_id,
+            type=event_type,
+            source=event_source,
             timestamp=data.get('timestamp', ''),
-            payload=data.get('payload', {}),
+            payload=payload,
             version=data.get('version', '1.0')
         )
 
@@ -115,42 +191,54 @@ class EventBus:
         self.pending_dir.mkdir(parents=True, exist_ok=True)
         self.archive_dir.mkdir(parents=True, exist_ok=True)
 
-        # Track processed event IDs to avoid reprocessing
-        self._processed_ids: Set[str] = self._load_processed_ids()
+        # Track processed event IDs with deterministic FIFO eviction order
+        self._processed_ids: OrderedDict = self._load_processed_ids()
 
         # Subscribers for callback-based subscription
         self._subscribers: List[tuple] = []  # [(types, callback), ...]
         self._running = False
         self._thread: Optional[threading.Thread] = None
 
-    def _load_processed_ids(self) -> Set[str]:
-        """Load set of already processed event IDs."""
+    def _load_processed_ids(self) -> OrderedDict:
+        """Load ordered dict of already processed event IDs."""
         try:
             if self.processed_file.exists():
                 with open(self.processed_file, 'r') as f:
                     data = json.load(f)
                     # Keep only last 1000 IDs to prevent unbounded growth
-                    return set(data.get('ids', [])[-1000:])
+                    ids = data.get('ids', [])[-1000:]
+                    return OrderedDict.fromkeys(ids)
         except (json.JSONDecodeError, IOError):
             pass
-        return set()
+        return OrderedDict()
 
     def _save_processed_id(self, event_id: str) -> None:
         """Save event ID as processed."""
-        self._processed_ids.add(event_id)
+        self._processed_ids[event_id] = None
 
-        # Prune to last 1000
-        if len(self._processed_ids) > 1000:
-            self._processed_ids = set(list(self._processed_ids)[-1000:])
+        # Prune to last 1000 using FIFO eviction (deterministic order)
+        while len(self._processed_ids) > 1000:
+            self._processed_ids.popitem(last=False)
 
+        lockfile = self.processed_file.with_suffix('.json.lock')
         try:
-            with open(self.processed_file, 'w') as f:
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            # Use lockfile approach (cross-platform, compatible with TS)
+            fd = os.open(str(lockfile), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            try:
+                with open(self.processed_file, 'w') as f:
+                    json.dump({'ids': list(self._processed_ids.keys())}, f)
+            finally:
                 try:
-                    json.dump({'ids': list(self._processed_ids)}, f)
-                finally:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    lockfile.unlink()
+                except OSError:
+                    pass
+        except FileExistsError:
+            # Another process holds the lock; skip this disk write.
+            # In-memory state is already updated.
+            pass
         except IOError:
+            # Disk write failed -- in-memory state is already updated
             pass
 
     def emit(self, event: LokiEvent) -> str:
@@ -164,14 +252,25 @@ class EventBus:
             The event ID
         """
         event_file = self.pending_dir / f"{event.timestamp.replace(':', '-')}_{event.id}.json"
+        lockfile = event_file.with_suffix('.json.lock')
 
         try:
-            with open(event_file, 'w') as f:
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-                try:
+            # Use lockfile approach (cross-platform, compatible with TS)
+            fd = os.open(str(lockfile), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            try:
+                with open(event_file, 'w') as f:
                     json.dump(event.to_dict(), f, indent=2)
-                finally:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            finally:
+                try:
+                    lockfile.unlink()
+                except OSError:
+                    pass
+        except FileExistsError:
+            # Lock held by another process; write without lock as fallback
+            # Event files are unique per ID so collision is unlikely
+            with open(event_file, 'w') as f:
+                json.dump(event.to_dict(), f, indent=2)
         except IOError as e:
             raise RuntimeError(f"Failed to emit event: {e}")
 
@@ -278,14 +377,20 @@ class EventBus:
             Events as they arrive
         """
         start_time = time.time()
-        last_check = datetime.now(timezone.utc).isoformat()
 
         while True:
             if timeout and (time.time() - start_time) > timeout:
                 break
 
-            events = self.get_pending_events(types=types, since=last_check)
-            last_check = datetime.now(timezone.utc).isoformat()
+            # Dedup is driven solely by _processed_ids (maintained via
+            # mark_processed), NOT by a wall-clock `since` window. A local
+            # `since=now` filter silently drops any event whose timestamp is
+            # at or behind the subscriber's clock: cross-process clock skew
+            # (an emitter a few ms/s behind) or second-granularity timestamps
+            # (emit.sh's .000Z fallback) would lose events forever. This
+            # mirrors start_background_processing() and bus.ts, which both
+            # call get_pending_events with no `since` argument.
+            events = self.get_pending_events(types=types)
 
             for event in events:
                 yield event
@@ -324,7 +429,12 @@ class EventBus:
                             try:
                                 callback(event)
                             except Exception:
-                                pass  # Don't let one callback break others
+                                logger.warning(
+                                    "Event callback %s failed for event %s",
+                                    getattr(callback, "__name__", callback),
+                                    event.type,
+                                    exc_info=True,
+                                )
                     self.mark_processed(event)
                 time.sleep(poll_interval)
 
@@ -337,6 +447,24 @@ class EventBus:
         if self._thread:
             self._thread.join(timeout=2.0)
             self._thread = None
+
+    def close(self) -> None:
+        """Clean up all threading resources."""
+        self.stop_background_processing()
+        self._subscribers.clear()
+
+    def __del__(self) -> None:
+        """Ensure threads are cleaned up on garbage collection."""
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def __enter__(self) -> 'EventBus':
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
 
     def get_event_history(
         self,
@@ -389,6 +517,59 @@ class EventBus:
             except IOError:
                 pass
         return count
+
+    def import_from_jsonl(self, limit: int = 100) -> int:
+        """Bridge: read events from events.jsonl and import as pending events.
+
+        This bridges the gap between the append-only events.jsonl log
+        (written by emit.sh and run.sh) and the pending/ directory
+        consumed by subscribers.
+
+        Args:
+            limit: Maximum number of recent events to import
+
+        Returns:
+            Number of events imported
+        """
+        jsonl_file = self.loki_dir / 'events.jsonl'
+        if not jsonl_file.exists():
+            return 0
+
+        imported = 0
+        try:
+            with open(jsonl_file, 'r') as f:
+                # Read from end of file to get most recent events
+                lines = f.readlines()
+                recent = lines[-limit:] if len(lines) > limit else lines
+
+            for line in recent:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    event = LokiEvent.from_dict(data)
+
+                    # Skip if already processed
+                    if event.id in self._processed_ids:
+                        continue
+
+                    # Check if pending file already exists
+                    existing = list(self.pending_dir.glob(f'*_{event.id}.json'))
+                    if existing:
+                        continue
+
+                    # Write as pending event
+                    event_file = self.pending_dir / f"{event.timestamp.replace(':', '-')}_{event.id}.json"
+                    with open(event_file, 'w') as f:
+                        json.dump(event.to_dict(), f, indent=2)
+                    imported += 1
+                except (json.JSONDecodeError, KeyError):
+                    continue
+        except IOError:
+            pass
+
+        return imported
 
     def clear_archive(self, older_than_days: int = 7) -> int:
         """

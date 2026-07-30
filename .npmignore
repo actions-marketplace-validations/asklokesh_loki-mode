@@ -5,13 +5,23 @@
 **/*.pyc
 **/*.pyo
 
+# Python cache (redundant patterns for npm glob compatibility)
+__pycache__
+__pycache__/
+*.pyc
+*.pyo
+
 # Node modules (dashboard frontend)
 **/node_modules/
 
 # Build artifacts
-**/dist/
+dashboard-ui/dist/
 **/.next/
 **/build/
+
+# vscode-extension/ is deprecated as of v7.2.0 and excluded from npm tarballs.
+# Source remains in the repo for users who want to build locally.
+vscode-extension/
 
 # IDE and editor
 .vscode/
@@ -25,6 +35,8 @@ tests/
 **/*.test.ts
 **/*.spec.js
 **/*.spec.ts
+**/*_test.js
+**/*_test.ts
 
 # Development files
 .git/

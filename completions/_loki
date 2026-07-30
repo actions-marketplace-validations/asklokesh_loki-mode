@@ -11,7 +11,7 @@ function _loki {
     case $state in
         (args)
             case $line[1] in
-                start)
+                start|quick)
                     _loki_start
                     ;;
                 council)
@@ -44,8 +44,11 @@ function _loki {
                 projects)
                     _loki_projects
                     ;;
-                voice)
-                    _loki_voice
+                telemetry)
+                    _loki_telemetry
+                    ;;
+                agent)
+                    _loki_agent
                     ;;
                 status)
                     _arguments \
@@ -64,14 +67,50 @@ function _loki {
                     _arguments \
                         '--follow[Follow logs in real-time]' \
                         '-f[Follow logs in real-time]' \
-                        '--lines[Number of lines]:number:' \
-                        '-n[Number of lines]:number:'
+                        '--tail[Number of lines to show]:number:' \
+                        '-n[Number of lines to show]:number:' \
+                        '--all[Show all lines]' \
+                        '-a[Show all lines]' \
+                        '--help[Show help]' \
+                        '-h[Show help]'
                     ;;
                 issue)
                     _loki_issue
                     ;;
+                metrics)
+                    _arguments \
+                        '--json[Machine-readable JSON output]' \
+                        '--last[Analyze last N sessions]:number:' \
+                        '--save[Write report to METRICS.md]' \
+                        '--share[Upload report as GitHub Gist]' \
+                        '--help[Show help]' \
+                        '1:subcommand:(prometheus)'
+                    ;;
+                share)
+                    _arguments \
+                        '--private[Create a secret gist]' \
+                        '--format[Report format]:format:(text markdown html)' \
+                        '--help[Show help]'
+                    ;;
+                proof)
+                    _arguments \
+                        '--yes[Skip redaction-preview confirmation]' \
+                        '--private[Create a secret gist when sharing]' \
+                        '--hosted[Hosted publishing (coming in R9)]' \
+                        '--help[Show help]' \
+                        '1:subcommand:(list show open share)'
+                    ;;
                 completions)
-                    _arguments '1:shell:(bash zsh)'
+                    _arguments '1:shell:(bash zsh install)'
+                    ;;
+                monitor)
+                    _directories
+                    ;;
+                context|ctx)
+                    _loki_context
+                    ;;
+                code)
+                    _loki_code
                     ;;
             esac
             ;;
@@ -83,31 +122,114 @@ function _loki_commands {
     commands=(
         'start:Start Loki Mode'
         'quick:Quick single-task mode'
+        'quickstart:Guided first build from your idea'
+        'monitor:Monitor Docker Compose services with auto-fix'
         'demo:Interactive 60-second demo'
+        'tour:Offline sample receipt replay (no key, no spend)'
+        'welcome:Friendly first-run opener (what Loki is, next steps)'
         'init:Interactive PRD builder'
         'stop:Stop execution'
         'pause:Pause execution'
         'resume:Resume execution'
+        'steer:Steer a running build with a note (needs LOKI_PROMPT_INJECTION=1)'
         'status:Show status'
+        'next:Run the right next step for the current build'
+        'ship:Finish the build (gates + PR advice) in one command'
+        'why:Explain why the last run did what it did'
         'dashboard:Dashboard commands'
+        'web:Start the web app surface'
         'logs:View session logs'
         'serve:Start API server'
         'api:API server commands'
         'sandbox:Docker sandbox commands'
+        'docker:Run Loki in a Docker container'
         'notify:Notification commands'
         'import:Import GitHub issues'
         'issue:GitHub issue commands'
+        'github:GitHub integration commands'
         'config:Config commands'
         'provider:Provider commands'
         'reset:Reset session state'
         'memory:Memory commands'
         'compound:Knowledge compounding commands'
+        'checkpoint:Snapshot and restore session state'
         'council:Completion council commands'
         'dogfood:Self-development statistics'
         'projects:Project registry commands'
         'enterprise:Enterprise feature commands'
-        'voice:Voice input commands'
+        'secrets:Secrets and API key management'
+        'cockpit:Live cockpit view of a running build'
+        'secure:Secure-by-default gate (findings and waivers)'
+        'own:Finish-and-own ownership handoff'
+        'telemetry:OpenTelemetry management'
+        'agent:Agent type dispatch'
         'doctor:Check system prerequisites'
+        'watchdog:Watchdog process supervision'
+        'docs:Documentation commands'
+        'onboard:Analyze repo and generate CLAUDE.md'
+        'metrics:Session productivity report'
+        'share:Share session report as GitHub Gist'
+        'proof:Inspect/share proof-of-run artifacts'
+        'preview:Preview the locally-running app'
+        'deploy:Deploy the built product (CI/CD-aware)'
+        'context:Context window management'
+        'ctx:Context window management (alias)'
+        'code:Codebase intelligence'
+        'web:Start the web dashboard'
+        'plan:Preview the build plan for a spec'
+        'report:Reporting commands (cost, kpis, share)'
+        'cost:Show cost of recent runs'
+        'kpis:Key performance indicators'
+        'stats:Session statistics'
+        'preview:Open the running app preview'
+        'deploy:Advisory deploy command (print-only)'
+        'docker:Run Loki in a Docker container'
+        'mcp:MCP server commands'
+        'magic:Spec-driven component generation'
+        'assets:Export/import shareable team assets'
+        'spec:Living spec drift detection'
+        'verify:Deterministic PR verification'
+        'grill:Interrogate a spec before building'
+        'trust:Visible trust trajectory'
+        'trust-metrics:Trust metrics report'
+        'why:Explain the last build outcome'
+        'heal:Legacy system healing'
+        'modernize:Modernize a legacy system'
+        'migrate:Migration commands'
+        'analyze:Analyze a codebase'
+        'compliance:Compliance reporting'
+        'crash:Crash report management'
+        'otel:OpenTelemetry management'
+        'wiki:Wiki commands'
+        'explain:Explain Loki concepts'
+        'optimize:Optimization commands'
+        'review:Code review commands'
+        'export:Export session data'
+        'test:Run tests'
+        'ci:CI helpers'
+        'watch:Watch mode'
+        'audit:Audit commands'
+        'syslog:System log commands'
+        'cluster:Cluster commands'
+        'failover:Failover commands'
+        'remote:Remote execution commands'
+        'worktree:Git worktree commands'
+        'wt:Git worktree commands (alias)'
+        'trigger:Trigger commands'
+        'cleanup:Clean up Loki state'
+        'rollback:Roll back a change'
+        'update:Update Loki Mode'
+        'self-update:Update Loki Mode'
+        'setup-skill:Set up the Claude Code skill'
+        'quickstart:Quickstart guide'
+        'sentrux:Sentrux integration'
+        'state:Inspect run state'
+        'template:PRD template commands'
+        'ultracode:Ultra code review'
+        'voice:Voice commands'
+        'bench:Run benchmarks'
+        'open:Open a project resource'
+        'rc:Release candidate commands'
         'version:Show version'
         'completions:Output shell completions'
         'help:Show help'
@@ -117,7 +239,7 @@ function _loki_commands {
 
 function _loki_start {
     _arguments \
-        '--provider[AI provider]:provider name:(claude codex gemini)' \
+        '--provider[AI provider]:provider name:(claude codex cline aider)' \
         '--parallel[Parallel mode]' \
         '--background[Background mode]' \
         '--bg[Background mode]' \
@@ -131,7 +253,17 @@ function _loki_start {
         '-y[Skip confirmation prompts]' \
         '--budget[Cost budget limit in USD]:amount:' \
         '--max-iterations[Max iterations]:number:' \
-        '*:PRD File:_files'
+        '*:spec file:_loki_spec_files'
+}
+
+# Bias spec completion toward the file shapes Loki accepts (.md/.json/.txt/
+# .yaml/.yml), while still offering directories so the user can navigate into a
+# subfolder. Mirrors the bash completion. Makes the most-common command
+# tab-driven and typo-proof, cutting "PRD file not found" mistakes.
+function _loki_spec_files {
+    _alternative \
+        'specs:spec file:_files -g "*.(md|json|txt|yaml|yml)"' \
+        'dirs:directory:_files -/'
 }
 
 function _loki_council {
@@ -276,17 +408,29 @@ function _loki_projects {
     _describe -t cmds 'projects subcommand' cmds
 }
 
-function _loki_voice {
+function _loki_telemetry {
     local -a cmds
     cmds=(
-        'status:Voice input status'
-        'listen:Start listening'
-        'dictate:Dictate PRD'
-        'speak:Text-to-speech'
-        'start:Start voice session'
-        'help:Voice help'
+        'status:Show telemetry config'
+        'enable:Enable OTEL'
+        'disable:Disable OTEL for current project'
+        'stop:Permanently opt out across all sessions'
+        'start:Remove persistent opt-out'
+        'help:Telemetry help'
     )
-    _describe -t cmds 'voice subcommand' cmds
+    _describe -t cmds 'telemetry subcommand' cmds
+}
+
+function _loki_agent {
+    local -a cmds
+    cmds=(
+        'list:List agent types'
+        'info:Show agent type details'
+        'run:Run agent with prompt'
+        'start:Start agent in background'
+        'help:Agent help'
+    )
+    _describe -t cmds 'agent subcommand' cmds
 }
 
 function _loki_reset {
@@ -307,6 +451,55 @@ function _loki_issue {
         '--dry-run[Preview without saving]' \
         '--output[Custom output path]:file:_files' \
         '1:subcommand:(parse view)'
+}
+
+function _loki_context {
+    local -a cmds
+    cmds=(
+        'show:Show context window usage breakdown'
+        'files:List files in context with token estimates'
+        'tools:Show tool token usage per origin'
+        'add:Add file to context'
+        'clear:Clear accumulated context'
+        'help:Context help'
+    )
+    _describe -t cmds 'context subcommand' cmds
+
+    case $line[1] in
+        add)
+            _files
+            ;;
+    esac
+}
+
+function _loki_code {
+    local -a cmds
+    cmds=(
+        'overview:Generate workspace overview'
+        'symbols:Search for symbols'
+        'deps:Show dependency graph'
+        'hotspots:Find code hotspots'
+        'diff:Show colored diff'
+        'help:Code help'
+    )
+    _describe -t cmds 'code subcommand' cmds
+
+    case $line[1] in
+        overview)
+            _arguments \
+                '--silent[Compact output]' \
+                '*:directory:_directories'
+            ;;
+        deps)
+            _files
+            ;;
+        hotspots)
+            _arguments \
+                '--top[Number of results]:number:'
+            ;;
+        symbols)
+            ;;
+    esac
 }
 
 _loki "$@"

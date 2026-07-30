@@ -1,11 +1,10 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Loki Mode SessionEnd Hook - Episode Storage
 # Stores session as episodic memory
 
 INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('session_id',''))")
 CWD=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('cwd',''))")
-TRANSCRIPT_PATH=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('transcript_path',''))")
 
 # Store episode if memory system available
 if [ -d "$CWD/memory" ]; then

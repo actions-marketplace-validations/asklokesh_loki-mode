@@ -4,6 +4,8 @@ SQLAlchemy models for Loki Mode Dashboard.
 Uses SQLAlchemy 2.0 style with async support.
 """
 
+from __future__ import annotations
+
 from datetime import datetime
 from enum import Enum as PyEnum
 from typing import Optional
@@ -59,6 +61,29 @@ class SessionStatus(str, PyEnum):
     PAUSED = "paused"
 
 
+class Tenant(Base):
+    """Tenant model - provides multi-tenant project isolation."""
+
+    __tablename__ = "tenants"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    slug: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    settings: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON string
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    # Relationships
+    projects: Mapped[list["Project"]] = relationship(
+        "Project", back_populates="tenant", cascade="all, delete-orphan"
+    )
+
+
 class Project(Base):
     """Project model - represents a Loki Mode project."""
 
@@ -69,6 +94,9 @@ class Project(Base):
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     prd_path: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="active")
+    tenant_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
@@ -77,6 +105,9 @@ class Project(Base):
     )
 
     # Relationships
+    tenant: Mapped["Tenant"] = relationship(
+        "Tenant", back_populates="projects"
+    )
     tasks: Mapped[list["Task"]] = relationship(
         "Task", back_populates="project", cascade="all, delete-orphan"
     )
@@ -111,6 +142,14 @@ class Task(Base):
     )
     estimated_duration: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     actual_duration: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # v7.5.12: Enriched task detail fields (additive, JSON-encoded text).
+    # acceptance_criteria: JSON list of strings.
+    # notes: JSON list of {timestamp, author, body}.
+    # logs: JSON list of {timestamp, iteration, level, phase, message}.
+    # All are nullable; legacy rows render as empty lists in TaskResponse.
+    acceptance_criteria: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    logs: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
@@ -193,3 +232,62 @@ class Agent(Base):
     assigned_tasks: Mapped[list["Task"]] = relationship(
         "Task", back_populates="assigned_agent"
     )
+
+
+class Run(Base):
+    """Run model - represents a RARV execution run tied to a project."""
+
+    __tablename__ = "runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("sessions.id", ondelete="SET NULL"), nullable=True
+    )
+    project_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(50), default="running")
+    trigger: Mapped[str] = mapped_column(String(50), default="manual")
+    config: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    result_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    parent_run_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("runs.id", ondelete="SET NULL"), nullable=True
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    # Relationships
+    session: Mapped[Optional["Session"]] = relationship("Session")
+    project: Mapped["Project"] = relationship("Project")
+    parent_run: Mapped[Optional["Run"]] = relationship(
+        "Run", remote_side=[id], foreign_keys=[parent_run_id]
+    )
+    events: Mapped[list["RunEvent"]] = relationship(
+        "RunEvent", back_populates="run", cascade="all, delete-orphan",
+        order_by="RunEvent.timestamp"
+    )
+
+
+class RunEvent(Base):
+    """RunEvent model - timeline events within a run."""
+
+    __tablename__ = "run_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("runs.id", ondelete="CASCADE"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    phase: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    # Relationships
+    run: Mapped["Run"] = relationship("Run", back_populates="events")

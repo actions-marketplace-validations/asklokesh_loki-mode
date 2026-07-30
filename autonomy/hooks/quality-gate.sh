@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Loki Mode Stop Hook - Quality Gate Verification
 # Runs quality checks before allowing completion
 
@@ -16,7 +16,6 @@ if [ ! -f "$GATE_FILE" ]; then
 fi
 
 # Run quality gate checks
-GATES_PASSED=true
 GATE_RESULTS=()
 
 # Check for uncommitted changes warning

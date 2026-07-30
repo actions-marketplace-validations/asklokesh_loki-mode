@@ -9,12 +9,12 @@
 
 | Dimension | Cursor | Loki Mode | Winner |
 |-----------|--------|-----------|--------|
-| **Proven Scale** | 1M+ LoC, 100+ agents | Benchmarks only | Cursor |
+| **Proven Scale** | 1M+ LoC, large agent count | Benchmarks only | Cursor |
 | **Research Foundation** | Empirical iteration | 25+ academic citations | Loki Mode |
-| **Quality Assurance** | Workers self-manage | 7-gate system + anti-sycophancy | Loki Mode |
+| **Quality Assurance** | Workers self-manage | 8-gate system + anti-sycophancy | Loki Mode |
 | **Anti-Sycophancy** | Not mentioned | CONSENSAGENT blind review | Loki Mode |
 | **Velocity-Quality Balance** | Not mentioned | arXiv-backed metrics | Loki Mode |
-| **Full SDLC Coverage** | Code generation focus | PRD to production + growth | Loki Mode |
+| **Full SDLC Coverage** | Code generation focus | Spec (PRD/issue/YAML) to production + growth | Loki Mode |
 | **Memory Systems** | Not detailed | Episodic/semantic/procedural | Loki Mode |
 | **Scale Patterns** | Battle-tested | Now incorporated (v3.3.0) | Tie |
 
@@ -57,7 +57,7 @@ velocity_quality_balance:
 
   thresholds:
     max_new_warnings: 0  # Zero tolerance
-    min_coverage: 80%
+    coverage_target: 80%  # Target only; coverage % not measured this release
 ```
 
 **Research Basis:** [arXiv 2511.04427v2](https://arxiv.org/abs/2511.04427) - Empirical study of 807 repositories
@@ -66,16 +66,19 @@ velocity_quality_balance:
 
 ---
 
-### 3. 7-Gate Quality System
+### 3. 8-Gate Quality System
 
 **Loki Mode's Gates:**
-1. Input Guardrails - Validate scope, detect injection (OpenAI SDK pattern)
-2. Static Analysis - CodeQL, ESLint, type checking
-3. Blind Review System - 3 parallel reviewers
-4. Anti-Sycophancy Check - Devil's advocate on unanimous approval
-5. Output Guardrails - Code quality, spec compliance, no secrets
-6. Severity-Based Blocking - Critical/High/Medium = BLOCK
-7. Test Coverage Gates - 100% pass, >80% coverage
+1. Static Analysis - CodeQL, ESLint, type checking
+2. Test Suite (pass/fail) - red blocks; coverage % not measured this release
+3. Blind Code Review - 3 parallel reviewers + severity blocking (Critical/High = BLOCK; Medium/Low advisory)
+4. Anti-Sycophancy / Devil's Advocate - on unanimous PASS
+5. Mock Integrity Detector - HIGH blocks
+6. Test Mutation Detector - HIGH blocks
+7. Documentation Coverage
+8. Magic Modules Debate - BLOCK severity
+
+Conditional auditor (not numbered): backward-compatibility / legacy-healing-auditor (healing mode only).
 
 **Cursor:** Removed dedicated quality roles. Quote: "Dedicated integrator roles created more bottlenecks than they solved."
 
@@ -122,7 +125,7 @@ BOOTSTRAP -> DISCOVERY -> ARCHITECTURE -> INFRASTRUCTURE
      -> DEVELOPMENT -> QA -> DEPLOYMENT -> GROWTH (continuous)
 ```
 
-**41 Specialized Agent Types across 7 swarms:**
+**41 Specialized Agent Roles across 8 domains** (prompt-defined specifications the orchestrator adopts per phase; parallel review council and optional worktree streams on Claude Code, sequential on other providers):
 - Engineering (8 types)
 - Operations (8 types)
 - Business (8 types)
@@ -174,7 +177,7 @@ Cursor learned through failure:
 ### 3. Simplicity Principle
 > "A surprising amount of the system's behavior comes down to how we prompt the agents. The harness and models matter, but the prompts matter more."
 
-**Loki Mode:** More complex infrastructure (7 gates, 41 agent types, memory systems). May be over-engineered for some use cases.
+**Loki Mode:** More elaborate infrastructure (8 gates, 41 agent types, memory systems). May be over-engineered for some use cases.
 
 ---
 
@@ -184,7 +187,7 @@ We incorporated Cursor's proven patterns:
 
 1. **Recursive Sub-Planners** - Planning scales horizontally
 2. **Judge Agents** - Explicit CONTINUE/COMPLETE/ESCALATE/PIVOT decisions
-3. **Optimistic Concurrency** - No locks, scales to 100+ agents
+3. **Optimistic Concurrency** - No locks, scales horizontally
 4. **Scale-Aware Review** - Full review for high-risk only at scale
 
 ---
@@ -192,10 +195,10 @@ We incorporated Cursor's proven patterns:
 ## Conclusion
 
 **Loki Mode is scientifically better in:**
-- Quality assurance (research-backed 7-gate system)
+- Quality assurance (research-backed 8-gate system)
 - Anti-sycophancy (CONSENSAGENT blind review)
 - Velocity-quality balance (arXiv metrics)
-- Full SDLC coverage (PRD to growth)
+- Full SDLC coverage (spec to growth -- PRD, GitHub issue, or YAML)
 - Memory architecture (episodic/semantic/procedural)
 
 **Cursor is operationally better in:**

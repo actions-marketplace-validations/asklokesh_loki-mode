@@ -7,10 +7,58 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      force_republish:
+        description: 'Re-run publish jobs even if the GitHub release already exists (for fixing failed Docker/brew jobs)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 jobs:
+  # Gate: every downstream job (release, npm, docker, homebrew, ...) waits
+  # for this job to pass. Prevents publishing artifacts when the test suite is red.
+  # Mirrors the checks in .github/workflows/test.yml at minimum cost (single Python
+  # version, no matrix) -- the full Tests workflow still runs separately on push.
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install minimal deps
+        # Mirror python-tests installs in test.yml exactly so the gate has the
+        # same import surface as the matrix jobs (httpx, sqlalchemy, etc.).
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pytest pytest-asyncio
+          python3 -m pip install fastapi httpx pydantic sqlalchemy[asyncio] aiosqlite uvicorn
+      - name: Bash syntax validation
+        run: |
+          bash -n autonomy/run.sh
+          bash -n autonomy/loki
+      - name: Python tests
+        run: python3 -m pytest -q
+      - name: Setup Bun
+        # publish-npm and publish-docker ship the loki-ts Bun dist. Gate the
+        # release on a clean TS build + passing bun test so a broken Bun
+        # artifact cannot reach npm/Docker. Mirrors bun-parity.yml setup.
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+      - name: Bun typecheck + test (protect published loki-ts dist)
+        working-directory: loki-ts
+        run: |
+          bun install --frozen-lockfile
+          bun run typecheck
+          bun test
+
   release:
     runs-on: ubuntu-latest
+    needs: gate
     permissions:
       contents: write
 
@@ -103,6 +151,12 @@ jobs:
           cp -r memory release/loki-mode/
           cp -r skills release/loki-mode/
           cp -r providers release/loki-mode/
+          cp -r events release/loki-mode/
+          cp -r templates release/loki-mode/
+          cp -r learning release/loki-mode/
+          cp -r mcp release/loki-mode/
+          cp -r completions release/loki-mode/
+          cp -r integrations release/loki-mode/
 
           cd release
           zip -r loki-mode-claude-code-${{ steps.version.outputs.version }}.zip loki-mode
@@ -119,27 +173,46 @@ jobs:
 
       - name: Extract changelog for this version
         if: steps.check_release.outputs.release_exists == 'false'
-        id: changelog
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          CHANGELOG=$(awk "/^## \[$VERSION\]/{flag=1; next} /^## \[/{flag=0} flag" CHANGELOG.md)
-          if [ -z "$CHANGELOG" ]; then
-            CHANGELOG="Release v$VERSION"
+          # Extract the section body for this version from CHANGELOG.md. The
+          # CHANGELOG uses unbracketed `## vX.Y.Z` headers (not `## [X.Y.Z]`), so
+          # match `## v$VERSION` and stop at the next `## v` header. The prior
+          # bracketed pattern never matched -> release notes were silently the
+          # generic fallback for every release. Write to file to avoid backtick
+          # interpretation.
+          awk "/^## v$VERSION\$/{flag=1; next} /^## v/{flag=0} flag" CHANGELOG.md > changelog_body.txt
+          if [ ! -s changelog_body.txt ]; then
+            echo "Release v$VERSION" > changelog_body.txt
           fi
-          echo "$CHANGELOG" > changelog_body.txt
 
       - name: Create GitHub Release
         if: steps.check_release.outputs.release_exists == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "v${{ steps.version.outputs.version }}" \
-            release/loki-mode-${{ steps.version.outputs.version }}.zip \
-            release/loki-mode-${{ steps.version.outputs.version }}.skill \
-            release/loki-mode-api-${{ steps.version.outputs.version }}.zip \
-            release/loki-mode-claude-code-${{ steps.version.outputs.version }}.zip \
-            release/loki-mode-claude-code-${{ steps.version.outputs.version }}.tar.gz \
-            --title "Loki Mode v${{ steps.version.outputs.version }}" \
+          VERSION="${{ steps.version.outputs.version }}"
+          # v7.32.1: build the brew source asset HERE and attach it at release
+          # creation. Releases in this repo are immutable, so a later job
+          # cannot upload assets (v7.32.0 update-homebrew failed with HTTP 422
+          # trying). update-homebrew downloads the published asset and hashes
+          # those exact bytes for the formula.
+          REF="v${VERSION}"
+          git rev-parse -q --verify "refs/tags/${REF}" >/dev/null || REF="HEAD"
+          git archive --format=tar.gz --prefix="loki-mode-${VERSION}/" \
+            -o "release/loki-mode-${VERSION}.tar.gz" "${REF}"
+          if ! file "release/loki-mode-${VERSION}.tar.gz" | grep -q 'gzip compressed'; then
+            echo "ERROR: built brew asset is not a valid gzip tarball"
+            exit 1
+          fi
+          gh release create "v${VERSION}" \
+            release/loki-mode-${VERSION}.zip \
+            release/loki-mode-${VERSION}.skill \
+            release/loki-mode-api-${VERSION}.zip \
+            release/loki-mode-${VERSION}.tar.gz \
+            release/loki-mode-claude-code-${VERSION}.zip \
+            release/loki-mode-claude-code-${VERSION}.tar.gz \
+            --title "Loki Mode v${VERSION}" \
             --notes-file changelog_body.txt
 
       - name: Skip message
@@ -147,9 +220,92 @@ jobs:
         run: |
           echo "Release v${{ steps.version.outputs.version }} already exists. Skipping."
 
+  notify-slack:
+    needs: release
+    if: needs.release.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.force_republish == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for changelog)
+        uses: actions/checkout@v4
+
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          VERSION="${{ needs.release.outputs.version }}"
+          # Write awk output to file to avoid bash backtick interpretation in variables
+          awk "/^## v$VERSION\$/{flag=1; next} /^## v/{flag=0} flag" CHANGELOG.md > /tmp/changelog-body.txt
+          if [ ! -s /tmp/changelog-body.txt ]; then
+            echo "Release v$VERSION" > /tmp/changelog-body.txt
+          fi
+          # Truncate to 2000 chars for Slack block limit
+          head -c 2000 /tmp/changelog-body.txt > /tmp/changelog-truncated.txt
+          mv /tmp/changelog-truncated.txt /tmp/changelog-body.txt
+
+      - name: Post to Slack
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "SLACK_WEBHOOK_URL not configured, skipping Slack notification"
+            exit 0
+          fi
+
+          VERSION="v${{ needs.release.outputs.version }}"
+          RELEASE_URL="https://github.com/asklokesh/loki-mode/releases/tag/${VERSION}"
+
+          # Build Slack payload entirely in Python to avoid bash backtick issues
+          VERSION_FOR_SLACK="$VERSION" RELEASE_URL_FOR_SLACK="$RELEASE_URL" python3 -c "
+          import json, os
+
+          version = os.environ['VERSION_FOR_SLACK']
+          release_url = os.environ['RELEASE_URL_FOR_SLACK']
+
+          # Read changelog from file (avoids bash backtick interpretation)
+          with open('/tmp/changelog-body.txt') as f:
+              changelog = f.read().strip()
+
+          changelog_safe = changelog
+          if len(changelog_safe) > 1500:
+              changelog_safe = changelog_safe[:1500] + '...'
+
+          payload = {
+              'blocks': [
+                  {
+                      'type': 'header',
+                      'text': {'type': 'plain_text', 'text': f'Loki Mode {version} Released'}
+                  },
+                  {
+                      'type': 'section',
+                      'text': {'type': 'mrkdwn', 'text': f'*<{release_url}|View Release on GitHub>*'}
+                  },
+                  {
+                      'type': 'section',
+                      'text': {'type': 'mrkdwn', 'text': changelog_safe}
+                  },
+                  {'type': 'divider'},
+                  {
+                      'type': 'section',
+                      'text': {
+                          'type': 'mrkdwn',
+                          'text': f'*Ready for website update.* Reply in this thread:\\n>\`@Claude update the autonomi.dev blog for Loki Mode {version}. Read the changelog from https://github.com/asklokesh/loki-mode/blob/main/CHANGELOG.md for {version}, then update src/data/blog-posts.ts in https://github.com/asklokesh/autonomi-website with a new blog post entry. Also update the FALLBACK version in src/hooks/useLatestVersion.ts. No emojis. Commit and push.\`'
+                      }
+                  }
+              ]
+          }
+
+          with open('/tmp/slack-payload.json', 'w') as f:
+              json.dump(payload, f)
+          "
+
+          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-type: application/json' \
+            -d @/tmp/slack-payload.json
+
+          echo "Slack notification sent for ${VERSION}"
+
   publish-npm:
     needs: release
-    if: needs.release.outputs.release_created == 'true'
+    if: needs.release.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.force_republish == 'true')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -158,8 +314,17 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
+
+      - name: Setup Bun
+        # Required so the npm prepack hook can build the loki-ts dist artifact
+        # before publishing. Without bun on PATH the prepack falls back to the
+        # committed dist (if any) and emits a WARN, which is not desirable for
+        # release builds.
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
 
       - name: Build dashboard frontend
         working-directory: dashboard-ui
@@ -176,9 +341,43 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-  publish-docker:
+  publish-python-sdk:
     needs: release
-    if: needs.release.outputs.release_created == 'true'
+    if: needs.release.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.force_republish == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Sync version from VERSION file
+        run: |
+          VERSION=$(cat VERSION | tr -d '\n')
+          echo "Syncing Python SDK version to $VERSION"
+          sed -i "s/^version = .*/version = \"$VERSION\"/" sdk/python/pyproject.toml
+
+      - name: Build Python SDK
+        working-directory: sdk/python
+        run: |
+          pip install build
+          python -m build
+
+      - name: Publish to PyPI
+        working-directory: sdk/python
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          pip install twine
+          twine upload dist/*
+
+  publish-ts-sdk:
+    needs: release
+    if: needs.release.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.force_republish == 'true')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -187,7 +386,39 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Sync version from VERSION file
+        run: |
+          VERSION=$(cat VERSION | tr -d '\n')
+          echo "Syncing TypeScript SDK version to $VERSION"
+          npm --prefix sdk/typescript pkg set version="$VERSION"
+
+      - name: Build TypeScript SDK
+        working-directory: sdk/typescript
+        run: |
+          npm install
+          npm run build
+
+      - name: Publish to npm
+        working-directory: sdk/typescript
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-docker:
+    needs: release
+    if: needs.release.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.force_republish == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
 
       - name: Build dashboard frontend
         working-directory: dashboard-ui
@@ -199,89 +430,93 @@ jobs:
         run: |
           test -f dashboard/static/index.html || { echo "FATAL: dashboard/static/index.html not found after build"; exit 1; }
 
+      - name: Setup Bun (for loki-ts build before docker context)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+
+      - name: Build loki-ts dist (Dockerfile COPY needs loki-ts/dist/loki.js)
+        working-directory: loki-ts
+        run: |
+          bun install --production
+          bun run build
+          test -f dist/loki.js || { echo "FATAL: loki-ts/dist/loki.js not built"; exit 1; }
+          ls -la dist/
+
+      - name: Set up QEMU (multi-arch)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx (multi-arch)
+        uses: docker/setup-buildx-action@v3
+
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push
+      - name: Build and push (amd64 + arm64)
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: |
             asklokesh/loki-mode:v${{ needs.release.outputs.version }}
             asklokesh/loki-mode:${{ needs.release.outputs.version }}
             asklokesh/loki-mode:latest
 
       - name: Update Docker Hub description
+        continue-on-error: true  # Cosmetic step; image publish already succeeded above. PATs without admin scope return Forbidden here.
         uses: peter-evans/dockerhub-description@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: asklokesh/loki-mode
           readme-filepath: ./DOCKER_README.md
-          short-description: "Multi-agent autonomous development system for Claude Code, Codex CLI, and Gemini CLI"
+          short-description: "Autonomous spec-to-product system for Claude Code, Codex CLI, Cline, and Aider"
 
-  publish-vscode:
-    needs: release
-    if: needs.release.outputs.release_created == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Sync version from VERSION file
-        working-directory: vscode-extension
-        run: |
-          VERSION=$(cat ../VERSION | tr -d '\n')
-          echo "Syncing version to $VERSION"
-          npm pkg set version="$VERSION"
-
-      - name: Build dashboard-ui
-        working-directory: dashboard-ui
-        run: |
-          npm ci
-          npm run build
-
-      - name: Install extension dependencies
-        working-directory: vscode-extension
-        run: npm ci
-
-      - name: Compile
-        working-directory: vscode-extension
-        run: npm run compile
-
-      - name: Package extension
-        working-directory: vscode-extension
-        run: |
-          npx vsce package
-          echo "VSIX_FILE=$(ls *.vsix)" >> $GITHUB_ENV
-
-      - name: Publish to VS Code Marketplace
-        working-directory: vscode-extension
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: npx vsce publish -p "$VSCE_PAT"
+  # The VS Code marketplace publishing job was removed in v7.2.0. The
+  # Loki Mode VSCode extension is deprecated and no longer maintained. The
+  # marketplace listing remains for legacy users on v7.1.0 and earlier but
+  # receives no further updates. The vscode-extension/ source remains in the
+  # repo for users who want to build locally. See vscode-extension/README.md
+  # for details.
 
   update-homebrew:
     needs: [release, publish-npm, publish-docker]
-    if: needs.release.outputs.release_created == 'true'
+    if: needs.release.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.force_republish == 'true')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read  # gh release download of the published brew asset
     steps:
-      - name: Compute SHA256
+      # v7.32.0: brew installs come from a GitHub Release ASSET instead of
+      # the auto-generated tag tarball. Release-asset downloads are counted by
+      # GitHub (the tag tarball is not), making brew the last install channel
+      # with visible adoption numbers.
+      # v7.32.1: the asset is attached at release CREATION (releases here are
+      # immutable; post-publish uploads fail HTTP 422). This job downloads the
+      # published asset and hashes the exact bytes brew users will get.
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.release.outputs.version }}
+
+      - name: Download and hash the published brew source asset
         id: sha
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          URL="https://github.com/asklokesh/loki-mode/archive/refs/tags/v${{ needs.release.outputs.version }}.tar.gz"
-          SHA=$(curl -sL "$URL" | sha256sum | cut -d' ' -f1)
+          VERSION="${{ needs.release.outputs.version }}"
+          ASSET="loki-mode-${VERSION}.tar.gz"
+          gh release download "v${VERSION}" --pattern "${ASSET}" --dir /tmp --clobber
+          # Sanity: a real gzip tarball, not an error artifact
+          if ! file "/tmp/${ASSET}" | grep -q 'gzip compressed'; then
+            echo "ERROR: downloaded asset is not a valid gzip tarball"
+            exit 1
+          fi
+          SHA=$(sha256sum "/tmp/${ASSET}" | cut -d' ' -f1)
+          rm -f "/tmp/${ASSET}"
           echo "sha256=${SHA}" >> $GITHUB_OUTPUT
 
       - name: Update Homebrew formula via API
@@ -294,17 +529,22 @@ jobs:
           # Create formula content
           FORMULA=$(cat << 'FORMULA_EOF'
           class LokiMode < Formula
-            desc "Multi-agent autonomous startup system for Claude Code, Codex CLI, and Gemini CLI"
+            desc "Autonomous coding agent platform CLI for Claude Code, Codex CLI, Cline, and Aider"
             homepage "https://github.com/asklokesh/loki-mode"
-            url "https://github.com/asklokesh/loki-mode/archive/refs/tags/vVERSION_PLACEHOLDER.tar.gz"
+            url "https://github.com/asklokesh/loki-mode/releases/download/vVERSION_PLACEHOLDER/loki-mode-VERSION_PLACEHOLDER.tar.gz"
             sha256 "SHA256_PLACEHOLDER"
-            license "MIT"
+            license "BUSL-1.1"
 
             depends_on "node"
+            depends_on "oven-sh/bun/bun"
 
             def install
               libexec.install Dir["*"]
-              bin.install_symlink libexec/"autonomy/loki" => "loki"
+              # v7.4.2 fix (BUG-4): bin/loki is the Bun-aware shim that routes
+              # ported commands to Bun and falls through to autonomy/loki for
+              # everything else. Linking bin/loki (NOT autonomy/loki) is
+              # required for brew users to get the Phase 2/3+ Bun route.
+              bin.install_symlink libexec/"bin/loki" => "loki"
             end
 
             test do
@@ -321,7 +561,7 @@ jobs:
           CURRENT_SHA=$(gh api repos/asklokesh/homebrew-tap/contents/Formula/loki-mode.rb --jq '.sha')
 
           # Encode content as base64
-          CONTENT=$(echo "$FORMULA" | base64 -w 0)
+          CONTENT=$(echo "$FORMULA" | base64 | tr -d '\n')
 
           # Update file via API
           gh api repos/asklokesh/homebrew-tap/contents/Formula/loki-mode.rb \

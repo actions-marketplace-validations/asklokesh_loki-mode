@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Test: Loki CLI Commands
 # Tests non-destructive CLI commands that are safe to run without an active session.
 # These verify exit codes and expected output patterns.
@@ -18,7 +18,6 @@ TOTAL=0
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
 NC='\033[0m'
 
 log_pass() { echo -e "${GREEN}[PASS]${NC} $1"; ((PASS++)); }
@@ -44,12 +43,23 @@ test_cmd() {
     fi
 
     if [ -n "$pattern" ]; then
-        if ! echo "$output" | grep -qi "$pattern"; then
-            log_fail "$desc" "output missing pattern: $pattern"
-            echo "  Actual output (first 5 lines):"
-            echo "$output" | head -5 | sed 's/^/    /'
-            return 0
-        fi
+        # Case-insensitive substring check done in-shell (no pipe). Piping into
+        # `grep -q` races: grep exits on first match and closes the pipe, so the
+        # upstream `echo` is killed by SIGPIPE ("write error: Broken pipe"), and
+        # on a loaded CI runner that broken-pipe exit can be misread as no-match.
+        # A bash glob match has no subprocess and no pipe, so it is race-free.
+        local hay_lc pat_lc
+        hay_lc=$(printf '%s' "$output" | tr '[:upper:]' '[:lower:]')
+        pat_lc=$(printf '%s' "$pattern" | tr '[:upper:]' '[:lower:]')
+        case "$hay_lc" in
+            *"$pat_lc"*) ;;
+            *)
+                log_fail "$desc" "output missing pattern: $pattern"
+                echo "  Actual output (first 5 lines):"
+                printf '%s\n' "$output" | head -5 | sed 's/^/    /'
+                return 0
+                ;;
+        esac
     fi
 
     log_pass "$desc"
@@ -114,6 +124,31 @@ test_cmd "loki config path exits 0" \
     0 "" config path
 
 # -------------------------------------------
+# FIX A (v7.34.0): the top-level help must NOT advertise a `config provider`
+# subcommand that does not exist. `provider` is a settable KEY (config set
+# provider X) and a SEPARATE top-level command (loki provider ...); it is not a
+# config subcommand. The cmd_config handler has no `provider)` arm, so
+# `loki config provider` falls through to the usage error.
+# -------------------------------------------
+((TOTAL++))
+_help_out=$("$LOKI" help 2>&1) || true
+case "$_help_out" in
+    *"show|set|get|provider"*)
+        log_fail "loki help does not claim a nonexistent config provider subcommand" \
+            "help still advertises 'config ... provider' as a subcommand"
+        ;;
+    *)
+        log_pass "loki help does not claim a nonexistent config provider subcommand"
+        ;;
+esac
+
+# And `loki config provider` itself is not a real subcommand: it must NOT exit 0
+# (it falls through to the cmd_config usage block). We assert it prints the
+# config usage rather than succeeding silently.
+test_cmd "loki config provider is not a subcommand (prints config usage)" \
+    0 "Usage: loki config" config provider
+
+# -------------------------------------------
 # Test: loki memory list
 # -------------------------------------------
 test_cmd "loki memory list exits 0 and shows Learnings" \
@@ -148,6 +183,132 @@ test_cmd "loki completions bash exits 0 and shows complete" \
 # -------------------------------------------
 test_cmd "loki completions zsh exits 0 and shows compdef" \
     0 "compdef" completions zsh
+
+# -------------------------------------------
+# Test: loki preview --help
+# -------------------------------------------
+test_cmd "loki preview --help exits 0 and shows Usage" \
+    0 "Usage: loki preview" preview --help
+
+# -------------------------------------------
+# Test: loki preview with no running app (honest message, exit 0)
+# Run against an ISOLATED empty LOKI_DIR so the assertion is deterministic and
+# does not depend on a stray .loki/app-runner/state.json in the test cwd (the
+# command reads ${LOKI_DIR:-.loki}/app-runner/state.json).
+# -------------------------------------------
+_PREVIEW_TMP=$(mktemp -d 2>/dev/null || echo "/tmp/loki-preview-test-$$")
+mkdir -p "$_PREVIEW_TMP"
+LOKI_DIR="$_PREVIEW_TMP" test_cmd "loki preview --no-open exits 0 with no app running" \
+    0 "No app running" preview --no-open
+rm -rf "$_PREVIEW_TMP"
+
+# -------------------------------------------
+# Test: loki spec --help
+# -------------------------------------------
+test_cmd "loki spec --help exits 0 and shows the living-spec usage" \
+    0 "the living spec" spec --help
+
+# -------------------------------------------
+# Test: loki spec status with no spec present -> usage error exit 2.
+# Run in an ISOLATED empty dir so no stray prd.md/.loki is picked up.
+# -------------------------------------------
+_SPEC_TMP=$(mktemp -d 2>/dev/null || echo "/tmp/loki-spec-test-$$")
+mkdir -p "$_SPEC_TMP"
+( cd "$_SPEC_TMP" && "$LOKI" spec status >/dev/null 2>&1; [ "$?" -eq 2 ] ) \
+    && { echo -e "${GREEN}[PASS]${NC} loki spec status with no spec exits 2 (usage)"; ((PASS++)); } \
+    || { echo -e "${RED}[FAIL]${NC} loki spec status with no spec -- expected exit 2"; ((FAIL++)); }
+((TOTAL++))
+rm -rf "$_SPEC_TMP"
+
+# -------------------------------------------
+# Test: loki grill --help
+# -------------------------------------------
+test_cmd "loki grill --help exits 0 and shows the interrogation usage" \
+    0 "interrogate a spec" grill --help
+
+# -------------------------------------------
+# Test: loki grill with no spec present -> usage error exit 2.
+# -------------------------------------------
+_GRILL_TMP=$(mktemp -d 2>/dev/null || echo "/tmp/loki-grill-test-$$")
+mkdir -p "$_GRILL_TMP"
+( cd "$_GRILL_TMP" && "$LOKI" grill >/dev/null 2>&1; [ "$?" -eq 2 ] ) \
+    && { echo -e "${GREEN}[PASS]${NC} loki grill with no spec exits 2 (usage)"; ((PASS++)); } \
+    || { echo -e "${RED}[FAIL]${NC} loki grill with no spec -- expected exit 2"; ((FAIL++)); }
+((TOTAL++))
+
+# -------------------------------------------
+# Test: loki grill with an unavailable provider -> clean error exit 3.
+# Uses a bogus LOKI_PROVIDER so the failure is deterministic regardless of
+# whether the claude CLI is installed on the runner. Honest no-provider path:
+# never a silent success, never fabricated questions.
+# -------------------------------------------
+printf '# Spec\n## Feature\nDo a thing.\n' > "$_GRILL_TMP/prd.md"
+( cd "$_GRILL_TMP" && LOKI_PROVIDER=bogus "$LOKI" grill prd.md >/dev/null 2>&1; [ "$?" -eq 3 ] ) \
+    && { echo -e "${GREEN}[PASS]${NC} loki grill with an unavailable provider exits 3 (clean error)"; ((PASS++)); } \
+    || { echo -e "${RED}[FAIL]${NC} loki grill unavailable provider -- expected exit 3"; ((FAIL++)); }
+((TOTAL++))
+
+# -------------------------------------------
+# Test: loki grill SUCCESS path with a stubbed provider.
+# Regression guard for the printf leading-dash bug (council R2, v7.28.0):
+# bash's printf builtin parsed '- Spec: %s\n' as an option flag and silently
+# dropped the report metadata header lines. Stub a fake `claude` on PATH so
+# the success path runs deterministically with no cost, then assert the
+# report file carries the '- Spec:' and '- Provider:' header lines and the
+# stubbed body, with zero printf errors on stderr.
+# -------------------------------------------
+_GRILL_STUB=$(mktemp -d 2>/dev/null || echo "/tmp/loki-grillstub-test-$$")
+mkdir -p "$_GRILL_STUB/bin"
+printf '#!/usr/bin/env bash\necho "Q1: What happens when the thing fails?"\n' > "$_GRILL_STUB/bin/claude"
+chmod +x "$_GRILL_STUB/bin/claude"
+_GRILL_ERR="$_GRILL_STUB/stderr.txt"
+( cd "$_GRILL_TMP" \
+    && PATH="$_GRILL_STUB/bin:$PATH" "$LOKI" grill prd.md >/dev/null 2>"$_GRILL_ERR"; [ "$?" -eq 0 ] ) \
+    && grep -q -- "- Spec:" "$_GRILL_TMP/.loki/grill/report.md" 2>/dev/null \
+    && grep -q -- "- Provider:" "$_GRILL_TMP/.loki/grill/report.md" 2>/dev/null \
+    && grep -q "What happens when the thing fails" "$_GRILL_TMP/.loki/grill/report.md" 2>/dev/null \
+    && ! grep -q "invalid option" "$_GRILL_ERR" 2>/dev/null \
+    && { echo -e "${GREEN}[PASS]${NC} loki grill success path writes full report header (stubbed provider)"; ((PASS++)); } \
+    || { echo -e "${RED}[FAIL]${NC} loki grill success path -- report header missing or printf error"; sed 's/^/    /' "$_GRILL_ERR" 2>/dev/null | head -4; ((FAIL++)); }
+((TOTAL++))
+rm -rf "$_GRILL_STUB" "$_GRILL_TMP"
+
+# -------------------------------------------
+# Test: loki quickstart --help (v7.29.0). Falls through to bash on both routes
+# (not in the bin/loki Bun allowlist), so behaves identically Bun and bash.
+# -------------------------------------------
+test_cmd "loki quickstart --help exits 0 and shows the guided-build usage" \
+    0 "guided first build" quickstart --help
+
+# -------------------------------------------
+# Test: loki quickstart with no TTY -> interactive-only refusal, exit 2.
+# test_cmd captures via $(...), so stdin/stdout are not a TTY: the gate must
+# fire and exit 2 with the automation hint, never hanging on a read.
+# -------------------------------------------
+test_cmd "loki quickstart non-TTY exits 2 with the automation hint" \
+    2 "needs a terminal" quickstart
+
+# -------------------------------------------
+# Test: loki open alias --help routes to preview
+# -------------------------------------------
+test_cmd "loki open --help exits 0 and shows preview usage" \
+    0 "Usage: loki preview" open --help
+
+# -------------------------------------------
+# Test: loki mcp --help (task 562 MCP server launcher)
+# -------------------------------------------
+test_cmd "loki mcp --help exits 0 and shows the MCP launcher usage" \
+    0 "launch the MCP" mcp --help
+
+# -------------------------------------------
+# Test: loki api start --help short-circuits to help (#574), does NOT start
+# the server. The help banner shows and exits 0; a started server would print a
+# different first line and would not exit cleanly here.
+# -------------------------------------------
+test_cmd "loki api start --help shows help, does not start the server (#574)" \
+    0 "Dashboard/API Server" api start --help
+test_cmd "loki api start -h shows help (#574)" \
+    0 "Dashboard/API Server" api start -h
 
 # -------------------------------------------
 # Test: unknown command exits non-zero

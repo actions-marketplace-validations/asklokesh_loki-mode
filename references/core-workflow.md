@@ -6,7 +6,7 @@ Full RARV cycle, CONTINUITY.md template, and autonomy rules.
 
 ## Autonomy Rules
 
-**This system runs with ZERO human intervention.**
+**This system runs with minimal human intervention.** Human oversight is expected for deployment credentials, domain setup, API keys, and critical business decisions.
 
 ### Core Rules
 1. **NEVER ask questions** - Do not say "Would you like me to...", "Should I...", or "What would you prefer?"
@@ -32,13 +32,6 @@ Every iteration follows this cycle:
 | - Review pending tasks in .loki/queue/pending.json                |
 | - Identify highest priority unblocked task                        |
 | - Determine exact steps to complete it                            |
-+-------------------------------------------------------------------+
-| PRE-ACT ATTENTION: Goal alignment check (prevents context drift)  |
-| - Re-read .loki/queue/current-task.json                           |
-| - Verify: "Does my planned action serve task.goal?"               |
-| - Check: "Am I solving the original problem, not a tangent?"      |
-| - IF drift detected: Log to .loki/signals/DRIFT_DETECTED,         |
-|   return to REASON                                                |
 +-------------------------------------------------------------------+
 | ACT: Execute the task                                             |
 | - Dispatch subagent via Task tool OR execute directly             |
@@ -77,11 +70,16 @@ Every iteration follows this cycle:
 - Retries with learned context
 - Achieves 2-3x quality improvement (Boris Cherny's observed result)
 
-**Key Enhancement (PRE-ACT ATTENTION):** The planning-with-files pattern adds a goal alignment check:
-- Context drift is silent - agents don't notice they've drifted off-task
-- Forcing goal re-read before each action catches drift early
-- Prevents "correct solution to wrong problem" failure mode
-- Cost: One file read per action. Benefit: Catches misalignment before wasted work.
+### Phase 1 RARV-C Closure (v7.5.0+)
+
+The RARV cycle now closes with an explicit Critique step (RARV-C). After VERIFY, an override council of real provider judges (v7.5.4) issues a binding decision before the iteration is marked complete. See `references/quality-control.md` for the override council protocol.
+
+### Verified Completion: Evidence Required (v7.41.1, v7.41.5)
+
+Completion is gated on affirmative test evidence, not the absence of a detected failure.
+
+- **Test evidence captured before the gate reads it (v7.41.1).** Loki runs the project's own tests and persists `.loki/quality/test-results.json` before the completion evidence gate evaluates it, so absent test evidence can no longer silently pass the test axis. Default-on; opt out with `LOKI_COMPLETION_TEST_CAPTURE=0`. It reuses the quality-ladder run (no double test execution per iteration) and a project with no runner records `{"runner":"none","pass":true}`. Source: `autonomy/run.sh` (`ensure_completion_test_evidence`, `:7236`).
+- **Completion council heuristic fallback defaults to CONTINUE (v7.41.5).** When no AI provider is available for the council, the heuristic member evaluation starts each vote at CONTINUE and flips to COMPLETE only when no failure is detected AND affirmative positive evidence is present (the same non-red `test-results.json` signal the evidence hard gate uses). An empty `.loki/` with no test evidence no longer clears the threshold on "absence of failure". Legitimate finished projects (passing or genuinely no-test) still vote COMPLETE. Source: `autonomy/completion-council.sh` (`council_evaluate_member`, `:2044`-`:2063`, `:2127`-`:2140`).
 
 ---
 

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Test learning signal aggregation
 #
 # This test verifies that the learning aggregator correctly:
@@ -20,7 +20,6 @@ TEST_LOKI_DIR="/tmp/loki-test-aggregator-$$"
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
 NC='\033[0m'
 
 # Test counters
@@ -104,7 +103,7 @@ emit_test_signals() {
         --action "select_provider" \
         --key "provider" \
         --value "claude" \
-        --rejected '["codex", "gemini"]' \
+        --rejected '["codex", "aider"]' \
         --confidence 0.9
 
     "$EMIT_SH" user_preference \
@@ -112,7 +111,7 @@ emit_test_signals() {
         --action "select_provider" \
         --key "provider" \
         --value "claude" \
-        --rejected '["gemini"]' \
+        --rejected '["aider"]' \
         --confidence 0.85
 
     "$EMIT_SH" user_preference \

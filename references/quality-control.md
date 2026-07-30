@@ -135,6 +135,12 @@ See `references/openai-patterns.md` for full guardrails implementation.
 
 ---
 
+## Override Council (v7.5.4)
+
+The override council closes the RARV-C cycle with real provider judges (Claude/Codex) rather than scripted heuristics. Each judge reviews the iteration outcome independently and casts a binding ALLOW or BLOCK vote. A unanimous ALLOW closes the iteration; any BLOCK reopens REASON with the judge's rationale appended to CONTINUITY.md. See Phase 1 RARV-C closure in `references/core-workflow.md`.
+
+---
+
 ## Quality Gates
 
 **Never ship code without passing all quality gates:**
@@ -164,6 +170,16 @@ IMPLEMENT -> BLIND REVIEW (parallel) -> DEBATE (if disagreement) -> AGGREGATE ->
 - ALWAYS use blind review mode (reviewers cannot see each other's findings initially)
 - NEVER dispatch reviewers sequentially (always parallel - 3x faster)
 - NEVER aggregate before all 3 reviewers complete
+
+### Test Quality Review (Apply to Every Review)
+
+Before approving, verify:
+- Are tests using real implementations or excessive mocks of internal code?
+- Were any assertion expected values changed in the same commit as implementation? (This is the top sign an agent cheated.)
+- Do tests verify meaningful behavior or just "runs without throwing"?
+- Could all tests pass while the feature is completely broken?
+
+Assertion manipulation in the same commit as implementation = CRITICAL finding = automatic REJECT.
 
 ### Anti-Sycophancy Protocol (CONSENSAGENT Research)
 
@@ -224,15 +240,15 @@ This diversity prevents groupthink and catches more issues.
 |----------|--------|-----------|
 | **Critical** | BLOCK - Fix immediately | NO |
 | **High** | BLOCK - Fix immediately | NO |
-| **Medium** | BLOCK - Fix before proceeding | NO |
+| **Medium** | Advisory - Add `// TODO(review): ...` comment | YES |
 | **Low** | Add `// TODO(review): ...` comment | YES |
 | **Cosmetic** | Add `// FIXME(nitpick): ...` comment | YES |
 
-**Critical/High/Medium = BLOCK and fix before proceeding**
-**Low/Cosmetic = Add TODO/FIXME comment, continue**
+**Critical/High = BLOCK and fix before proceeding**
+**Medium/Low/Cosmetic = Add TODO/FIXME comment, continue (advisory)**
 
 ### 4. Test Coverage Gates
-- Unit tests: 100% pass, >80% coverage
+- Unit tests: 100% pass (coverage % not measured in this release)
 - Integration tests: 100% pass
 - E2E tests: critical flows pass
 
@@ -270,6 +286,12 @@ Task(subagent_type="general-purpose", model="opus",
 
 - ALWAYS re-run ALL 3 reviewers after fixes (not just the one that found the issue)
 - Wait for all reviews to complete before aggregating results
+
+### Inconclusive Reviews Block (v7.41.1)
+
+A code-review round must produce real verdicts to pass. `run_code_review` counts only reviewer outputs that exist, are non-empty, and carry a recognized `VERDICT:` line. If every reviewer returns no usable verdict (all NO_OUTPUT or unparseable), the round is treated as INCONCLUSIVE and BLOCKS rather than silently passing with zero findings. A bounded one-shot retry runs first; the block is opt-out via `LOKI_REVIEW_INCONCLUSIVE_BLOCK=0` (records, never blocks). APPROVE / PASS-with-concerns still pass.
+
+The reviewer-prompt diff excludes `.loki/` and `.git/` via git pathspec (`git diff <sha>..HEAD -- . ':(exclude).loki/'`). This mirrors the completion evidence gate and prevents a `.loki/`-tracked repo from ballooning the diff to the point that the reviewer model overflows and returns empty (the original NO_OUTPUT cause). Source: `autonomy/run.sh` (`run_code_review`, diff at `:2578`, inconclusive handling at `:8134`-`:8270`).
 
 ---
 
@@ -423,7 +445,7 @@ Quality gates are enforced by `autonomy/CONSTITUTION.md`:
 **Pre-Commit (BLOCKING):**
 - Linting (auto-fix enabled)
 - Type checking (strict mode)
-- Contract tests (80% coverage minimum)
+- Contract tests (coverage % not enforced as a gate)
 - Spec validation (Spectral)
 
 **Post-Implementation (AUTO-FIX):**

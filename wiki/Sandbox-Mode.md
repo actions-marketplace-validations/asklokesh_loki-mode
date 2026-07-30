@@ -110,7 +110,7 @@ sandbox:
   mounts:
     - "./:/workspace:rw"           # Project directory
     - "~/.npm:/root/.npm:ro"       # npm cache (read-only)
-    - "~/.claude:/root/.claude:ro" # Claude auth (read-only)
+    - "~/.claude:/home/loki/.claude:ro" # Claude auth (read-only)
 
   # Environment variables to pass
   env:
@@ -193,7 +193,7 @@ sandbox:
 | Host Path | Container Path | Mode | Purpose |
 |-----------|----------------|------|---------|
 | `.` | `/workspace` | rw | Project files |
-| `~/.claude` | `/root/.claude` | ro | Claude auth |
+| `~/.claude` | `/home/loki/.claude` | ro | Claude auth |
 
 ### Adding Custom Mounts
 
@@ -202,7 +202,7 @@ sandbox:
   mounts:
     - "./:/workspace:rw"
     - "/path/to/data:/data:ro"
-    - "~/.aws:/root/.aws:ro"
+    - "~/.aws:/home/loki/.aws:ro"
 ```
 
 ---
@@ -238,12 +238,12 @@ sandbox:
 
 ### What Sandbox Prevents
 
-| Threat | Mitigation |
-|--------|------------|
-| Host filesystem access | Explicit mounts only |
-| Network exfiltration | Optional network disable |
-| Resource exhaustion | CPU/memory limits |
-| Privilege escalation | Non-root user |
+| Threat | Mitigation | Details |
+|--------|------------|---------|
+| Host filesystem access | Explicit mounts only | |
+| Network exfiltration | Optional network disable | |
+| Resource exhaustion | CPU/memory limits | |
+| Privilege escalation | Non-root + no SETUID/SETGID | Runs as UID 1000, Docker capabilities dropped (v5.37.1) |
 
 ### What Sandbox Does NOT Prevent
 
@@ -252,6 +252,15 @@ sandbox:
 | AI provider data exposure | Use provider's data policies |
 | Mounted volume access | Limit mounts, use read-only |
 | Network to allowed hosts | Disable network if needed |
+
+### Security Hardening (v5.36.0+)
+
+The sandbox container applies these security measures:
+- **Non-root execution**: Runs as UID 1000 (appuser)
+- **No SETUID/SETGID**: Docker capabilities intentionally dropped (v5.37.1)
+- **Rate limiting**: API endpoints limited to 10 req/min for session control
+- **Salted token hashing**: SHA-256 with per-token random salt
+- **Input validation**: Shell injection prevention on all user inputs
 
 ---
 

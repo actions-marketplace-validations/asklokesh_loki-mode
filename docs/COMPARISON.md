@@ -12,10 +12,10 @@
 | Feature | **Loki Mode** | **Zencoder** | **Devin** | **OpenAI Codex** | **Cursor** | **Claude Code** | **Kiro** | **Antigravity** | **Amazon Q** | **OpenCode** |
 |---------|--------------|--------------|-----------|-----------------|------------|-----------------|----------|-----------------|--------------|--------------|
 | **Type** | Skill/Framework | Enterprise Platform | Standalone Agent | Cloud Agent | AI IDE | CLI Agent | AI IDE | AI IDE | Cloud Agent | AI IDE (OSS) |
-| **Autonomy Level** | Full (zero human) | High | Full | High | Medium-High | High | High | High | High | High |
+| **Autonomy Level** | High (minimal human) | High | Full | High | Medium-High | High | High | High | High | High |
 | **Max Runtime** | Unlimited | Async/Scheduled | Hours | Per-task | Session | Session | Days | Async | Per-task | Session |
-| **Pricing** | Free (OSS) | Enterprise | $20/mo | ChatGPT Plus | $20/mo | API costs | Free preview | Free preview | $19/mo | Free (OSS) |
-| **Open Source** | Yes | No | No | No | No | No | No | No | No | Yes |
+| **Pricing** | Free (source-available) | Enterprise | $20/mo | ChatGPT Plus | $20/mo | API costs | Free preview | Free preview | $19/mo | Free (OSS) |
+| **Source model** | Source-available (BUSL-1.1) | No | No | No | No | No | No | No | No | Yes |
 | **GitHub Stars** | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | 70.9k |
 
 ---
@@ -24,10 +24,10 @@
 
 | Feature | **Loki Mode** | **Devin** | **Codex** | **Cursor** | **Kiro** | **Antigravity** | **Amazon Q** | **OpenCode** |
 |---------|--------------|-----------|-----------|------------|----------|-----------------|--------------|--------------|
-| **Multi-Agent** | 41 agents in 7 swarms | Single | Single | Up to 8 parallel | Background | Manager Surface | Multiple types | 4 built-in |
+| **Multi-Agent** | 41 prompt-defined agent roles in 8 domains adopted per phase; parallel review council + optional worktree streams (Claude), sequential elsewhere | Single | Single | Up to 8 parallel | Background | Manager Surface | Multiple types | 4 built-in |
 | **Orchestration** | Full orchestrator | N/A | N/A | Git worktree | Hooks | Manager view | Workflow | Subagents |
 | **Parallel Exec** | 10+ Haiku, 4 impl (worktree) | No | No | 8 max | Yes | Yes | Yes | Yes |
-| **Agent Swarms** | Eng, Ops, Business, Data, Product, Growth, Review | N/A | N/A | N/A | N/A | N/A | 3 types | N/A |
+| **Agent Domains** | Eng, Ops, Business, Data, Product, Growth, Review | N/A | N/A | N/A | N/A | N/A | 3 types | N/A |
 
 ---
 
@@ -37,7 +37,7 @@
 |---------|--------------|-----------|-----------|------------|----------|-----------------|--------------|--------------|
 | **Code Review** | 3 blind reviewers + devil's advocate | Basic | Basic | BugBot PR | Property-based | Artifacts | Doc/Review | Basic |
 | **Anti-Sycophancy** | Yes (CONSENSAGENT) | No | No | No | No | No | No | No |
-| **Quality Gates** | 7 gates + PBT | Basic | Sandbox | Tests | Spec validation | Artifact checks | Tests | Permissions |
+| **Quality Gates** | 8 gates + PBT | Basic | Sandbox | Tests | Spec validation | Artifact checks | Tests | Permissions |
 | **Constitutional AI** | Yes (principles) | No | Refusal training | No | No | No | No | No |
 
 ---
@@ -47,7 +47,7 @@
 | Feature | **Loki Mode** | **Devin** | **Codex** | **Cursor** | **Kiro** | **Antigravity** | **Amazon Q** | **OpenCode** |
 |---------|--------------|-----------|-----------|------------|----------|-----------------|--------------|--------------|
 | **Spec-First** | OpenAPI-first | Natural lang | Natural lang | Natural lang | requirements.md, design.md, tasks.md | Natural lang | Natural lang | AGENTS.md |
-| **PRD Support** | Native parsing | Ticket-based | Issue-based | No | Native specs | No | Issue-based | No |
+| **Spec Support (PRD / issue / YAML)** | Native parsing across all three | Ticket-based | Issue-based | No | Native specs | No | Issue-based | No |
 | **Design Docs** | Auto-generates | No | No | No | Yes (design.md) | Artifacts | Yes | No |
 
 ---
@@ -146,12 +146,12 @@
 
 | Feature | **Zencoder** | **Loki Mode** | **Assessment** |
 |---------|-------------|---------------|----------------|
-| **Four Pillars** | Structured Workflows, SDD, Multi-Agent Verification, Parallel Execution | SDLC + RARV + 7 Gates + Worktrees | TIE |
+| **Four Pillars** | Structured Workflows, SDD, Multi-Agent Verification, Parallel Execution | SDLC + RARV + 8 Gates + Worktrees | TIE |
 | **Spec-Driven Dev** | Specs as first-class objects | OpenAPI-first | TIE |
 | **Multi-Agent Verification** | Model diversity (Claude vs OpenAI, 54% improvement) | 3 blind reviewers + devil's advocate | Different approach (N/A for Claude Code - only Claude models) |
-| **Quality Gates** | Built-in verification loops | 7 explicit gates + anti-sycophancy | **Loki Mode** |
+| **Quality Gates** | Built-in verification loops | 8 explicit gates + anti-sycophancy | **Loki Mode** |
 | **Memory System** | Not documented | 3-tier episodic/semantic/procedural | **Loki Mode** |
-| **Agent Specialization** | Custom Zen Agents | 41 pre-defined specialized agents | **Loki Mode** |
+| **Agent Specialization** | Custom Zen Agents | 41 pre-defined specialized agent roles | **Loki Mode** |
 | **CI Failure Analysis** | Explicit pattern with auto-fix | DevOps agent only | **ADOPTED from Zencoder** |
 | **Review Comment Resolution** | Auto-apply simple changes | Manual review | **ADOPTED from Zencoder** |
 | **Dependency Management** | Scheduled PRs, one group at a time | Mentioned only | **ADOPTED from Zencoder** |
@@ -178,11 +178,11 @@
 
 ### Where Loki Mode EXCEEDS Zencoder
 
-1. **Quality Control**: 7 explicit gates + blind review + devil's advocate vs built-in loops
+1. **Quality Control**: 8 explicit gates + blind review + devil's advocate vs built-in loops
 2. **Memory System**: 3-tier (episodic/semantic/procedural) with cross-project learning
-3. **Agent Specialization**: 41 pre-defined specialized agents across 7 swarms
+3. **Agent Specialization**: 41 pre-defined specialized agent roles across 8 domains
 4. **Anti-Sycophancy**: CONSENSAGENT patterns prevent reviewer groupthink
-5. **Autonomy Design**: Zero human intervention from PRD to production
+5. **Autonomy Design**: Minimal human intervention from PRD to production
 6. **Research Foundation**: 10+ academic papers integrated vs proprietary
 
 ### Where Zencoder EXCEEDS Loki Mode
@@ -203,13 +203,13 @@
 |---------|--------------|---------|-----------------|------------|-----------------|---------------------|----------------|
 | **Stars** | 594 | 11,903 | 35K+ | 26K+ | 13.7K | N/A | N/A |
 | **npm/wk** | 6.1K | 21.4K | N/A | N/A | N/A | N/A | N/A |
-| **Agents** | 41 in 7 swarms | 11 agents | Fresh per task | 108 agents | Swarm-based | 32 agents | N/A |
+| **Agents** | 41 roles in 8 domains | 11 agents | Fresh per task | 108 agents | Swarm-based | 32 agents | N/A |
 | **Skills** | Progressive disclosure | 6 slash commands | N/A | 129 skills | N/A | 35 skills | Memory focus |
 | **Multi-Provider** | Yes (Claude/Codex/Gemini) | 3 CLIs (separate) | No | No | No | No | No |
 | **Memory System** | 3-tier (episodic/semantic/procedural) | None | N/A | N/A | Hybrid | N/A | SQLite+FTS5 |
-| **Quality Gates** | 7 gates + Completion Council | User verify only | Two-Stage Review | N/A | Consensus | Tiered | N/A |
+| **Quality Gates** | 8 gates + Completion Council | User verify only | Two-Stage Review | N/A | Consensus | Tiered | N/A |
 | **Context Mgmt** | Standard | Fresh per task (core innovation) | Fresh per task | N/A | N/A | N/A | Progressive |
-| **Autonomy** | Full (zero human) | Semi (checkpoints) | Human-guided | Human-guided | Orchestrated | Human-guided | N/A |
+| **Autonomy** | High (minimal human) | Semi (checkpoints) | Human-guided | Human-guided | Orchestrated | Human-guided | N/A |
 
 ### What Loki Mode LACKS (Honest Assessment)
 
@@ -232,11 +232,11 @@ These are patterns from competing projects that are **practically and scientific
 |----------|---------|-------------------------|
 | **Multi-Provider Support** | Only skill supporting Claude, Codex, and Gemini with graceful degradation | All 8 competitors are Claude-only |
 | **RARV Cycle** | Reason-Act-Reflect-Verify is more rigorous than Plan-Execute | Most use simple Plan-Execute |
-| **7-Gate Quality System** | Static analysis + 3 reviewers + devil's advocate + anti-sycophancy + severity blocking + coverage + debate | Superpowers has 2-stage, others have less |
+| **8-Gate Quality System** | Static analysis + test suite (pass/fail) + 3 blind reviewers with severity blocking + devil's advocate + mock-integrity + test-mutation + documentation coverage + Magic Modules debate (backward-compat is a conditional healing auditor) + Phase 1 closure | Superpowers has 2-stage, others have less |
 | **Constitutional AI Integration** | Principles-based self-critique from Anthropic research | None have this |
 | **Anti-Sycophancy (CONSENSAGENT)** | Blind review + devil's advocate prevents groupthink | None have this |
 | **Provider Abstraction Layer** | Clean degradation from full-featured to sequential-only | Claude-only projects can't degrade |
-| **41 Specialized Agents** | Purpose-built agents in 7 swarms vs generic | agents (108) has more but less organized |
+| **41 Specialized Agent Roles** | Purpose-built role definitions in 8 domains vs generic; Loki gates every role's output through blind review + council | agents (108) has more but less organized |
 | **Research Foundation** | 10+ academic papers integrated with citations | Most have no research backing |
 
 ### Superpowers Deep-Dive (35K+ Stars)
@@ -258,7 +258,7 @@ Plugin marketplace architecture with unprecedented scale:
 | Pattern | Description | Loki Mode Status |
 |---------|-------------|------------------|
 | **72 Plugins** | Modular, focused plugins instead of monolith | Different approach (progressive disclosure) |
-| **108 Agents** | Specialized agents for specific domains | 41 agents in Loki Mode |
+| **108 Agents** | Specialized agents for specific domains | 41 agent roles in Loki Mode |
 | **129 Skills** | Skills as first-class objects | 10 skills in skills/ |
 | **Four-Tier Model Strategy** | Explicit tier selection with constraints | Similar to Loki Mode tiers |
 
@@ -342,7 +342,7 @@ Tiered agent architecture with explicit escalation:
 
 | Agent | Killer Feature |
 |-------|---------------|
-| **Loki Mode** | Zero-human-intervention full SDLC, 41 agents in 7 swarms, Constitutional AI, anti-sycophancy, cross-project learning, code transformation, property-based testing |
+| **Loki Mode** | Minimal-human-intervention full SDLC from any spec (PRD, GitHub issue, or YAML), 41 agent roles in 8 domains, Constitutional AI, anti-sycophancy, cross-project learning, code transformation, property-based testing |
 | **Devin** | Full software engineer persona, Slack integration, 67% PR merge rate |
 | **OpenAI Codex** | Skills marketplace, $skill-creator, GPT-5.2-Codex, secure sandbox |
 | **Cursor** | 8 parallel agents, BugBot, Memories, $10B valuation, Composer model (250 tok/s) |
@@ -357,14 +357,14 @@ Tiered agent architecture with explicit escalation:
 
 | Dimension | Loki Mode Advantage |
 |-----------|-------------------|
-| **Autonomy** | Only agent designed for TRUE zero human intervention |
-| **Multi-Agent** | 41 specialized agents in 7 swarms vs 1-8 in competitors |
-| **Quality** | 7 gates + blind review + devil's advocate + property-based testing |
+| **Autonomy** | Designed for high autonomy with minimal human intervention |
+| **Multi-Agent** | 41 prompt-defined agent roles in 8 domains adopted per phase (parallel review council + optional worktree streams on Claude, sequential elsewhere) vs 1-8 in competitors, with all output gated by blind review + council |
+| **Quality** | 8 gates + blind review + devil's advocate + property-based testing |
 | **Research** | 10+ academic papers integrated vs proprietary/undisclosed |
 | **Anti-Sycophancy** | Only agent with CONSENSAGENT-based blind review |
 | **Memory** | 3-tier memory (episodic/semantic/procedural) + review learning + cross-project |
 | **Transformation** | Code migration workflows (language, database, framework) |
-| **Cost** | Free (open source) vs $20-500/month |
+| **Cost** | Free (source-available, BUSL-1.1) vs $20-500/month |
 | **Customization** | Full source access vs black box |
 
 ---

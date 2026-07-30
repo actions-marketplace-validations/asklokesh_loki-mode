@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Loki Mode Event Emitter - Bash helper for emitting events
 #
 # Usage:
@@ -11,8 +11,171 @@
 #
 # Environment:
 #   LOKI_DIR - Path to .loki directory (default: .loki)
+#
+# Sourcing:
+#   This script can also be sourced (LOKI_EMIT_LIB_ONLY=1) to expose the
+#   safe_append_event_jsonl() helper without performing an emit.
 
-set -uo pipefail
+# safe_append_event_jsonl <events_jsonl_path> <line>
+#
+# Cross-process serialized append to .loki/events.jsonl. POSIX append is
+# atomic only for writes <PIPE_BUF (typically 4KB) and not all filesystems
+# honor it; under parallel-worktree contention bare `>>` can interleave
+# partial JSONL lines. This helper serializes appends across processes.
+#
+# Strategy (v7.5.10):
+#   - Prefer flock(1) when available (Linux, util-linux). Uses an
+#     exclusive lock on a sentinel FD bound to <events>.lock so the lock
+#     is released automatically when the subshell exits.
+#   - Fall back to a mkdir() mutex on macOS / BSDs where flock is not
+#     installed by default. mkdir is atomic on POSIX -- exactly one
+#     concurrent caller wins the create. We retry with backoff up to
+#     ~5s, and treat a stale lockdir (>30s old) as abandonable.
+#   - The newline is appended by the helper -- callers pass the JSON
+#     payload only.
+safe_append_event_jsonl() {
+    local events_path="$1"
+    local line="$2"
+    local lock_target="${events_path}.lock"
+    local events_dir
+    events_dir="$(dirname "$events_path")"
+    mkdir -p "$events_dir" 2>/dev/null || true
+
+    if command -v flock >/dev/null 2>&1; then
+        # flock path: bind FD 9 to the sentinel file (created if absent),
+        # take an exclusive lock, append, release on subshell exit.
+        #
+        # `-w 5` is LOAD-BEARING: a bare `flock -x 9` blocks FOREVER. A holder
+        # that is killed mid-write (a reaped CI run, a Ctrl-C'd build) leaves
+        # every subsequent emit hung, and because emit.sh is spawned per CLI
+        # invocation those hangs ACCUMULATE. Measured 2026-07-29: 59 orphaned
+        # emit.sh processes, the oldest alive 21 HOURS, on a machine at 0% idle.
+        # Observability must never outlive the thing it observes.
+        (
+            flock -w 5 -x 9 || exit 1
+            printf '%s\n' "$line" >> "$events_path"
+        ) 9>"$lock_target"
+        local frc=$?
+        if [ "$frc" -ne 0 ]; then
+            # Lock unavailable within the timeout: append unlocked rather than
+            # block. A rare interleaved line is strictly better than a hung CLI.
+            printf '%s\n' "$line" >> "$events_path" 2>/dev/null || true
+        fi
+        return 0
+    fi
+
+    # Fallback: mkdir-based mutex. mkdir is atomic on POSIX. macOS ships NO
+    # flock(1), so this is the path real users take -- it must be the robust one.
+    local lock_dir="${events_path}.lockdir"
+    local attempts=0
+    local max_attempts=100   # ~1s at 10ms sleep
+    local stale_after=30
+    while ! mkdir "$lock_dir" 2>/dev/null; do
+        # COUNT EVERY ITERATION, before any `continue` can skip the increment.
+        #
+        # This was the v8.1.0 fix's blind spot and it kept the P0 alive. Both
+        # `continue` paths below (lock vanished mid-stat; stale lock reclaimed)
+        # jumped PAST the increment that used to live at the bottom of the loop,
+        # so `max_attempts` was unreachable on those paths and the loop spun
+        # forever. Under concurrent emits the stale-reclaim path fires over and
+        # over, which is precisely the pathological case.
+        #
+        # MEASURED 2026-07-30, AFTER the v8.1.0 fix shipped: 63 orphaned
+        # emit.sh processes, oldest alive 10h51m, each burning ~5% CPU, machine
+        # at load 63 on 14 cores. Every orphan started after the fix landed.
+        # An unbounded wait whose only exit is a counter must increment that
+        # counter on EVERY path, or the bound is decorative.
+        attempts=$((attempts + 1))
+        if [ "$attempts" -ge "$max_attempts" ]; then
+            # Give up fast -- best-effort write so observability never blocks.
+            printf '%s\n' "$line" >> "$events_path" 2>/dev/null || true
+            return 0
+        fi
+        # Check staleness EVERY iteration, not only after exhausting attempts.
+        # The old code waited for all 500 attempts before its first staleness
+        # check, so a stale lock cost ~5s AND ~500 forked sleep helpers per
+        # event; under concurrent emits the locks kept going stale and the
+        # processes piled up. Measured before this fix: 10s and ~500 forks for
+        # a SINGLE append against an already-stale lock.
+        local age=0
+        local mtime
+        mtime=$(stat -f%m "$lock_dir" 2>/dev/null || stat -c%Y "$lock_dir" 2>/dev/null || echo "")
+        if [ -n "$mtime" ]; then
+            age=$(( $(date +%s) - mtime ))
+        else
+            # Lock vanished between the failed mkdir and the stat: retry at once.
+            continue
+        fi
+        if [ "$age" -gt "$stale_after" ]; then
+            rmdir "$lock_dir" 2>/dev/null || rm -rf "$lock_dir" 2>/dev/null || true
+            continue
+        fi
+        # (attempt counting and the give-up branch moved to the TOP of the loop
+        # so no `continue` can bypass them)
+        # Sleep ~10ms WITHOUT forking when the shell supports fractional sleep
+        # (bash's `read -t` needs no external process). perl/sleep are fallbacks.
+        read -r -t 0.01 _unused_ < /dev/null 2>/dev/null \
+            || perl -e 'select(undef,undef,undef,0.01)' 2>/dev/null \
+            || sleep 1
+    done
+    # Critical section.
+    printf '%s\n' "$line" >> "$events_path"
+    local rc=$?
+    rmdir "$lock_dir" 2>/dev/null || true
+    return $rc
+}
+
+# Library-only mode: source this file to get safe_append_event_jsonl
+# without executing the emit logic below.
+if [ "${LOKI_EMIT_LIB_ONLY:-0}" = "1" ]; then
+    return 0 2>/dev/null || exit 0
+fi
+
+set -euo pipefail
+
+#-----------------------------------------------------------------------------
+# SELF-REAPER: telemetry must never outlive the thing it observes.
+#-----------------------------------------------------------------------------
+# WHY A WATCHDOG AND NOT ANOTHER LOCK FIX. v8.1.0 fixed a specific unbounded
+# wait (bare `flock -x`, and a staleness check that ran only after 500 attempts).
+# It was a real fix and it was not sufficient: MEASURED 2026-07-30, AFTER that
+# release, 63 orphaned emit.sh processes were alive on this machine, the oldest
+# 10h51m, each burning ~5% CPU, contributing to load 63 on 14 cores. Every one
+# of them started AFTER the fix landed, so whatever wedges emit.sh is not (only)
+# the path that was fixed.
+#
+# The lesson is that patching each discovered hang is an arms race we keep
+# losing, because a hang anywhere in this script has the same user-visible cost.
+# emit.sh is FIRE-AND-FORGET telemetry: nothing waits on its result, and a
+# dropped event is strictly cheaper than a wedged process. So instead of proving
+# no path can block, we cap the lifetime of EVERY path.
+#
+# A background timer SIGKILLs this process after LOKI_EMIT_MAX_SECONDS (default
+# 10). It is deliberately blunt: no cleanup hook, no graceful drain, because the
+# failure mode being defended against is precisely "graceful paths did not run".
+# The killer is disowned so it never becomes a job the parent shell waits on,
+# and it exits immediately when the main process finishes normally.
+#
+# Set LOKI_EMIT_MAX_SECONDS=0 to disable (useful only when debugging emit.sh
+# itself -- an operator who disables it is choosing the orphan risk knowingly).
+_emit_max="${LOKI_EMIT_MAX_SECONDS:-10}"
+case "$_emit_max" in ''|*[!0-9]*) _emit_max=10 ;; esac
+if [ "$_emit_max" -gt 0 ]; then
+    _emit_target=$$
+    (
+        # Poll rather than one long sleep so the watchdog exits promptly on the
+        # normal path instead of lingering for the full window.
+        _waited=0
+        while [ "$_waited" -lt "$_emit_max" ]; do
+            sleep 1
+            kill -0 "$_emit_target" 2>/dev/null || exit 0
+            _waited=$((_waited + 1))
+        done
+        kill -9 "$_emit_target" 2>/dev/null || true
+    ) >/dev/null 2>&1 &
+    # Disown so the watchdog is not a tracked job of the caller's shell.
+    disown 2>/dev/null || true
+fi
 
 # Configuration
 LOKI_DIR="${LOKI_DIR:-.loki}"
@@ -29,11 +192,46 @@ if [ "$#" -ge 3 ]; then shift 3; else shift "$#"; fi
 
 # Generate event ID and timestamp
 EVENT_ID=$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')
-TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
+# Try GNU date %N (nanoseconds) first, fall back to python3, then .000Z
+if date --version >/dev/null 2>&1; then
+    # GNU date (Linux)
+    TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ")
+elif command -v python3 >/dev/null 2>&1; then
+    # macOS fallback: use python3 for milliseconds
+    TIMESTAMP=$(python3 -c "from datetime import datetime, timezone; print(datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z')")
+else
+    # Final fallback: .000Z
+    TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
+fi
 
-# JSON escape helper: handles \, ", and control characters
+# JSON escape helper: handles \, ", and control characters including newlines
+#
+# The sed pass escapes backslash, double-quote, tab and carriage-return to
+# their named short forms (\\ \" \t \r); the first awk pass collapses embedded
+# newlines to \n. Every REMAINING C0 control byte (0x01-0x08, 0x0B-0x0C,
+# 0x0E-0x1F -- which includes backspace 0x08 and form-feed 0x0C) is invalid raw
+# inside a JSON string and is escaped as \uXXXX by the final awk pass (its map
+# covers all of i=1..31). Without that escaping json.loads / JSON.parse reject
+# the line and consumers (dashboard _read_events, learning aggregator) silently
+# drop it. The named short forms emitted by sed are already two-char ASCII by
+# the time the final pass runs, so they are never re-escaped.
+#
+# NOTE: backspace/form-feed are deliberately NOT escaped in the sed pass.
+# Doing so requires embedding the raw control bytes in the sed pattern, which
+# editors silently strip -- that left the two empty-pattern sed no-ops this
+# helper previously carried. An empty sed regex reuses the LAST applied regex,
+# so those entries were dead AND a latent corruption hazard. The final awk
+# pass already escapes every byte in i=1..31 (backspace and form-feed included)
+# to the six-char uXXXX unicode escape, producing valid JSON, so the
+# named-short-form variants are unnecessary.
 json_escape() {
-    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/\r/\\r/g' | tr -d '\n'
+    printf '%s' "$1" \
+        | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/\r/\\r/g' \
+        | awk '{if(NR>1) printf "\\n"; printf "%s", $0}' \
+        | awk 'BEGIN{for(i=1;i<=31;i++)m[sprintf("%c",i)]=sprintf("\\u%04x",i)}
+               {s=""; n=length($0);
+                for(i=1;i<=n;i++){c=substr($0,i,1); s=s (c in m ? m[c] : c)}
+                printf "%s", s}'
 }
 
 # Build payload JSON
@@ -63,9 +261,52 @@ EVENT=$(cat <<EOF
 EOF
 )
 
-# Write event file
+# Write event file atomically.
+#
+# A bare `echo "$EVENT" > "$EVENT_FILE"` is NON-atomic: a reader (bus.py
+# get_pending_events / from_dict, dashboard) that globs `*.json` mid-write sees
+# a truncated/partial file and either fails json.loads (event silently dropped)
+# or, worse, reads a half-written record. Write to a sibling temp file in the
+# SAME directory (so rename(2) is an atomic same-filesystem operation) and then
+# rename into place; a `.tmp` suffix keeps the in-progress file out of the
+# `*.json` glob readers use. Clean up the temp on any failure so partials never
+# linger.
 EVENT_FILE="$EVENTS_DIR/${TIMESTAMP//:/-}_$EVENT_ID.json"
-echo "$EVENT" > "$EVENT_FILE"
+EVENT_TMP="$EVENT_FILE.tmp"
+if printf '%s\n' "$EVENT" > "$EVENT_TMP" && mv -f "$EVENT_TMP" "$EVENT_FILE"; then
+    :
+else
+    rm -f "$EVENT_TMP" 2>/dev/null || true
+fi
+
+# Rotate events.jsonl if it exceeds 50MB (keep 1 backup)
+EVENTS_LOG="$LOKI_DIR/events.jsonl"
+if [ -f "$EVENTS_LOG" ]; then
+    # Check file size (in bytes)
+    FILE_SIZE=$(stat -f%z "$EVENTS_LOG" 2>/dev/null || stat -c%s "$EVENTS_LOG" 2>/dev/null || echo 0)
+    MAX_SIZE=$((50 * 1024 * 1024))  # 50MB
+    if [ "$FILE_SIZE" -gt "$MAX_SIZE" ]; then
+        mv "$EVENTS_LOG" "$EVENTS_LOG.1" 2>/dev/null || true
+    fi
+fi
+
+# Append a flat-schema record to .loki/events.jsonl for dashboard consumption.
+#
+# The dashboard reads .loki/events.jsonl directly (dashboard/server.py
+# _read_events) and run.sh's emit_event/emit_event_json write the FLAT schema
+# {"timestamp","type","data"} -- NOT the nested pending schema written to the
+# per-event file above. Without this append, events emitted via emit.sh land
+# only in the pending dir and stay INVISIBLE to the dashboard.
+#
+# Mapping: data = the existing PAYLOAD object (mirrors emit_event_json, where
+# `data` is a JSON object). `source` is intentionally dropped from the flat
+# record (not part of the dashboard schema); the pending file above preserves
+# it for other consumers. PAYLOAD is already newline-free (built on lines
+# 127-135), so the record is a single compact line. The helper appends its own
+# trailing newline. `|| true` keeps observability from ever aborting the emit
+# under `set -e` (matches autonomy/run.sh:9896).
+FLAT_EVENT="{\"timestamp\":\"$TIMESTAMP\",\"type\":\"$TYPE_ESC\",\"data\":$PAYLOAD}"
+safe_append_event_jsonl "$EVENTS_LOG" "$FLAT_EVENT" 2>/dev/null || true
 
 # Output event ID
 echo "$EVENT_ID"

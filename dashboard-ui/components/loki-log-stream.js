@@ -10,6 +10,7 @@
 
 import { LokiElement } from '../core/loki-theme.js';
 import { getApiClient, ApiEvents } from '../core/loki-api-client.js';
+import { registerPoll } from '../core/loki-poll-registry.js';
 
 /** @type {Object<string, {color: string, label: string}>} Log level display configuration */
 const LOG_LEVELS = {
@@ -47,6 +48,15 @@ export class LokiLogStream extends LokiElement {
     this._levelFilter = 'all';
     this._api = null;
     this._pollInterval = null;
+    this._logMessageHandler = null;
+    // Heavy-logs duplicate suppression: track how many lines we have already
+    // ingested and a lightweight signature of the last response so an unchanged
+    // 200-line log does not get re-processed every cycle. The poll itself is
+    // gated to the active + visible Insights section by the central registry.
+    this._apiLastCount = 0;
+    this._apiLastSig = null;
+    this._fileLastSize = 0;
+    this._fileLastSig = null;
   }
 
   connectedCallback() {
@@ -60,6 +70,13 @@ export class LokiLogStream extends LokiElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     this._stopLogPolling();
+    this._teardownApiListeners();
+  }
+
+  _teardownApiListeners() {
+    if (this._api && this._logMessageHandler) {
+      this._api.removeEventListener(ApiEvents.LOG_MESSAGE, this._logMessageHandler);
+    }
   }
 
   attributeChangedCallback(name, oldValue, newValue) {
@@ -68,7 +85,17 @@ export class LokiLogStream extends LokiElement {
     switch (name) {
       case 'api-url':
         if (this._api) {
-          this._api.baseUrl = newValue;
+          // Adopt the correct per-URL client instead of mutating the cached
+          // singleton's baseUrl (which leaks one project's logs into another).
+          // Detach our LOG_MESSAGE listener from the old instance, swap, and
+          // re-subscribe. Reset the accumulated log buffer so the switched
+          // project starts clean rather than appending to the prior project.
+          this._teardownApiListeners();
+          this._logs = [];
+          this._apiLastCount = 0;
+          this._apiLastSig = null;
+          this._setupApi();
+          this.render();
         }
         break;
       case 'max-lines':
@@ -90,9 +117,8 @@ export class LokiLogStream extends LokiElement {
     const apiUrl = this.getAttribute('api-url') || window.location.origin;
     this._api = getApiClient({ baseUrl: apiUrl });
 
-    this._api.addEventListener(ApiEvents.LOG_MESSAGE, (e) => {
-      this._addLog(e.detail);
-    });
+    this._logMessageHandler = (e) => this._addLog(e.detail);
+    this._api.addEventListener(ApiEvents.LOG_MESSAGE, this._logMessageHandler);
   }
 
   _startLogPolling() {
@@ -107,71 +133,101 @@ export class LokiLogStream extends LokiElement {
   }
 
   async _pollApiLogs() {
-    let lastCount = 0;
+    // Run once now, then register the recurring poll on the central registry so
+    // the heavy /api/logs?lines=200 endpoint only fetches when the Logs view
+    // (Insights section) is active AND the tab is visible. The interval is
+    // deliberately LONGER than the light status polls (5s vs the 2s it used to
+    // run at on every page) because logs are heavy and the WebSocket push path
+    // delivers live lines in real time when connected.
+    await this._apiLogPollTick();
+    this._poll = registerPoll({
+      loadFn: () => this._apiLogPollTick(),
+      intervalMs: 5000,
+      element: this,
+      immediate: false,
+    });
+  }
 
-    const poll = async () => {
-      try {
-        const entries = await this._api.getLogs(200);
-        if (Array.isArray(entries) && entries.length > lastCount) {
-          const newEntries = entries.slice(lastCount);
-          for (const entry of newEntries) {
-            if (entry.message && entry.message.trim()) {
-              this._addLog({
-                message: entry.message,
-                level: entry.level || 'info',
-                timestamp: entry.timestamp || new Date().toLocaleTimeString(),
-              });
-            }
+  async _apiLogPollTick() {
+    try {
+      const entries = await this._api.getLogs(200);
+      if (!Array.isArray(entries)) return;
+      // Duplicate-suppression: skip all work if the response is identical to
+      // the last one (same count + same last-line signature). This avoids
+      // re-walking and re-rendering an unchanged 200-line log every cycle.
+      const sig = entries.length
+        ? `${entries.length}:${entries[entries.length - 1]?.timestamp || ''}:${entries[entries.length - 1]?.message || ''}`
+        : '0';
+      if (sig === this._apiLastSig) return;
+      this._apiLastSig = sig;
+      if (entries.length > this._apiLastCount) {
+        const newEntries = entries.slice(this._apiLastCount);
+        for (const entry of newEntries) {
+          if (entry.message && entry.message.trim()) {
+            this._addLog({
+              message: entry.message,
+              level: entry.level || 'info',
+              timestamp: entry.timestamp || new Date().toLocaleTimeString(),
+            });
           }
-          lastCount = entries.length;
         }
-      } catch (error) {
-        // API not available, will retry on next poll
+      } else if (entries.length < this._apiLastCount) {
+        // Log rotated/truncated: reset and ingest from the top next cycle.
+        this._apiLastCount = 0;
       }
-    };
-
-    poll();
-    this._apiPollInterval = setInterval(poll, 2000);
+      this._apiLastCount = entries.length;
+    } catch (error) {
+      // API not available, will retry on next poll
+    }
   }
 
   async _pollLogFile(logFile) {
-    let lastSize = 0;
+    // Run once now, then register the recurring file poll on the central
+    // registry (active + visible section only). Kept at 1s for file tails since
+    // a static file read is cheap, but still gated so a hidden tab or a
+    // background section does no I/O.
+    await this._fileLogPollTick(logFile);
+    this._poll = registerPoll({
+      loadFn: () => this._fileLogPollTick(logFile),
+      intervalMs: 1000,
+      element: this,
+      immediate: false,
+    });
+  }
 
-    const poll = async () => {
-      try {
-        const response = await fetch(`${logFile}?t=${Date.now()}`);
-        if (!response.ok) return;
+  async _fileLogPollTick(logFile) {
+    try {
+      const response = await fetch(`${logFile}?t=${Date.now()}`, { credentials: 'include' });
+      if (!response.ok) return;
 
-        const text = await response.text();
-        const lines = text.split('\n');
+      const text = await response.text();
+      // Duplicate-suppression: identical file content -> no work.
+      const sig = `${text.length}`;
+      if (sig === this._fileLastSig) return;
+      this._fileLastSig = sig;
+      const lines = text.split('\n');
 
-        // Only process new lines
-        if (lines.length > lastSize) {
-          const newLines = lines.slice(lastSize);
-          for (const line of newLines) {
-            if (line.trim()) {
-              this._addLog(this._parseLine(line));
-            }
+      // Only process new lines
+      if (lines.length > this._fileLastSize) {
+        const newLines = lines.slice(this._fileLastSize);
+        for (const line of newLines) {
+          if (line.trim()) {
+            this._addLog(this._parseLine(line));
           }
-          lastSize = lines.length;
         }
-      } catch (error) {
-        // Silently ignore file read errors
+      } else if (lines.length < this._fileLastSize) {
+        this._fileLastSize = 0;
       }
-    };
-
-    poll();
-    this._pollInterval = setInterval(poll, 1000);
+      this._fileLastSize = lines.length;
+    } catch (error) {
+      // Silently ignore file read errors
+    }
   }
 
   _stopLogPolling() {
-    if (this._pollInterval) {
-      clearInterval(this._pollInterval);
-      this._pollInterval = null;
-    }
-    if (this._apiPollInterval) {
-      clearInterval(this._apiPollInterval);
-      this._apiPollInterval = null;
+    if (this._poll) {
+      this._poll.stop();
+      this._poll = null;
     }
   }
 
@@ -338,9 +394,9 @@ export class LokiLogStream extends LokiElement {
         }
 
         .terminal-container {
-          background: var(--loki-bg-secondary);
-          border: 1px solid var(--loki-border);
-          border-radius: 10px;
+          background: #1A0F2E;
+          border: 1px solid #2A1F3E;
+          border-radius: 5px;
           overflow: hidden;
         }
 
@@ -349,8 +405,8 @@ export class LokiLogStream extends LokiElement {
           justify-content: space-between;
           align-items: center;
           padding: 10px 14px;
-          background: var(--loki-bg-tertiary);
-          border-bottom: 1px solid var(--loki-border);
+          background: #140B24;
+          border-bottom: 1px solid #2A1F3E;
         }
 
         .terminal-title {
@@ -359,7 +415,7 @@ export class LokiLogStream extends LokiElement {
           gap: 8px;
           font-size: 12px;
           font-weight: 600;
-          color: var(--loki-text-secondary);
+          color: #C0B8D0;
         }
 
         .terminal-dots {
@@ -385,18 +441,18 @@ export class LokiLogStream extends LokiElement {
 
         .terminal-btn {
           padding: 4px 10px;
-          background: var(--loki-bg-hover);
-          border: 1px solid var(--loki-border-light);
+          background: #2A1F4A;
+          border: 1px solid #3D3060;
           border-radius: 4px;
-          color: var(--loki-text-secondary);
+          color: #C0B8D0;
           font-size: 11px;
           cursor: pointer;
           transition: all var(--loki-transition);
         }
 
         .terminal-btn:hover {
-          background: var(--loki-border-light);
-          color: var(--loki-text-primary);
+          background: #3D3060;
+          color: #F0ECF8;
         }
 
         .terminal-btn.active {
@@ -407,10 +463,10 @@ export class LokiLogStream extends LokiElement {
 
         .filter-input {
           padding: 4px 10px;
-          background: var(--loki-bg-hover);
-          border: 1px solid var(--loki-border-light);
+          background: #2A1F4A;
+          border: 1px solid #3D3060;
           border-radius: 4px;
-          color: var(--loki-text-primary);
+          color: #F0ECF8;
           font-size: 11px;
           width: 120px;
         }
@@ -421,15 +477,15 @@ export class LokiLogStream extends LokiElement {
         }
 
         .filter-input::placeholder {
-          color: var(--loki-text-muted);
+          color: #8B7FA8;
         }
 
         .level-select {
           padding: 4px 10px;
-          background: var(--loki-bg-hover);
-          border: 1px solid var(--loki-border-light);
+          background: #2A1F4A;
+          border: 1px solid #3D3060;
           border-radius: 4px;
-          color: var(--loki-text-secondary);
+          color: #C0B8D0;
           font-size: 11px;
           cursor: pointer;
         }
@@ -441,8 +497,8 @@ export class LokiLogStream extends LokiElement {
           font-family: 'JetBrains Mono', monospace;
           font-size: 12px;
           line-height: 1.6;
-          color: var(--loki-text-primary);
-          background: var(--loki-bg-secondary);
+          color: #F0ECF8;
+          background: #1A0F2E;
         }
 
         .log-line {

@@ -5,6 +5,9 @@
 # Build artifacts
 node_modules
 dist
+# Exception: loki-ts/dist is the pre-built Bun bundle shipped to containers.
+!loki-ts/dist
+!loki-ts/dist/**
 *.log
 
 # Local state
@@ -32,6 +35,7 @@ blog/
 # Source-only directories (not needed in Docker image)
 dashboard-ui/
 tests/
+!tests/docker/
 wiki/
 wiki-repo/
 demo/

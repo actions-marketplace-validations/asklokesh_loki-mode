@@ -17,6 +17,41 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
 
+def _to_utc_isoformat(dt: datetime) -> str:
+    """Convert datetime to UTC ISO 8601 string with Z suffix.
+
+    Handles both timezone-aware and timezone-naive datetimes.
+    If dt has a non-UTC timezone, converts to UTC first.
+    """
+    # If timezone-aware and not UTC, convert to UTC.
+    # Compare as timedelta values (not by identity) for reliable cross-tz checks.
+    from datetime import timedelta as _td
+    if dt.tzinfo is not None and (dt.utcoffset() or _td(0)) != _td(0):
+        dt = dt.astimezone(timezone.utc)
+
+    iso = dt.isoformat()
+    # If already has timezone offset like +00:00, replace with Z
+    if iso.endswith("+00:00"):
+        return iso[:-6] + "Z"
+    # If no timezone info, append Z (assumed UTC)
+    if not iso.endswith("Z") and "+" not in iso and iso.count("-") <= 2:
+        return iso + "Z"
+    return iso
+
+
+def _parse_utc_datetime(s: str) -> datetime:
+    """Parse an ISO 8601 string into a timezone-aware UTC datetime.
+
+    Handles trailing 'Z', '+00:00', and naive strings (assumed UTC).
+    """
+    if s.endswith("Z"):
+        s = s[:-1]
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 # -----------------------------------------------------------------------------
 # Supporting Types
 # -----------------------------------------------------------------------------
@@ -311,7 +346,7 @@ class EpisodeTrace:
         result = {
             "id": self.id,
             "task_id": self.task_id,
-            "timestamp": self.timestamp.isoformat() + "Z",
+            "timestamp": _to_utc_isoformat(self.timestamp),
             "duration_seconds": self.duration_seconds,
             "agent": self.agent,
             "context": {
@@ -331,7 +366,7 @@ class EpisodeTrace:
             "access_count": self.access_count,
         }
         if self.last_accessed:
-            result["last_accessed"] = self.last_accessed.isoformat() + "Z"
+            result["last_accessed"] = _to_utc_isoformat(self.last_accessed)
         return result
 
     @classmethod
@@ -339,24 +374,25 @@ class EpisodeTrace:
         """Create from dictionary."""
         context = data.get("context", {})
         timestamp_str = data.get("timestamp", "")
-        if isinstance(timestamp_str, str):
-            # Handle ISO format with Z suffix
-            if timestamp_str.endswith("Z"):
-                timestamp_str = timestamp_str[:-1]
-            timestamp = datetime.fromisoformat(timestamp_str)
-        else:
+        if isinstance(timestamp_str, str) and timestamp_str:
+            timestamp = _parse_utc_datetime(timestamp_str)
+        elif isinstance(timestamp_str, datetime):
             timestamp = timestamp_str
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
+        else:
+            timestamp = datetime.now(timezone.utc)
 
         # Parse last_accessed datetime
         last_accessed = None
         last_accessed_str = data.get("last_accessed")
         if last_accessed_str:
             if isinstance(last_accessed_str, str):
-                if last_accessed_str.endswith("Z"):
-                    last_accessed_str = last_accessed_str[:-1]
-                last_accessed = datetime.fromisoformat(last_accessed_str)
+                last_accessed = _parse_utc_datetime(last_accessed_str)
             else:
                 last_accessed = last_accessed_str
+                if hasattr(last_accessed, 'tzinfo') and last_accessed.tzinfo is None:
+                    last_accessed = last_accessed.replace(tzinfo=timezone.utc)
 
         return cls(
             id=data.get("id", ""),
@@ -506,9 +542,9 @@ class SemanticPattern:
             "access_count": self.access_count,
         }
         if self.last_used:
-            result["last_used"] = self.last_used.isoformat() + "Z"
+            result["last_used"] = _to_utc_isoformat(self.last_used)
         if self.last_accessed:
-            result["last_accessed"] = self.last_accessed.isoformat() + "Z"
+            result["last_accessed"] = _to_utc_isoformat(self.last_accessed)
         return result
 
     @classmethod
@@ -518,17 +554,21 @@ class SemanticPattern:
         if data.get("last_used"):
             last_used_str = data["last_used"]
             if isinstance(last_used_str, str):
-                if last_used_str.endswith("Z"):
-                    last_used_str = last_used_str[:-1]
-                last_used = datetime.fromisoformat(last_used_str)
+                last_used = _parse_utc_datetime(last_used_str)
+            elif isinstance(last_used_str, datetime):
+                last_used = last_used_str
+                if last_used.tzinfo is None:
+                    last_used = last_used.replace(tzinfo=timezone.utc)
 
         last_accessed = None
         if data.get("last_accessed"):
             last_accessed_str = data["last_accessed"]
             if isinstance(last_accessed_str, str):
-                if last_accessed_str.endswith("Z"):
-                    last_accessed_str = last_accessed_str[:-1]
-                last_accessed = datetime.fromisoformat(last_accessed_str)
+                last_accessed = _parse_utc_datetime(last_accessed_str)
+            elif isinstance(last_accessed_str, datetime):
+                last_accessed = last_accessed_str
+                if last_accessed.tzinfo is None:
+                    last_accessed = last_accessed.replace(tzinfo=timezone.utc)
 
         return cls(
             id=data.get("id", ""),
@@ -661,7 +701,7 @@ class ProceduralSkill:
         if self.example_usage:
             result["example_usage"] = self.example_usage
         if self.last_accessed:
-            result["last_accessed"] = self.last_accessed.isoformat() + "Z"
+            result["last_accessed"] = _to_utc_isoformat(self.last_accessed)
         return result
 
     @classmethod
@@ -671,9 +711,11 @@ class ProceduralSkill:
         if data.get("last_accessed"):
             last_accessed_str = data["last_accessed"]
             if isinstance(last_accessed_str, str):
-                if last_accessed_str.endswith("Z"):
-                    last_accessed_str = last_accessed_str[:-1]
-                last_accessed = datetime.fromisoformat(last_accessed_str)
+                last_accessed = _parse_utc_datetime(last_accessed_str)
+            elif isinstance(last_accessed_str, datetime):
+                last_accessed = last_accessed_str
+                if last_accessed.tzinfo is None:
+                    last_accessed = last_accessed.replace(tzinfo=timezone.utc)
 
         return cls(
             id=data.get("id", ""),
@@ -740,3 +782,158 @@ class ProceduralSkill:
     def add_error_fix(self, error: str, fix: str) -> None:
         """Add a common error and its fix."""
         self.common_errors.append(ErrorFix(error=error, fix=fix))
+
+
+# -----------------------------------------------------------------------------
+# Healing Memory Types (v6.67.0)
+# Inspired by Amazon AGI Lab's failure-first learning approach.
+# These types store friction points, failure modes, and institutional knowledge
+# discovered during legacy system healing operations.
+# -----------------------------------------------------------------------------
+
+
+@dataclass
+class FrictionPoint:
+    """
+    A friction point discovered during codebase archaeology.
+
+    Friction points are behaviors that appear to be bugs but may actually
+    be undocumented business rules. They must be classified before removal.
+
+    Attributes:
+        id: Unique identifier (e.g., "friction-001")
+        location: File path and line number (e.g., "src/billing/invoice.py:234")
+        behavior: Description of the observed behavior
+        classification: business_rule, true_bug, or unknown
+        evidence: Evidence supporting the classification
+        discovered_by: How this was discovered (archaeology_scan, manual, test_failure)
+        timestamp: When discovered
+        safe_to_remove: Whether it's safe to remove this friction
+    """
+    id: str
+    location: str
+    behavior: str
+    classification: str = "unknown"  # business_rule | true_bug | unknown
+    evidence: str = ""
+    discovered_by: str = "archaeology_scan"
+    timestamp: Optional[datetime] = None
+    safe_to_remove: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result = {
+            "id": self.id,
+            "location": self.location,
+            "behavior": self.behavior,
+            "classification": self.classification,
+            "evidence": self.evidence,
+            "discovered_by": self.discovered_by,
+            "safe_to_remove": self.safe_to_remove,
+        }
+        if self.timestamp:
+            result["timestamp"] = _to_utc_isoformat(self.timestamp)
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "FrictionPoint":
+        """Create from dictionary."""
+        timestamp = None
+        if data.get("timestamp"):
+            ts = data["timestamp"]
+            if isinstance(ts, str):
+                timestamp = _parse_utc_datetime(ts)
+        return cls(
+            id=data.get("id", ""),
+            location=data.get("location", ""),
+            behavior=data.get("behavior", ""),
+            classification=data.get("classification", "unknown"),
+            evidence=data.get("evidence", ""),
+            discovered_by=data.get("discovered_by", "archaeology_scan"),
+            timestamp=timestamp,
+            safe_to_remove=data.get("safe_to_remove", False),
+        )
+
+    def validate(self) -> List[str]:
+        """Validate the friction point."""
+        errors = []
+        if not self.id:
+            errors.append("FrictionPoint.id is required")
+        if not self.location:
+            errors.append("FrictionPoint.location is required")
+        if not self.behavior:
+            errors.append("FrictionPoint.behavior is required")
+        if self.classification not in ("business_rule", "true_bug", "unknown"):
+            errors.append("FrictionPoint.classification must be business_rule, true_bug, or unknown")
+        return errors
+
+
+@dataclass
+class FailureMode:
+    """
+    A failure mode discovered during healing operations.
+
+    Failure-first learning: each failure teaches about the system's
+    real behavior. Failures are stored and used to build understanding.
+
+    Attributes:
+        mode_id: Unique identifier
+        trigger: What causes the failure
+        behavior: What happens when it fails
+        recovery: How the system currently recovers
+        is_intentional: Whether the failure is by design
+        component: System component where failure occurs
+        characterization_test_id: Test that reproduces this mode
+    """
+    mode_id: str
+    trigger: str
+    behavior: str
+    recovery: str = ""
+    is_intentional: bool = False
+    component: str = ""
+    characterization_test_id: str = ""
+    timestamp: Optional[datetime] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result = {
+            "mode_id": self.mode_id,
+            "trigger": self.trigger,
+            "behavior": self.behavior,
+            "recovery": self.recovery,
+            "is_intentional": self.is_intentional,
+            "component": self.component,
+            "characterization_test_id": self.characterization_test_id,
+        }
+        if self.timestamp:
+            result["timestamp"] = _to_utc_isoformat(self.timestamp)
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "FailureMode":
+        """Create from dictionary."""
+        timestamp = None
+        if data.get("timestamp"):
+            ts = data["timestamp"]
+            if isinstance(ts, str):
+                timestamp = _parse_utc_datetime(ts)
+        return cls(
+            mode_id=data.get("mode_id", ""),
+            trigger=data.get("trigger", ""),
+            behavior=data.get("behavior", ""),
+            recovery=data.get("recovery", ""),
+            is_intentional=data.get("is_intentional", False),
+            component=data.get("component", ""),
+            characterization_test_id=data.get("characterization_test_id", ""),
+            timestamp=timestamp,
+        )
+
+    def validate(self) -> List[str]:
+        """Validate the failure mode."""
+        errors = []
+        if not self.mode_id:
+            errors.append("FailureMode.mode_id is required")
+        if not self.trigger:
+            errors.append("FailureMode.trigger is required")
+        if not self.behavior:
+            errors.append("FailureMode.behavior is required")
+        return errors

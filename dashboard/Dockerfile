@@ -5,17 +5,17 @@
 #   docker build -t loki-dashboard ./dashboard
 #
 # Run:
-#   docker run -p 8420:8420 -v ~/.loki:/home/appuser/.loki loki-dashboard
+#   docker run -p 57374:57374 -v ~/.loki:/home/appuser/.loki loki-dashboard
 #
 # Enterprise mode:
-#   docker run -p 8420:8420 \
+#   docker run -p 57374:57374 \
 #     -e LOKI_ENTERPRISE_AUTH=true \
 #     -e LOKI_ENTERPRISE_AUDIT=true \
 #     -v ~/.loki:/home/appuser/.loki \
 #     loki-dashboard
 
 # Stage 1: Build frontend
-FROM node:20-alpine AS frontend-builder
+FROM node:22-alpine AS frontend-builder
 
 WORKDIR /app/frontend
 
@@ -39,7 +39,8 @@ LABEL org.opencontainers.image.source="https://github.com/asklokesh/loki-mode"
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV LOKI_DASHBOARD_HOST=0.0.0.0
-ENV LOKI_DASHBOARD_PORT=8420
+ENV LOKI_DASHBOARD_PORT=57374
+ENV LOKI_DATA_DIR=/home/appuser/.loki
 
 # Create non-root user for security
 RUN useradd --create-home --shell /bin/bash appuser
@@ -52,7 +53,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy backend code as a package (dashboard/)
 # This preserves the package structure for relative imports
-COPY __init__.py database.py models.py server.py registry.py auth.py audit.py ./dashboard/
+COPY __init__.py database.py models.py server.py registry.py auth.py audit.py secrets.py control.py run.py build_supervisor.py ./dashboard/
 
 # Copy built frontend to static directory inside package
 COPY --from=frontend-builder /app/frontend/dist ./dashboard/static
@@ -70,10 +71,10 @@ ENV HOME=/home/appuser
 
 # Health check using Python (curl not available in slim image)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8420/health')" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:57374/health')" || exit 1
 
 # Expose port
-EXPOSE 8420
+EXPOSE 57374
 
 # Run server with correct module path
-CMD ["python", "-m", "uvicorn", "dashboard.server:app", "--host", "0.0.0.0", "--port", "8420"]
+CMD ["python", "-m", "uvicorn", "dashboard.server:app", "--host", "0.0.0.0", "--port", "57374"]

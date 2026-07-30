@@ -53,6 +53,7 @@ export const ApiEvents = {
   AGENT_UPDATE: 'api:agent-update',
   LOG_MESSAGE: 'api:log-message',
   MEMORY_UPDATE: 'api:memory-update',
+  CHECKLIST_UPDATE: 'api:checklist-update',
 };
 
 /**
@@ -87,13 +88,18 @@ export class LokiApiClient extends EventTarget {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this._ws = null;
     this._connected = false;
+    this._intentionalClose = false;
     this._pollInterval = null;
     this._reconnectTimeout = null;
+    this._reconnectAttempts = 0;
+    this._maxReconnectAttempts = 20;
     this._cache = new Map();
     this._cacheTimeout = 5000; // 5 seconds cache
     this._vscodeApi = null;
     this._context = this._detectContext();
     this._currentPollInterval = CONTEXT_DEFAULTS[this._context] || POLL_INTERVALS.normal;
+    this._visibilityChangeHandler = null;
+    this._messageHandler = null;
 
     // Setup adaptive polling and VS Code bridge
     this._setupAdaptivePolling();
@@ -138,13 +144,15 @@ export class LokiApiClient extends EventTarget {
     // Only setup in browser environments with document API
     if (typeof document === 'undefined') return;
 
-    document.addEventListener('visibilitychange', () => {
+    this._visibilityChangeHandler = () => {
       if (document.hidden) {
         this._setPollInterval(POLL_INTERVALS.background);
       } else {
         this._setPollInterval(CONTEXT_DEFAULTS[this._context] || POLL_INTERVALS.normal);
       }
-    });
+    };
+
+    document.addEventListener('visibilitychange', this._visibilityChangeHandler);
   }
 
   /**
@@ -192,7 +200,7 @@ export class LokiApiClient extends EventTarget {
     }
 
     // Listen for messages from VS Code extension
-    window.addEventListener('message', (event) => {
+    this._messageHandler = (event) => {
       const message = event.data;
       if (!message || !message.type) return;
 
@@ -242,7 +250,9 @@ export class LokiApiClient extends EventTarget {
           // Emit unknown message types as custom events
           this._emit(`api:${message.type}`, message.data);
       }
-    });
+    };
+
+    window.addEventListener('message', this._messageHandler);
   }
 
   /**
@@ -287,7 +297,13 @@ export class LokiApiClient extends EventTarget {
   }
 
   /**
-   * Set the API base URL
+   * Set the API base URL.
+   *
+   * DEPRECATED for project/api-url switching. Instances are cached per-URL by
+   * getInstance(); mutating baseUrl in place corrupts that cache (the Map key no
+   * longer matches the instance's URL) and leaks one project's data into another
+   * component that still holds the same instance. To switch URLs, fetch the
+   * correct instance via getApiClient({ baseUrl }) and reassign, do not mutate.
    */
   set baseUrl(url) {
     this.config.baseUrl = url;
@@ -309,6 +325,10 @@ export class LokiApiClient extends EventTarget {
    * Connect to WebSocket for real-time updates
    */
   async connect() {
+    // Clear the intentional-close flag first: any connect (including the
+    // auto-reconnect path that calls connect() from _scheduleReconnect) means
+    // we want reconnects to resume if this socket later drops unexpectedly.
+    this._intentionalClose = false;
     if (this._ws && this._ws.readyState === WebSocket.OPEN) {
       return;
     }
@@ -319,6 +339,7 @@ export class LokiApiClient extends EventTarget {
 
         this._ws.onopen = () => {
           this._connected = true;
+          this._reconnectAttempts = 0;
           this._emit(ApiEvents.CONNECTED);
           resolve();
         };
@@ -326,7 +347,12 @@ export class LokiApiClient extends EventTarget {
         this._ws.onclose = () => {
           this._connected = false;
           this._emit(ApiEvents.DISCONNECTED);
-          this._scheduleReconnect();
+          // onclose fires asynchronously after close(). If disconnect() closed
+          // the socket on purpose, do NOT reconnect -- otherwise the async
+          // onclose defeats disconnect() by immediately reopening the socket.
+          if (!this._intentionalClose) {
+            this._scheduleReconnect();
+          }
         };
 
         this._ws.onerror = (error) => {
@@ -352,6 +378,9 @@ export class LokiApiClient extends EventTarget {
    * Disconnect WebSocket
    */
   disconnect() {
+    // Mark this as an intentional close so the async onclose handler does not
+    // schedule a reconnect and silently reopen the socket we are tearing down.
+    this._intentionalClose = true;
     if (this._ws) {
       this._ws.close();
       this._ws = null;
@@ -365,6 +394,28 @@ export class LokiApiClient extends EventTarget {
       this._reconnectTimeout = null;
     }
     this._connected = false;
+    this._cleanupGlobalListeners();
+  }
+
+  /**
+   * Clean up global event listeners
+   */
+  _cleanupGlobalListeners() {
+    if (this._visibilityChangeHandler && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this._visibilityChangeHandler);
+      this._visibilityChangeHandler = null;
+    }
+    if (this._messageHandler && typeof window !== 'undefined') {
+      window.removeEventListener('message', this._messageHandler);
+      this._messageHandler = null;
+    }
+  }
+
+  /**
+   * Destroy the API client and clean up all resources
+   */
+  destroy() {
+    this.disconnect();
   }
 
   /**
@@ -372,19 +423,38 @@ export class LokiApiClient extends EventTarget {
    */
   _scheduleReconnect() {
     if (this._reconnectTimeout) return;
+    if (this._reconnectAttempts >= this._maxReconnectAttempts) {
+      console.warn('WebSocket max reconnect attempts reached, giving up');
+      this._emit(ApiEvents.ERROR, { error: 'Max reconnect attempts reached' });
+      return;
+    }
+
+    const delay = Math.min(
+      this.config.retryDelay * Math.pow(2, this._reconnectAttempts),
+      30000
+    );
+    this._reconnectAttempts++;
 
     this._reconnectTimeout = setTimeout(() => {
       this._reconnectTimeout = null;
       this.connect().catch(() => {
         // Will retry on next schedule
       });
-    }, this.config.retryDelay);
+    }, delay);
   }
 
   /**
    * Handle incoming WebSocket message
    */
   _handleMessage(message) {
+    // Respond to server pings to keep connection alive
+    if (message.type === 'ping') {
+      if (this._ws && this._ws.readyState === WebSocket.OPEN) {
+        this._ws.send(JSON.stringify({ type: 'pong' }));
+      }
+      return;
+    }
+
     const eventMap = {
       'connected': ApiEvents.CONNECTED,
       'status_update': ApiEvents.STATUS_UPDATE,
@@ -419,12 +489,20 @@ export class LokiApiClient extends EventTarget {
   async _request(endpoint, options = {}) {
     const url = `${this.config.baseUrl}${endpoint}`;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.config.timeout);
+    // Per-call timeout override (options.timeout) for long-running, LLM-backed
+    // endpoints like /api/wiki/ask, which shells out to claude and can take
+    // minutes. The default (this.config.timeout, 10s) is right for normal JSON
+    // reads but would abort those mid-flight with a misleading "Request timeout".
+    const timeoutMs = (options && typeof options.timeout === 'number')
+      ? options.timeout
+      : this.config.timeout;
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       const response = await fetch(url, {
         ...options,
         signal: controller.signal,
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
           ...options.headers,
@@ -434,8 +512,19 @@ export class LokiApiClient extends EventTarget {
       clearTimeout(timeout);
 
       if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: response.statusText }));
-        throw new Error(error.detail || `HTTP ${response.status}`);
+        // Safe parsing: read as text first, then try JSON
+        const rawBody = await response.text().catch(() => '');
+        let detail = response.statusText || `HTTP ${response.status}`;
+        if (rawBody) {
+          try {
+            const parsed = JSON.parse(rawBody);
+            detail = parsed.detail || parsed.error || parsed.message || detail;
+          } catch {
+            // Response is not JSON (HTML error page, plain text, etc.)
+            detail = rawBody.length > 200 ? rawBody.slice(0, 200) + '...' : rawBody;
+          }
+        }
+        throw new Error(detail);
       }
 
       if (response.status === 204) {
@@ -475,10 +564,11 @@ export class LokiApiClient extends EventTarget {
   /**
    * POST request
    */
-  async _post(endpoint, body) {
+  async _post(endpoint, body, options = {}) {
     return this._request(endpoint, {
       method: 'POST',
       body: JSON.stringify(body),
+      ...options,
     });
   }
 
@@ -497,6 +587,19 @@ export class LokiApiClient extends EventTarget {
    */
   async _delete(endpoint) {
     return this._request(endpoint, { method: 'DELETE' });
+  }
+
+  /**
+   * Public GET for arbitrary endpoints not covered by typed helpers.
+   * Mirrors _get() (no caching) so components can call new endpoints
+   * without requiring an api-client extension for every one-off panel.
+   *
+   * @param {string} endpoint - Path beginning with '/'.
+   * @returns {Promise<any>} Parsed JSON response.
+   * @throws {Error} If the response is not OK.
+   */
+  async get(endpoint) {
+    return this._get(endpoint);
   }
 
   // ============================================
@@ -682,14 +785,18 @@ export class LokiApiClient extends EventTarget {
    * Retrieve relevant memories
    */
   async retrieveMemories(query, taskType = null, topK = 5) {
-    return this._post('/api/memory/retrieve', { query, taskType, topK });
+    // Semantic vector search over the memory store can exceed 10s on large
+    // stores. 30s client budget.
+    return this._post('/api/memory/retrieve', { query, taskType, topK }, { timeout: 30000 });
   }
 
   /**
    * Trigger memory consolidation
    */
   async consolidateMemory(sinceHours = 24) {
-    return this._post('/api/memory/consolidate', { sinceHours });
+    // Episodic->semantic consolidation scans many episodes + vector search;
+    // routinely exceeds the default 10s. 120s client budget.
+    return this._post('/api/memory/consolidate', { sinceHours }, { timeout: 120000 });
   }
 
   /**
@@ -697,6 +804,24 @@ export class LokiApiClient extends EventTarget {
    */
   async getTokenEconomics() {
     return this._get('/api/memory/economics');
+  }
+
+  /**
+   * Full-text search across memory (FTS5)
+   * @param {string} query - Search query
+   * @param {string} collection - 'episodes'|'patterns'|'skills'|'all' (default: 'all')
+   * @param {number} limit - Max results (default: 20)
+   */
+  async searchMemory(query, collection = 'all', limit = 20) {
+    const params = new URLSearchParams({ q: query, collection, limit: String(limit) });
+    return this._get(`/api/memory/search?${params}`);
+  }
+
+  /**
+   * Get memory system statistics (counts, size, backend info)
+   */
+  async getMemoryStats() {
+    return this._get('/api/memory/stats', true);
   }
 
   // ============================================
@@ -728,7 +853,9 @@ export class LokiApiClient extends EventTarget {
    * Sync registry with discovered projects
    */
   async syncRegistry() {
-    return this._post('/api/registry/sync', {});
+    // Server caps this at 30s (asyncio.wait_for); give the client headroom
+    // above that so the server's own timeout decides, not the default 10s.
+    return this._post('/api/registry/sync', {}, { timeout: 45000 });
   }
 
   /**
@@ -801,7 +928,9 @@ export class LokiApiClient extends EventTarget {
    * @param {object} params - Aggregation parameters
    */
   async triggerAggregation(params = {}) {
-    return this._post('/api/learning/aggregate', params);
+    // Parses a potentially large events.jsonl and aggregates learning signals;
+    // an O(n) scan that can exceed 10s. 60s client budget.
+    return this._post('/api/learning/aggregate', params, { timeout: 60000 });
   }
 
   /**
@@ -855,8 +984,130 @@ export class LokiApiClient extends EventTarget {
   }
 
   // ============================================
+  // Council API (v5.25.0)
+  // ============================================
+
+  /**
+   * Get completion council state
+   */
+  async getCouncilState() {
+    return this._get('/api/council/state');
+  }
+
+  /**
+   * Get council verdicts
+   * @param {number} limit - Max verdicts to return
+   */
+  async getCouncilVerdicts(limit = 20) {
+    return this._get(`/api/council/verdicts?limit=${limit}`);
+  }
+
+  /**
+   * Get convergence metrics
+   */
+  async getCouncilConvergence() {
+    return this._get('/api/council/convergence');
+  }
+
+  /**
+   * Get council report
+   */
+  async getCouncilReport() {
+    return this._get('/api/council/report');
+  }
+
+  /**
+   * Force council review
+   */
+  async forceCouncilReview() {
+    return this._post('/api/council/force-review', {});
+  }
+
+  // ============================================
+  // Context Window Tracking API (v5.40.0)
+  // ============================================
+
+  /**
+   * Get context window tracking data
+   */
+  async getContext() {
+    return this._get('/api/context');
+  }
+
+  // ============================================
+  // Notification Trigger API (v5.40.0)
+  // ============================================
+
+  /**
+   * Get notification list
+   * @param {string} [severity] - Filter by severity (critical, warning, info)
+   * @param {boolean} [unreadOnly] - Only show unread notifications
+   */
+  async getNotifications(severity, unreadOnly) {
+    const params = new URLSearchParams();
+    if (severity) params.set('severity', severity);
+    if (unreadOnly) params.set('unread_only', 'true');
+    const query = params.toString();
+    return this._get('/api/notifications' + (query ? '?' + query : ''));
+  }
+
+  /**
+   * Get notification trigger configuration
+   */
+  async getNotificationTriggers() {
+    return this._get('/api/notifications/triggers');
+  }
+
+  /**
+   * Update notification trigger configuration
+   * @param {Array} triggers - Array of trigger objects
+   */
+  async updateNotificationTriggers(triggers) {
+    return this._put('/api/notifications/triggers', { triggers });
+  }
+
+  /**
+   * Acknowledge a notification
+   * @param {string} id - Notification ID
+   */
+  async acknowledgeNotification(id) {
+    return this._post('/api/notifications/' + encodeURIComponent(id) + '/acknowledge', {});
+  }
+
+  // ============================================
   // Session Control API
   // ============================================
+
+  /**
+   * Start a build from a spec.
+   * Absorbs the browser PRD-input capability: kicks off `loki start` against
+   * an inline spec (one-line brief or full PRD) or an existing spec path.
+   * @param {string} prd - the spec text (one-line brief or PRD body)
+   * @param {{provider?: string, parallel?: boolean, prdPath?: string}} [opts]
+   * @returns {Promise<{success: boolean, pid: number, spec: string, provider: string}>}
+   */
+  async startSession(prd, opts = {}) {
+    const body = {
+      provider: opts.provider || 'claude',
+      parallel: Boolean(opts.parallel),
+    };
+    if (opts.prdPath) {
+      body.prd_path = opts.prdPath;
+    } else {
+      body.prd_text = prd || '';
+    }
+    // Start-time execution model (haiku|sonnet|opus). Omit when falsy so the
+    // engine uses its own default (Sonnet 5); the server also ignores invalid
+    // values. Only send an explicit non-empty selection.
+    if (opts.model) {
+      body.model = opts.model;
+    }
+    // Advisor / reviewer model (opt-in Opus judge). Omit when falsy.
+    if (opts.advisorModel) {
+      body.advisor_model = opts.advisorModel;
+    }
+    return this._post('/api/control/start', body);
+  }
 
   /**
    * Pause the current session
@@ -879,6 +1130,23 @@ export class LokiApiClient extends EventTarget {
     return this._post('/api/control/stop', {});
   }
 
+  /**
+   * Get the live run's model override + effective model.
+   * @returns {Promise<{override: string|null, default: string, effective: string, allowed: string[]}>}
+   */
+  async getSessionModel() {
+    return this._get('/api/session/model');
+  }
+
+  /**
+   * Set (or clear) the model the live run uses, applied from the NEXT iteration.
+   * Pass null or '' to clear the override and revert to the tier mapping.
+   * @param {string|null} model - one of haiku|sonnet|opus|fable, or null to clear
+   */
+  async setSessionModel(model) {
+    return this._post('/api/session/model', { model: model || null });
+  }
+
   // ============================================
   // Logs API
   // ============================================
@@ -889,6 +1157,132 @@ export class LokiApiClient extends EventTarget {
    */
   async getLogs(lines = 100) {
     return this._get(`/api/logs?lines=${lines}`);
+  }
+
+  // ============================================
+  // PRD Checklist API (v5.44.0)
+  // ============================================
+
+  /**
+   * Get full PRD checklist with verification results
+   */
+  async getChecklist() {
+    return this._get('/api/checklist');
+  }
+
+  /**
+   * Get checklist verification summary only
+   */
+  async getChecklistSummary() {
+    return this._get('/api/checklist/summary');
+  }
+
+  /**
+   * Get PRD quality analysis observations
+   */
+  async getPrdObservations() {
+    // Server returns PlainTextResponse, not JSON
+    const response = await fetch(`${this.baseUrl}/api/prd-observations`, { credentials: 'include' });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return response.text();
+  }
+
+  /**
+   * Get all checklist waivers
+   */
+  async getChecklistWaivers() {
+    return this._get('/api/checklist/waivers');
+  }
+
+  /**
+   * Add a waiver for a checklist item
+   * @param {string} itemId - Checklist item ID to waive
+   * @param {string} reason - Reason for the waiver
+   * @param {string} waivedBy - Who granted the waiver (default: 'dashboard')
+   */
+  async addChecklistWaiver(itemId, reason, waivedBy = 'dashboard') {
+    return this._post('/api/checklist/waivers', {
+      item_id: itemId,
+      reason: reason,
+      waived_by: waivedBy,
+    });
+  }
+
+  /**
+   * Remove a waiver for a checklist item
+   * @param {string} itemId - Checklist item ID to remove waiver for
+   */
+  async removeChecklistWaiver(itemId) {
+    return this._delete(`/api/checklist/waivers/${encodeURIComponent(itemId)}`);
+  }
+
+  /**
+   * Get council gate status for checklist completion
+   */
+  async getCouncilGate() {
+    return this._get('/api/council/gate');
+  }
+
+  // ==============================================
+  // App Runner API (v5.45.0)
+  // ==============================================
+
+  /**
+   * Get app runner current status
+   */
+  async getAppRunnerStatus() {
+    return this._get('/api/app-runner/status');
+  }
+
+  /**
+   * Get app runner log lines
+   * @param {number} lines - Number of lines to fetch (default: 100)
+   */
+  async getAppRunnerLogs(lines = 100) {
+    return this._get(`/api/app-runner/logs?lines=${lines}`);
+  }
+
+  /**
+   * Get redacted app runner error lines plus crash state (powers the
+   * Live App preview error banner).
+   * @param {number} lines - Number of lines to fetch (default: 50)
+   */
+  async getAppRunnerErrors(lines = 50) {
+    return this._get(`/api/app-runner/errors?lines=${lines}`);
+  }
+
+  /**
+   * Signal app runner to restart
+   */
+  async restartApp() {
+    return this._post('/api/control/app-restart', {});
+  }
+
+  /**
+   * Signal app runner to stop
+   */
+  async stopApp() {
+    return this._post('/api/control/app-stop', {});
+  }
+
+  // ==============================================
+  // Playwright Verification API (v5.46.0)
+  // ==============================================
+
+  /**
+   * Get latest Playwright smoke test results
+   */
+  async getPlaywrightResults() {
+    return this._get('/api/playwright/results');
+  }
+
+  /**
+   * Get path to latest Playwright screenshot
+   */
+  async getPlaywrightScreenshot() {
+    return this._get('/api/playwright/screenshot');
   }
 
   // ============================================

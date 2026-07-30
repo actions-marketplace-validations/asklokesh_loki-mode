@@ -11,6 +11,7 @@
 
 import { LokiElement } from '../core/loki-theme.js';
 import { getApiClient } from '../core/loki-api-client.js';
+import { registerPoll } from '../core/loki-poll-registry.js';
 
 /** @type {Array<{id: string, label: string}>} Council dashboard tab definitions */
 const COUNCIL_TABS = [
@@ -64,7 +65,7 @@ export class LokiCouncilDashboard extends LokiElement {
   attributeChangedCallback(name, oldValue, newValue) {
     if (oldValue === newValue) return;
     if (name === 'api-url' && this._api) {
-      this._api.baseUrl = newValue;
+      this._api = getApiClient({ baseUrl: newValue });
       this._loadData();
     }
     if (name === 'theme') {
@@ -78,31 +79,22 @@ export class LokiCouncilDashboard extends LokiElement {
   }
 
   _startPolling() {
-    this._pollInterval = setInterval(() => this._loadData(), 3000);
-    this._visibilityHandler = () => {
-      if (document.hidden) {
-        if (this._pollInterval) {
-          clearInterval(this._pollInterval);
-          this._pollInterval = null;
-        }
-      } else {
-        if (!this._pollInterval) {
-          this._loadData();
-          this._pollInterval = setInterval(() => this._loadData(), 3000);
-        }
-      }
-    };
-    document.addEventListener('visibilitychange', this._visibilityHandler);
+    // Central registry (core/loki-poll-registry.js) gates this poll to the
+    // active + visible section in ONE place, replacing the per-component
+    // visibilitychange handler. connectedCallback already did the first load,
+    // so immediate is disabled to avoid a duplicate fetch.
+    this._poll = registerPoll({
+      loadFn: () => this._loadData(),
+      intervalMs: 3000,
+      element: this,
+      immediate: false,
+    });
   }
 
   _stopPolling() {
-    if (this._pollInterval) {
-      clearInterval(this._pollInterval);
-      this._pollInterval = null;
-    }
-    if (this._visibilityHandler) {
-      document.removeEventListener('visibilitychange', this._visibilityHandler);
-      this._visibilityHandler = null;
+    if (this._poll) {
+      this._poll.stop();
+      this._poll = null;
     }
     if (this._pendingRaf) {
       cancelAnimationFrame(this._pendingRaf);
@@ -111,13 +103,16 @@ export class LokiCouncilDashboard extends LokiElement {
   }
 
   async _loadData() {
+    // Drop a stale response if the api-url switched mid-flight.
+    const api = this._api;
     try {
       const [councilState, verdicts, convergence, agents] = await Promise.allSettled([
-        this._api._get('/api/council/state'),
-        this._api._get('/api/council/verdicts'),
-        this._api._get('/api/council/convergence'),
-        this._api._get('/api/agents'),
+        api._get('/api/council/state'),
+        api._get('/api/council/verdicts'),
+        api._get('/api/council/convergence'),
+        api._get('/api/agents'),
       ]);
+      if (api !== this._api) return;
 
       if (councilState.status === 'fulfilled') this._councilState = councilState.value;
       if (verdicts.status === 'fulfilled') {
@@ -132,6 +127,7 @@ export class LokiCouncilDashboard extends LokiElement {
 
       this._error = null;
     } catch (err) {
+      if (api !== this._api) return;
       this._error = err.message;
     }
 
@@ -246,7 +242,7 @@ export class LokiCouncilDashboard extends LokiElement {
           ${this._renderTabContent()}
         </div>
 
-        ${this._error ? `<div class="error-banner">${this._error}</div>` : ''}
+        ${this._error ? `<div class="error-banner">${this._escapeHtml(this._error)}</div>` : ''}
       </div>
     `;
 
@@ -361,7 +357,7 @@ export class LokiCouncilDashboard extends LokiElement {
 
   _renderDecisions() {
     if (this._verdicts.length === 0) {
-      return `<div class="empty-state">No council decisions yet. The council convenes every ${this._councilState?.check_interval || 5} iterations.</div>`;
+      return `<div class="empty-state">No review decisions yet. The council checks for completion every ${this._councilState?.check_interval || 5} build steps.</div>`;
     }
 
     return `
@@ -437,27 +433,27 @@ export class LokiCouncilDashboard extends LokiElement {
           <div class="agent-card ${this._selectedAgent?.id === agent.id ? 'agent-selected' : ''}"
                data-agent-index="${idx}">
             <div class="agent-header">
-              <span class="agent-name">${agent.name || agent.id || 'Unknown'}</span>
+              <span class="agent-name">${this._escapeHtml(agent.name || agent.id || 'Unknown')}</span>
               <span class="agent-status ${agent.alive ? 'status-alive' : 'status-dead'}">
                 ${agent.alive ? 'Running' : 'Stopped'}
               </span>
             </div>
             <div class="agent-meta">
-              ${agent.type ? `<span class="agent-type">${agent.type}</span>` : ''}
+              ${agent.type ? `<span class="agent-type">${this._escapeHtml(agent.type)}</span>` : ''}
               ${agent.pid ? `<span class="agent-pid">PID: ${agent.pid}</span>` : ''}
-              ${agent.task ? `<span class="agent-task">Task: ${agent.task}</span>` : ''}
+              ${agent.task ? `<span class="agent-task">Task: ${this._escapeHtml(agent.task)}</span>` : ''}
             </div>
             ${this._selectedAgent?.id === agent.id ? `
               <div class="agent-actions">
                 ${agent.alive ? `
-                  <button class="btn btn-sm btn-warn" data-action="pause" data-agent-id="${agent.id || agent.name}">
+                  <button class="btn btn-sm btn-warn" data-action="pause" data-agent-id="${this._escapeHtml(agent.id || agent.name)}">
                     Pause
                   </button>
-                  <button class="btn btn-sm btn-danger" data-action="kill" data-agent-id="${agent.id || agent.name}">
+                  <button class="btn btn-sm btn-danger" data-action="kill" data-agent-id="${this._escapeHtml(agent.id || agent.name)}">
                     Kill
                   </button>
                 ` : `
-                  <button class="btn btn-sm btn-primary" data-action="resume" data-agent-id="${agent.id || agent.name}">
+                  <button class="btn btn-sm btn-primary" data-action="resume" data-agent-id="${this._escapeHtml(agent.id || agent.name)}">
                     Resume
                   </button>
                 `}
@@ -505,6 +501,15 @@ export class LokiCouncilDashboard extends LokiElement {
     }
   }
 
+  _escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
   _getStyles() {
     return `
       :host {
@@ -540,9 +545,9 @@ export class LokiCouncilDashboard extends LokiElement {
         font-size: 11px;
         font-weight: 500;
         padding: 2px 8px;
-        border-radius: 10px;
+        border-radius: 4px;
         text-transform: uppercase;
-        letter-spacing: 0.5px;
+        letter-spacing: 0.05em;
       }
 
       .badge-active {
@@ -559,36 +564,40 @@ export class LokiCouncilDashboard extends LokiElement {
 
       .tabs {
         display: flex;
-        gap: 2px;
-        border-bottom: 1px solid var(--loki-border);
+        gap: 4px;
+        padding: 4px;
+        background: var(--loki-bg-secondary);
+        border-radius: 5px;
+        border: 1px solid var(--loki-border);
         margin-bottom: 16px;
       }
 
       .tab {
-        padding: 8px 16px;
+        padding: 7px 14px;
         background: none;
         border: none;
         color: var(--loki-text-muted);
         cursor: pointer;
         font-size: 13px;
         font-weight: 500;
-        border-bottom: 2px solid transparent;
+        border-radius: 4px;
         transition: all 0.15s ease;
       }
 
       .tab:hover {
         color: var(--loki-text-primary);
+        background: var(--loki-bg-hover);
       }
 
       .tab.active {
-        color: var(--loki-accent);
-        border-bottom-color: var(--loki-accent);
+        color: white;
+        background: var(--loki-accent);
       }
 
       .btn {
         padding: 6px 14px;
         border: 1px solid var(--loki-border);
-        border-radius: 6px;
+        border-radius: 4px;
         background: var(--loki-bg-tertiary);
         color: var(--loki-text-primary);
         cursor: pointer;
@@ -651,7 +660,7 @@ export class LokiCouncilDashboard extends LokiElement {
       .stat-card {
         background: var(--loki-bg-card);
         border: 1px solid var(--loki-border);
-        border-radius: 8px;
+        border-radius: 5px;
         padding: 14px;
       }
 
@@ -660,7 +669,7 @@ export class LokiCouncilDashboard extends LokiElement {
         font-weight: 500;
         color: var(--loki-text-muted);
         text-transform: uppercase;
-        letter-spacing: 0.5px;
+        letter-spacing: 0.05em;
         margin-bottom: 6px;
       }
 
@@ -668,6 +677,8 @@ export class LokiCouncilDashboard extends LokiElement {
         font-size: 24px;
         font-weight: 600;
         line-height: 1.2;
+        color: var(--loki-accent);
+        font-family: 'JetBrains Mono', monospace;
       }
 
       .stat-sub {
@@ -701,7 +712,7 @@ export class LokiCouncilDashboard extends LokiElement {
         padding: 8px;
         background: var(--loki-bg-card);
         border: 1px solid var(--loki-border);
-        border-radius: 8px;
+        border-radius: 5px;
       }
 
       .bar-wrapper {
@@ -743,7 +754,7 @@ export class LokiCouncilDashboard extends LokiElement {
       .decision-card {
         background: var(--loki-bg-card);
         border: 1px solid var(--loki-border);
-        border-radius: 8px;
+        border-radius: 5px;
         padding: 12px 16px;
         border-left: 3px solid transparent;
       }
@@ -797,7 +808,7 @@ export class LokiCouncilDashboard extends LokiElement {
       .convergence-table {
         background: var(--loki-bg-card);
         border: 1px solid var(--loki-border);
-        border-radius: 8px;
+        border-radius: 5px;
         overflow: hidden;
       }
 
@@ -813,7 +824,7 @@ export class LokiCouncilDashboard extends LokiElement {
         font-size: 11px;
         font-weight: 600;
         text-transform: uppercase;
-        letter-spacing: 0.5px;
+        letter-spacing: 0.05em;
         color: var(--loki-text-muted);
         border-bottom: 1px solid var(--loki-border);
         background: var(--loki-bg-tertiary);
@@ -842,7 +853,7 @@ export class LokiCouncilDashboard extends LokiElement {
       .agent-card {
         background: var(--loki-bg-card);
         border: 1px solid var(--loki-border);
-        border-radius: 8px;
+        border-radius: 5px;
         padding: 12px 16px;
         cursor: pointer;
         transition: all 0.15s ease;
@@ -873,7 +884,7 @@ export class LokiCouncilDashboard extends LokiElement {
         font-size: 11px;
         font-weight: 500;
         padding: 2px 8px;
-        border-radius: 10px;
+        border-radius: 5px;
       }
 
       .status-alive {
@@ -915,7 +926,7 @@ export class LokiCouncilDashboard extends LokiElement {
         padding: 10px 14px;
         background: var(--loki-error-muted);
         border: 1px solid var(--loki-error-muted);
-        border-radius: 6px;
+        border-radius: 4px;
         color: var(--loki-error);
         font-size: 12px;
       }

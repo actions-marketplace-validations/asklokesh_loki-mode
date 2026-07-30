@@ -1,267 +1,266 @@
 # Loki Mode Installation Guide
 
-Complete installation instructions for all platforms and use cases.
+The flagship product of [Autonomi](https://www.autonomi.dev/). Loki Mode is a spec-driven autonomous builder with a built-in trust layer that takes any spec to a deployed product and verifies completion with evidence (quality gates plus a completion council), not just a "done" claim. Complete installation instructions for all platforms and use cases.
 
-**Version:** v5.35.0
+**Version:** v8.0.0
+
+---
+
+## What's New in v7.5.x
+
+### Phase 1 RARV-C closure (shipped v7.5.0, default-on as of v7.5.3)
+Phase 1 closure features now activate automatically when you run
+`loki start` -- no env flags required. Power users can opt out by
+setting any flag to `0`.
+
+- `findings_injector.ts` -- structured per-finding records (severity, file,
+  line, reviewer) injected into the next iteration's prompt instead of bare
+  comma-separated tokens. Default: ON. Opt out with `LOKI_INJECT_FINDINGS=0`.
+- `counter_evidence.ts` -- override council. Drop a
+  `.loki/state/counter-evidence-<iter>.json` to dispute reviewer findings;
+  approval lifts the BLOCK. Default: ON. Opt out with `LOKI_OVERRIDE_COUNCIL=0`.
+- `learnings_writer.ts` -- automatic structured learnings to
+  `.loki/state/relevant-learnings.json` on every code_review failure.
+  Default: ON. Opt out with `LOKI_AUTO_LEARNINGS=0`.
+- `escalation_handoff.ts` -- structured human-handoff doc to
+  `.loki/escalations/handoff-*.md` before PAUSE. Default: ON. Opt out
+  with `LOKI_HANDOFF_MD=0`.
+- `loki status` shows a "Phase 1 artifacts" section when findings,
+  learnings, or escalations exist (added v7.5.5; see the `phase1` block
+  in `loki status --json`).
+- See `skills/quality-gates.md` for full schema and reachability notes.
+
+### Output-token compressor (caveman, default-on, Claude-only)
+Loki integrates [caveman](https://github.com/JuliusBrussee/caveman), an optional
+Claude Code skill that compresses the model's OUTPUT tokens only (keeping all
+technical substance). It activates on free-form generation (the main RARV dev
+loop) and is HARD-SUPPRESSED on every trust-gate subcall (council votes, code
+review verdict, evidence-related parses) so determinism is never affected.
+- Claude-provider-only; runs are byte-identical on Codex / Cline / Aider.
+- Default on; opt out with `LOKI_CAVEMAN=0`.
+- Level: `LOKI_CAVEMAN_LEVEL` (default `full`; also `lite`, `ultra`, `wenyan*`).
+- Pinned + vendor-less: `LOKI_CAVEMAN_VERSION` (default `1.9.0`); Loki bootstraps
+  the pinned version on demand (opt out `LOKI_CAVEMAN_AUTO_BOOTSTRAP=0`).
+- Savings are output-token-only and bounded; Loki never quotes a dollar figure.
+- See `skills/quality-gates.md` (Output-token compressor) for details.
+
+### Earlier highlights still in scope
+- Bash-to-Bun runtime migration in progress (see `UPGRADING.md`)
+- Provider-agnostic runtime: Claude (full), Codex, Cline, Aider (no vendor lock-in)
+- Memory system (episodic / semantic / procedural)
+- ChromaDB semantic code search via MCP
 
 ---
 
 ## Table of Contents
 
-- [Quick Install (Recommended)](#quick-install-recommended)
-- [VS Code Extension](#vs-code-extension)
-- [npm (Node.js)](#npm-nodejs)
-- [Homebrew (macOS/Linux)](#homebrew-macoslinux)
-- [Docker](#docker)
+- [Bun (Recommended)](#bun-recommended)
+- [npm](#npm)
+- [Homebrew](#homebrew)
+- [Quick Start](#quick-start)
+- [Verify Installation](#verify-installation)
+- [Other Methods](#other-methods)
+- [VS Code Extension (Deprecated)](#vs-code-extension-deprecated)
 - [Sandbox Mode](#sandbox-mode)
 - [Multi-Provider Support](#multi-provider-support)
+- [Environment Variables](#environment-variables)
 - [Claude Code (CLI)](#claude-code-cli)
 - [Claude.ai (Web)](#claudeai-web)
 - [Anthropic API Console](#anthropic-api-console)
-- [Verify Installation](#verify-installation)
 - [Ports](#ports)
 - [Shell Completions](#shell-completions)
 - [Troubleshooting](#troubleshooting)
 
 ---
 
-## Quick Install (Recommended)
-
-Choose your preferred method:
+## Bun (Recommended)
 
 ```bash
-# Option A: npm (easiest)
-npm install -g loki-mode
+bun install -g loki-mode
+```
 
-# Option B: Homebrew (macOS/Linux)
+Installs the `loki` CLI. Bun is the recommended path: the `loki` shim runs the
+faster TypeScript runtime when `bun` is on `PATH`, and the stable bash engine
+(the autonomous loop, quality gates, and completion council) runs underneath on
+every route, so you lose nothing by choosing Bun. Run `loki setup-skill` once
+after install to create the per-provider skill symlinks (Claude Code, Codex CLI).
+
+**Prerequisites:** Bun 1.3+ (`curl -fsSL https://bun.sh/install | bash`, or
+`brew install oven-sh/bun/bun`). No separate Node install is required.
+
+**Update:** `bun update -g loki-mode`
+
+**Uninstall:** `bun remove -g loki-mode`
+
+---
+
+## npm
+
+```bash
+npm install -g loki-mode
+```
+
+A fully supported alternative when you prefer npm or do not have Bun. As of
+v7.4.12 there is no postinstall step; run `loki setup-skill` once after install
+to create the per-provider skill symlinks (Claude Code, Codex CLI). The `loki`
+shim auto-routes read-only commands to the Bun runtime when `bun` is on `PATH`
+and falls back to the bash CLI otherwise (the core autonomous engine is the
+same on both routes).
+
+**Prerequisites:** Node.js 20+ (Node 22 LTS recommended; it is the primary
+tested/CI target). Bun 1.3+ optional but recommended for the faster routed
+commands and forward-compat with v8.0.0.
+
+**What it does:**
+- Installs the `loki` CLI binary to your PATH (`bin/loki` shim)
+- Subsequent `loki setup-skill` creates symlinks at `~/.claude/skills/loki-mode`, `~/.codex/skills/loki-mode`
+
+**Anonymous telemetry is OPT-IN and OFF by default.** A default `npm install`
+sends nothing, so air-gapped and enterprise installs are safe out of the box. To
+opt in to anonymous diagnostics, run `loki telemetry on` or set
+`LOKI_TELEMETRY=on`. To make opting in impossible across a fleet, bake an
+opt-out into your base image (opt-out always wins):
+```bash
+# Hard-disable everywhere (belt and suspenders; opt-out always wins):
+LOKI_TELEMETRY_DISABLED=true npm install -g loki-mode
+# Or set DO_NOT_TRACK=1
+```
+See [PRIVACY.md](./PRIVACY.md) for the exact data sent and the full opt-in /
+opt-out model.
+
+**Update:** `npm update -g loki-mode`
+
+**Uninstall:** `npm uninstall -g loki-mode`
+
+---
+
+## Homebrew
+
+```bash
 brew tap asklokesh/tap && brew install loki-mode
-
-# Option C: Docker
-docker pull asklokesh/loki-mode:5.32.0
-
-# Option D: Git clone
-git clone https://github.com/asklokesh/loki-mode.git ~/.claude/skills/loki-mode
 ```
 
-**Done!** Skip to [Verify Installation](#verify-installation).
+Installs the `loki` CLI. To also install the skill for interactive use with all providers:
+
+```bash
+loki setup-skill
+```
+
+**Update:** `brew upgrade loki-mode`
+
+**Uninstall:** `brew uninstall loki-mode`
 
 ---
 
-## VS Code Extension
+## PyPI / Python SDK
 
-The easiest way to use Loki Mode with a visual interface.
-
-### Installation
-
-**From VS Code:**
-1. Open Extensions (`Cmd+Shift+X` / `Ctrl+Shift+X`)
-2. Search for "loki-mode"
-3. Click **Install**
-
-**From Command Line:**
-```bash
-code --install-extension asklokesh.loki-mode
-```
-
-**From Marketplace:**
-Visit [marketplace.visualstudio.com/items?itemName=asklokesh.loki-mode](https://marketplace.visualstudio.com/items?itemName=asklokesh.loki-mode)
-
-### Features
-
-- **Activity Bar Icon**: Dedicated Loki Mode panel in the sidebar
-- **Session View**: Real-time session status, provider, phase, and duration
-- **Task View**: Tasks grouped by status (In Progress, Pending, Completed)
-- **Status Bar**: Current state and progress at a glance
-- **Quick Actions**: Start/Stop/Pause/Resume from command palette
-- **Keyboard Shortcut**: `Cmd+Shift+L` (Mac) / `Ctrl+Shift+L` (Windows/Linux)
-
-### Usage
-
-1. Open a project folder in VS Code
-2. Click the Loki Mode icon in the activity bar (or press `Cmd+Shift+L`)
-3. Click "Start Session" and select your PRD file
-4. Choose your AI provider (Claude, Codex, or Gemini)
-5. Watch progress in the sidebar and status bar
-
-### Configuration
-
-Open VS Code Settings and search for "loki":
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `loki.provider` | `claude` | Default AI provider |
-| `loki.apiPort` | `57374` | API server port |
-| `loki.apiHost` | `localhost` | API server host |
-| `loki.autoConnect` | `true` | Auto-connect on activation |
-| `loki.showStatusBar` | `true` | Show status bar item |
-| `loki.pollingInterval` | `2000` | Status polling interval (ms) |
-
-### Requirements
-
-**The VS Code extension requires the Loki Mode API server to be running.**
-
-Before using the extension, start the server:
+**The `loki` CLI is NOT available via `pip install loki-mode`.** PyPI hosts only the
+Python REST client SDK at `loki-mode-sdk` (v7.4.18+). The dashboard, MCP server,
+and orchestrator components ship via npm, Docker, and Homebrew only.
 
 ```bash
-# Option A: Using Loki CLI (if installed via npm or Homebrew)
-loki start
+# Install the Python REST client only
+pip install loki-mode-sdk
 
-# Option B: Using the autonomous runner (from source)
-./autonomy/run.sh
-
-# Option C: Direct API server start
-loki serve
+# Install the full CLI (recommended)
+bun install -g loki-mode  # or: npm install -g loki-mode, or: brew tap asklokesh/tap && brew install loki-mode
 ```
 
-The extension will automatically connect when it detects the server is running at `localhost:57374`.
-
-**Troubleshooting:** If you see "API server is not running" errors, make sure you started the server first using one of the commands above.
+The naming asymmetry (`loki-mode` on npm vs `loki-mode-sdk` on PyPI) is
+intentional: PyPI's `loki-mode` namespace is reserved for a future server
+package, while `loki-mode-sdk` is the thin client.
 
 ---
 
-## npm (Node.js)
+## Quick Start
 
-Install via npm for the easiest setup with automatic PATH configuration.
-
-### Prerequisites
-
-- Node.js 16.0.0 or later
-
-### Installation
+New here? `loki quickstart` (v7.29.0) walks you through your first build in
+four questions (setup check, one-line idea, template pick, plan review with
+a real cost estimate before anything is spent). Pressing Enter at every step
+builds the sample Todo app.
 
 ```bash
-# Global installation
-npm install -g loki-mode
-
-# The skill is automatically installed to ~/.claude/skills/loki-mode
+loki quickstart
 ```
 
-### Usage
+Drop a spec -- any artifact that describes what you want built -- and Loki
+Mode takes it from spec to deployed app. Specs can be a markdown PRD, a
+GitHub issue URL, or a YAML feature description.
 
 ```bash
-# Use the CLI
-loki start ./my-prd.md
-loki status
-loki dashboard
+# CLI mode (works with any provider) -- spec as markdown PRD
+loki start ./spec.md
+loki start ./spec.md --provider codex
+loki start ./spec.md --provider cline
 
-# Or invoke in Claude Code
+# Spec as a GitHub issue
+loki start --github-issue https://github.com/owner/repo/issues/42
+
+# Spec as a YAML feature description
+loki start ./feature.yaml
+
+# Interactive mode (inside your coding agent)
 claude --dangerously-skip-permissions
-> Loki Mode with PRD at ./my-prd.md
-```
-
-### Updating
-
-```bash
-npm update -g loki-mode
-```
-
-### Uninstalling
-
-```bash
-npm uninstall -g loki-mode
-rm -rf ~/.claude/skills/loki-mode
+# Then say: "Loki Mode with spec at ./my-spec.md"
 ```
 
 ---
 
-## Homebrew (macOS/Linux)
-
-Install via Homebrew with automatic dependency management.
-
-### Prerequisites
-
-- Homebrew (https://brew.sh)
-
-### Installation
+## Verify Installation
 
 ```bash
-# Add the tap
-brew tap asklokesh/tap
-
-# Install Loki Mode
-brew install loki-mode
-
-# Set up Claude Code skill integration
-loki-mode-install-skill
-```
-
-### Dependencies
-
-Homebrew automatically installs:
-- bash 4.0+ (for associative arrays)
-- jq (JSON processing)
-- gh (GitHub CLI for integration)
-
-### Usage
-
-```bash
-# Use the CLI
-loki start ./my-prd.md
-loki status
-loki --help
-```
-
-### Updating
-
-```bash
-brew upgrade loki-mode
-```
-
-### Uninstalling
-
-```bash
-brew uninstall loki-mode
-rm -rf ~/.claude/skills/loki-mode
+loki --version    # Should print the current version
+loki doctor       # Check skill symlinks, providers, and system prerequisites
 ```
 
 ---
 
-## Docker
+## Configuration file
 
-Run Loki Mode in a container for isolated execution.
-
-### Prerequisites
-
-- Docker installed and running
-
-### Installation
+Instead of exporting many `LOKI_*` env vars, point `loki start` at a config file with `--config <path>` (aliases: `--env-file`, `--vars`), or set `LOKI_CONFIG_FILE`. The format is detected from the extension or content: `.yaml`/`.yml`, `.json`, or `.env` (flat `LOKI_*=value` lines). Values resolve by precedence: a CLI flag beats an ambient env var, which beats the `--config` file, which beats built-in defaults. Never inline a secret; reference an env var with `${VAR}` and the loader expands it at load time (an unset reference is skipped with a warning, and a raw-looking secret literal is flagged and rejected by `loki config validate`). Run `loki config example` to generate an annotated starter.
 
 ```bash
-# Pull the image
-docker pull asklokesh/loki-mode:5.32.0
+# config.yaml
+dashboard:
+  port: 9000
+github:
+  token: ${GITHUB_TOKEN}   # expanded from the environment, never stored inline
 
-# Or use docker-compose
-curl -o docker-compose.yml https://raw.githubusercontent.com/asklokesh/loki-mode/main/docker-compose.yml
+loki start --config config.yaml ./prd.md
+loki config validate config.yaml    # check refs and reject raw secrets before a run
 ```
 
-### Usage
+---
+
+## Other Methods
+
+Git clone and Docker installation methods are also available. See
+[alternative-installations.md](alternative-installations.md) for details and
+trade-offs.
+
+---
+
+## VS Code Extension (Deprecated)
+
+> **DEPRECATED as of v7.2.0.** The Loki Mode VS Code extension is no longer
+> maintained. Use the dashboard at `loki dashboard start` instead.
+>
+> The marketplace listing remains for users on v7.2.0 and earlier but will
+> not receive further updates. The `vscode-extension/` source remains in the
+> repository for contributors who want to build the extension locally; it is
+> no longer published to the VS Code Marketplace and is not included in npm
+> tarballs.
+
+### Recommended replacement: the dashboard
 
 ```bash
-# Run with a PRD file
-docker run -v $(pwd):/workspace -w /workspace asklokesh/loki-mode:5.32.0 start ./my-prd.md
-
-# Interactive mode
-docker run -it -v $(pwd):/workspace -w /workspace asklokesh/loki-mode:5.32.0
-
-# Using docker-compose
-docker-compose run loki start ./my-prd.md
+loki dashboard start
+# Then open http://localhost:57374 in your browser.
 ```
 
-### Environment Variables
-
-Pass your configuration via environment variables:
-
-```bash
-docker run -e LOKI_MAX_RETRIES=100 -e LOKI_BASE_WAIT=120 \
-  -v $(pwd):/workspace -w /workspace \
-  asklokesh/loki-mode:5.32.0 start ./my-prd.md
-```
-
-### Updating
-
-```bash
-docker pull asklokesh/loki-mode:latest
-```
+The dashboard provides session monitoring, task views, the completion
+council, log streaming, and the managed-memory panel -- the same surface
+the extension exposed, plus everything added since v7.2.0.
 
 ---
 
@@ -281,11 +280,11 @@ Run Loki Mode in an isolated Docker container for enhanced security.
 ### Usage
 
 ```bash
-# Run in sandbox mode
-./autonomy/sandbox.sh ./my-prd.md
+# Run in sandbox mode (spec can be PRD, issue link, or YAML)
+./autonomy/sandbox.sh ./my-spec.md
 
 # With provider selection
-./autonomy/sandbox.sh --provider codex ./my-prd.md
+./autonomy/sandbox.sh --provider codex ./my-spec.md
 ```
 
 ### Security Controls
@@ -296,10 +295,10 @@ By default, prompt injection is **disabled** for enterprise safety:
 
 ```bash
 # Default: prompt injection disabled
-./autonomy/run.sh ./my-prd.md
+./autonomy/run.sh ./my-spec.md
 
 # Opt-in to enable prompt injection
-LOKI_PROMPT_INJECTION_ENABLED=true ./autonomy/run.sh ./my-prd.md
+LOKI_PROMPT_INJECTION_ENABLED=true ./autonomy/run.sh ./my-spec.md
 ```
 
 #### Human Input Security
@@ -311,7 +310,7 @@ The `HUMAN_INPUT.md` file has security controls:
 
 ### When to Use Sandbox Mode
 
-- Running untrusted PRD files
+- Running untrusted spec files (PRD, issue export, YAML)
 - Enterprise environments with strict security requirements
 - Automated CI/CD pipelines
 - Multi-tenant deployments
@@ -320,15 +319,17 @@ The `HUMAN_INPUT.md` file has security controls:
 
 ## Multi-Provider Support
 
-Loki Mode v5.0.0 introduces support for multiple AI providers beyond Claude.
+Loki Mode supports four active providers across three tiers, plus historical/upcoming entries. Pick by capability + cost.
 
 ### Supported Providers
 
-| Provider | Status | Notes |
-|----------|--------|-------|
-| `claude` | Full Support | Default provider, all features available |
-| `codex` | Degraded Mode | Core functionality only, some features unavailable |
-| `gemini` | Degraded Mode | Core functionality only, some features unavailable |
+| Provider | Status | Tier | Notes |
+|----------|--------|------|-------|
+| `claude` | Active | Tier 1 (full) | Default. All features incl. Task subagents, MCP, council. |
+| `cline`  | Active | Tier 2 | Full feature set; small models (<13B) may fail tool-use. |
+| `codex`  | Active | Tier 3 (degraded) | Sequential only, no Task tool; aligned with `@openai/codex` v0.125+. |
+| `aider`  | Active | Tier 3 (degraded) | Sequential only; `ollama_chat/<model>` works for local models. |
+| `gemini` | DEPRECATED v7.5.18 | -- | Upstream Gemini CLI deprecated by Google. Runtime removed; `LOKI_PROVIDER=gemini` exits with migration message. |
 
 ### Configuration
 
@@ -343,8 +344,8 @@ export LOKI_PROVIDER=claude
 # Use OpenAI Codex
 export LOKI_PROVIDER=codex
 
-# Use Google Gemini
-export LOKI_PROVIDER=gemini
+# Use Cline
+export LOKI_PROVIDER=cline
 ```
 
 #### CLI Flag
@@ -353,34 +354,100 @@ Use the `--provider` flag when invoking Loki Mode:
 
 ```bash
 # Use Claude (default)
-loki start ./my-prd.md --provider claude
+loki start ./my-spec.md --provider claude
 
 # Use OpenAI Codex
-loki start ./my-prd.md --provider codex
+loki start ./my-spec.md --provider codex
 
-# Use Google Gemini
-loki start ./my-prd.md --provider gemini
+# Use Cline
+loki start ./my-spec.md --provider cline
 ```
 
 #### Docker
 
-Pass the provider as an environment variable:
+Docker is where sandboxes and runs happen. The easiest way to run Loki in a
+container is the `loki docker` host wrapper, which gives you the full local
+experience (including `.loki/` state, resume, and continuity) in one command.
+The raw `docker run` and `docker compose` methods below remain as alternatives.
+
+##### loki docker (easiest)
+
+If you have loki installed on the host (npm/brew/bun) plus Docker, `loki docker`
+runs any loki command inside the published `asklokesh/loki-mode` image with zero
+config:
 
 ```bash
-# Use Codex with Docker
-docker run -e LOKI_PROVIDER=codex \
-  -v $(pwd):/workspace -w /workspace \
-  asklokesh/loki-mode:5.32.0 start ./my-prd.md
-
-# Use Gemini with Docker
-docker run -e LOKI_PROVIDER=gemini \
-  -v $(pwd):/workspace -w /workspace \
-  asklokesh/loki-mode:5.32.0 start ./my-prd.md
+loki docker start prd.md             # full local experience in Docker
+loki docker status                   # any loki command works
+loki docker --dry-run start prd.md   # print the docker command, do not run
 ```
+
+It bind-mounts the current folder to `/workspace`, so `.loki/` state (memory,
+session, queue, checkpoints) persists on the host and resume and continuity
+behave exactly like the local `loki` CLI. Auth is auto-detected:
+`ANTHROPIC_API_KEY` if set, else your host's existing Claude Code login
+(Max/Pro subscribers need no API key), else an honest error with guidance. It
+also forwards `~/.gitconfig` and `~/.config/gh` (read-only) plus
+`GITHUB_TOKEN`/`GH_TOKEN` if set, so commits and PRs work like local, and
+exposes the dashboard on port 57374. Use `--image IMG` to override the image.
+
+`loki docker` is a thin host wrapper around the image; it requires loki and
+Docker installed on the host.
+
+Multi-repo + unified dashboard: you can run `loki docker start` in several
+different repos at once, exactly like the host CLI. Each repo gets its own
+container (deterministic name `loki-<hash-of-path>`) and its own bind-mounted
+`.loki/` state. Every `loki docker` project registers with the host dashboard,
+so running `loki dashboard` on the host shows ALL your projects in one unified
+view, whether they run via local `loki start` or via `loki docker start`. Builds
+run with the dashboard off by default (so concurrent runs do not collide on port
+57374); use the host `loki dashboard`, or `loki docker start --api` for a single
+containerized run's UI.
+
+##### docker run
+
+As of v7.45.0 the image ships the Claude Code CLI, so the default `claude`
+provider works inside the container. Provide auth with your Anthropic API key:
+
+```bash
+# Run Loki Mode in Docker (Claude provider, API-key auth)
+docker run --rm -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  -v $(pwd):/workspace -w /workspace \
+  asklokesh/loki-mode:8.0.0 start ./my-spec.md
+```
+
+##### docker compose + .env (no host install)
+
+If you prefer not to install loki on the host, the repo ships a
+`docker-compose.yml` with `env_file: .env`. Copy the example,
+set your key once, then run without retyping long `-e` flags:
+
+```bash
+cp .env.example .env          # then edit .env and set ANTHROPIC_API_KEY
+docker compose run loki start prd.md
+```
+
+`.env` is gitignored. Edit it and re-run any time; compose reloads it
+automatically.
+
+##### Host OAuth (Claude Code Max/Pro subscribers, no API key)
+
+If you have a Claude Code subscription and no API key, you can reuse your host
+login by mounting your credentials file at
+`/home/loki/.claude/.credentials.json` instead of setting `ANTHROPIC_API_KEY`.
+See [DOCKER_README.md](../DOCKER_README.md) "Option 2: host OAuth" for the
+one-line export command and the compose volume to uncomment.
+
+##### Other providers in Docker
+
+The image ships only the Claude Code CLI. Codex, Cline, and Aider are
+bring-your-own-CLI: install the provider CLI in a derived image (or mount it),
+then select it with `-e LOKI_PROVIDER=<name>`. See
+[DOCKER_README.md](../DOCKER_README.md) for details.
 
 ### Degraded Mode
 
-When using `codex` or `gemini` providers, Loki Mode operates in **degraded mode**:
+When using `codex`, `cline`, or `aider` providers, Loki Mode operates in **degraded mode**:
 
 - Core autonomous workflow functions normally
 - Some advanced features may be unavailable or behave differently
@@ -388,6 +455,74 @@ When using `codex` or `gemini` providers, Loki Mode operates in **degraded mode*
 - Quality gates and RARV cycle remain fully functional
 
 **Recommendation:** For the best experience and full feature support, use the default `claude` provider.
+
+---
+
+## Environment Variables
+
+Loki Mode is designed to run with zero configuration: the trust-layer and
+quality features below are default-on and decide intelligently by inspecting
+the work. The environment variables here are opt-out escape hatches for power
+users, not required setup. Set the documented value to disable a feature; leave
+the variable unset to keep the intelligent default.
+
+### Trust-gate and completion knobs (default-on)
+
+These are read by the orchestrator (`autonomy/run.sh`) on every run.
+
+- `LOKI_REVIEW_INCONCLUSIVE_BLOCK` (default `1`) -- when a code-review cycle
+  returns zero usable verdicts (every reviewer produced empty output), the
+  review is treated as INCONCLUSIVE and the gate BLOCKS, because an all-empty
+  review proves nothing. A bounded one-shot retry runs first
+  (`LOKI_REVIEW_RETRY`, default `1`). Set `LOKI_REVIEW_INCONCLUSIVE_BLOCK=0` to
+  record the inconclusive result without blocking.
+
+- `LOKI_COMPLETION_TEST_CAPTURE` (default `1`) -- before the verified-completion
+  evidence gate runs, Loki captures a fresh `test-results.json` so the gate
+  scores on real PASS/FAIL test results instead of a stale or missing file. It
+  reuses this iteration's results if already fresh, and never crashes the
+  completion path on red tests (the gate is the decider). Set
+  `LOKI_COMPLETION_TEST_CAPTURE=0` to opt out.
+
+- `LOKI_AUTO_DOCS` (default `true`) -- auto-generates the `.loki/docs/` suite
+  before the documentation gate evaluates, so the gate scores on real generated
+  docs instead of nagging you to run `loki docs generate` by hand. Bounded:
+  runs at most once per run when docs are missing, and again only when existing
+  docs are substantially stale; best-effort, never fails the iteration loop.
+  Set `LOKI_AUTO_DOCS=false` to opt out.
+
+### Output-token compressor (caveman, Claude-only)
+
+Loki integrates [caveman](https://github.com/JuliusBrussee/caveman), an optional
+Claude Code skill that compresses the model's OUTPUT tokens only (keeping all
+technical substance). It activates on free-form generation (the main RARV dev
+loop) and is HARD-SUPPRESSED on every trust-gate subcall (council votes, code
+review verdicts, evidence-related parses) so determinism is never affected. It
+is Claude-provider-only; runs are byte-identical on Codex / Cline / Aider. These
+variables are read in `autonomy/lib/claude-flags.sh`.
+
+- `LOKI_CAVEMAN` (default on) -- set `LOKI_CAVEMAN=0` to disable the compressor.
+  Suppression on trust-gate subcalls is unconditional and applies even when
+  caveman is globally installed but `LOKI_CAVEMAN=0`, so trust gates are never
+  exposed to compression.
+
+- `LOKI_CAVEMAN_LEVEL` (default `full`) -- the compression level for free-form
+  activation. When you do NOT set this, the level is inferred per-invocation
+  from the run's RARV tier (planning -> `lite`, development/fast -> `full`); the
+  auto path never selects `ultra`. Setting `LOKI_CAVEMAN_LEVEL` explicitly
+  overrides the inference entirely (the opt-out escape hatch).
+
+- `LOKI_CAVEMAN_VERSION` (default `1.9.0`) -- the pinned caveman version used by
+  the one-time bootstrap. Bump only to upgrade the compressor.
+
+### RARV-C closure knobs (default-on)
+
+The Phase 1 / RARV-C closure loop (findings injection, override council,
+learnings writer, handoff doc) is default-on and documented in detail at the
+top of this guide under [Phase 1 RARV-C closure](#phase-1-rarv-c-closure-shipped-v750-default-on-as-of-v753):
+`LOKI_INJECT_FINDINGS`, `LOKI_OVERRIDE_COUNCIL`, `LOKI_AUTO_LEARNINGS`, and
+`LOKI_HANDOFF_MD` (each opt out with `=0`). For the full schema and
+reachability notes, see `skills/quality-gates.md`.
 
 ---
 
@@ -517,7 +652,7 @@ cat ~/.claude/skills/loki-mode/SKILL.md | head -10
 ```yaml
 ---
 name: loki-mode
-description: Multi-Agent Autonomous Startup System
+description: Autonomous Spec-to-Product System (RARV-C closure loop)
 ...
 ---
 ```
@@ -526,7 +661,7 @@ description: Multi-Agent Autonomous Startup System
 
 1. Start a new conversation
 2. Type: `Loki Mode`
-3. Claude should recognize the skill and ask for a PRD
+3. Claude should recognize the skill and ask for a spec (PRD, GitHub issue link, or YAML)
 
 ### For API Console
 
@@ -548,7 +683,7 @@ loki-mode/
 │   └── INSTALLATION.md   # This file
 ├── CHANGELOG.md          # Version history
 ├── VERSION               # Current version number
-├── LICENSE               # MIT License
+├── LICENSE               # Business Source License 1.1
 ├── references/           # Agent and deployment references
 │   ├── agents.md
 │   ├── deployment.md
@@ -556,11 +691,11 @@ loki-mode/
 ├── autonomy/             # Autonomous runner (CLI only)
 │   ├── run.sh
 │   └── README.md
-├── examples/             # Sample PRDs for testing
+├── templates/            # 22 spec templates (PRD-style) for project scaffolding
 │   ├── simple-todo-app.md
 │   ├── api-only.md
 │   ├── static-landing-page.md
-│   └── full-stack-demo.md
+│   └── ... (22 templates total)
 ├── tests/                # Test suite (CLI only)
 │   ├── run-all-tests.sh
 │   ├── test-bootstrap.sh
@@ -569,7 +704,7 @@ loki-mode/
     └── vibe-kanban.md
 ```
 
-**Note:** Some files/directories (autonomy, tests, examples) are only available with full installation (Options A or B).
+**Note:** Some files/directories (autonomy, tests, templates) are only available with full installation (Options A or B).
 
 ---
 
@@ -579,13 +714,13 @@ Loki Mode uses two network ports for different services:
 
 | Port | Service | Description |
 |------|---------|-------------|
-| **57374** | Dashboard + API (FastAPI) | Unified server serving both the web dashboard UI (real-time monitoring, task board, Completion Council, memory browser, log streaming) and the REST API (used by VS Code extension, CLI tools, programmatic access). Served by `dashboard/server.py`. |
+| **57374** | Dashboard + API (FastAPI) | Unified server serving both the web dashboard UI (real-time monitoring, task board, Completion Council, memory browser, log streaming) and the REST API (used by CLI tools, programmatic access, and the deprecated VS Code extension). Served by `dashboard/server.py`. |
 
 ### When to Use Which Port
 
 - **Browser access** (dashboard, monitoring): Use port **57374** -- `http://localhost:57374`
 - **API calls** (REST, programmatic): Use port **57374** -- `http://localhost:57374`
-- **VS Code extension**: Connects to API on port **57374** automatically (configurable via `loki.apiPort` setting)
+- **VS Code extension** (deprecated as of v7.2.0): Connects to API on port **57374** automatically (configurable via `loki.apiPort` setting). No new releases will be published; see the deprecation notice above.
 - The server is started automatically when you run `loki start` or `./autonomy/run.sh`. No manual configuration is needed.
 
 ### Port Configuration
@@ -595,7 +730,7 @@ Loki Mode uses two network ports for different services:
 LOKI_DASHBOARD_PORT=57374 loki dashboard start
 
 # API port (default: 57374)
-loki serve --port 57374
+loki api start --port 57374   # was: loki serve
 ```
 
 ### CORS Configuration
@@ -626,7 +761,11 @@ Add the source command to your startup file so completions load every time you o
 Add this line to your `~/.bashrc` (Linux) or `~/.bash_profile` (macOS):
 
 ```bash
-source /path/to/loki/completions/loki.bash
+# npm install: use the npm package path
+source "$(npm root -g)/loki-mode/completions/loki.bash"
+
+# git clone: use the skills directory
+source ~/.claude/skills/loki-mode/completions/loki.bash
 ```
 
 ---
@@ -700,15 +839,15 @@ loki start --pro<TAB>     # Should autocomplete to --provider
 The completion scripts support:
 
 * **Subcommands**
-  `start`, `stop`, `pause`, `resume`, `status`, `dashboard`, `import`, `council`, `memory`, `provider`, `config`, `help`, `completions`
+  `start`, `stop`, `pause`, `resume`, `status`, `dashboard`, `import`, `council`, `memory`, `provider`, `config`, `audit`, `metrics`, `watchdog`, `secrets`, `help`, `completions`
 
 * **Smart Context**
 
-  * `loki start --provider <TAB>` shows only installed providers (`claude`, `codex`, `gemini`).
-  * `loki start <TAB>` defaults to file completion for PRD templates.
+  * `loki start --provider <TAB>` shows only installed providers (`claude`, `codex`, `cline`, `aider`).
+  * `loki start <TAB>` defaults to file completion for spec files (PRD templates, YAML).
 
 * **Nested Commands**
-  Handles specific subcommands for `council`, `memory`, and `config`.
+  Handles specific subcommands for `council`, `memory`, `config`, `audit`, `metrics`, `watchdog`, and `secrets`.
 
 ---
 
@@ -863,16 +1002,60 @@ rm -rf ~/.claude/skills/loki-mode
 
 After installation:
 
-1. **Quick Test:** Run a simple example
+1. **Verify Setup:** Check your environment is ready
    ```bash
-   ./autonomy/run.sh examples/simple-todo-app.md
+   loki doctor
    ```
 
-2. **Read Documentation:** Check out [README.md](README.md) for usage guides
+2. **Scaffold a Project:** Create a project from a template
+   ```bash
+   loki init my-app --template simple-todo-app
+   cd my-app
+   ```
 
-3. **Create Your First PRD:** See the Quick Start section in README
+3. **Start Building:** Launch autonomous development from any spec (PRD, GitHub issue, or YAML)
+   ```bash
+   loki start spec.md
+   ```
 
-4. **Join the Community:** Report issues or contribute at [GitHub](https://github.com/asklokesh/loki-mode)
+4. **Read Documentation:** Check out [README.md](../README.md) for usage guides
+
+5. **Join the Community:** Report issues or contribute at [GitHub](https://github.com/asklokesh/loki-mode)
+
+---
+
+## Release Operations
+
+<details>
+<summary>Token Rotation Runbook (maintainers only)</summary>
+
+Follow this runbook when a release workflow fails to publish to npm.
+
+**Symptom:** The `publish-npm` step in `.github/workflows/release.yml` fails with:
+```
+npm error 404 Not Found - PUT https://registry.npmjs.org/loki-mode
+```
+
+A 404 on PUT means the registry rejected the credential, not that the package is missing.
+
+**Likely causes:**
+- The `NPM_TOKEN` Automation token has expired.
+- The token was revoked or its owner lost publish rights on the `loki-mode` package.
+- The npm account requires a 2FA refresh and the existing Automation token is no longer accepted.
+
+**Remediation steps:**
+1. Log in to npmjs.com as the publish account and regenerate an Automation token with publish access scoped to `loki-mode`.
+2. Open https://github.com/asklokesh/loki-mode/settings/secrets/actions
+3. Update the `NPM_TOKEN` repository secret with the new token value.
+4. Re-run the failed Release workflow: `gh run rerun <run-id>`. If re-run is not available for that run, push a no-op commit to `main` to retrigger.
+
+**Verification:**
+- Watch the new run: `gh run watch <new-run-id>` and confirm `publish-npm` and `publish-ts-sdk` succeed.
+- Confirm publish: `npm view loki-mode version` returns the new version.
+
+**Note on `publish-ts-sdk`:** This job publishes `sdk/typescript` to npm and uses the same `secrets.NPM_TOKEN` as `publish-npm` (see `.github/workflows/release.yml`). Rotating `NPM_TOKEN` fixes both jobs. The new Automation token must have publish access to both the `loki-mode` package and the TypeScript SDK package.
+
+</details>
 
 ---
 
@@ -880,7 +1063,7 @@ After installation:
 
 - **Issues/Bugs:** [GitHub Issues](https://github.com/asklokesh/loki-mode/issues)
 - **Discussions:** [GitHub Discussions](https://github.com/asklokesh/loki-mode/discussions)
-- **Documentation:** [README.md](README.md)
+- **Documentation:** [README.md](../README.md)
 
 ---
 

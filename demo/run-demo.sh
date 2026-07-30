@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Loki Mode Demo Runner
 # Usage: ./demo/run-demo.sh [simple-todo|full-stack]
 
@@ -41,7 +41,7 @@ pause() {
 # Demo introduction
 banner "LOKI MODE DEMO"
 
-echo "Loki Mode - Multi-Agent Autonomous Startup System"
+echo "Loki Mode - Autonomous Spec-to-Product System"
 echo ""
 echo "This demo will show:"
 echo "  - Autonomous project generation from PRD"
@@ -294,7 +294,7 @@ echo ""
 echo "Quality Gate: PASSED"
 echo ""
 
-info "Critical/High/Medium issues BLOCK the pipeline"
+info "Critical/High issues BLOCK the pipeline; Medium/Low advisory"
 info "Low/Cosmetic issues become TODO comments"
 pause
 

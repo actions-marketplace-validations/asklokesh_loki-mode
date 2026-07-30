@@ -1,14 +1,81 @@
 # Model Selection & Task Tool
 
+## Session-Pinned Model (default)
+
+Since v6.81.0, the main RARV loop uses **one pinned model per session** instead of rotating models per RARV phase. This eliminates per-iteration tier churn and keeps the main loop behavior predictable.
+
+- Controlled by `LOKI_SESSION_MODEL` (default: `sonnet`).
+- Accepted values: `opus`, `sonnet`, `haiku`, or a raw tier name (`planning`, `development`, `fast`). The value names a **tier**, not a fixed model: it is mapped to an abstract tier (opus -> planning, sonnet -> development, haiku -> fast) which is then resolved to a concrete model through the provider config (`PROVIDER_MODEL_PLANNING/DEVELOPMENT/FAST`). On stock config the default `sonnet` pin = the **development** tier = `PROVIDER_MODEL_DEVELOPMENT` = **sonnet** (since v7.104.0, `CLAUDE_DEFAULT_DEVELOPMENT=sonnet`; planning and fast also default to sonnet on the stock path). This is why `loki plan` quotes Sonnet on the stock default path: the quote names the dispatched model, and every tier resolves to the same sonnet model unless the provider config overrides a tier. A mid-flight `.loki/state/model-override` is different: that alias is fed straight to `--model` (a `sonnet` override dispatches sonnet, no tier route).
+- `get_rarv_tier()` is retained and still used for subagent Task-tool dispatches (planning vs implementation vs fast work), not for the main loop.
+
+**Rollback (legacy RARV tier rotation in the main loop):**
+
+```bash
+LOKI_LEGACY_TIER_SWITCHING=true ./autonomy/run.sh ./prd.md
+```
+
+Set `LOKI_LEGACY_TIER_SWITCHING=true` to restore the previous per-iteration `get_rarv_tier "$ITERATION_COUNT"` behavior in the main loop.
+
+---
+
+## Fable 5 (top-tier advisory model)
+
+Claude Fable 5 (alias `fable`, full id `claude-fable-5`) is Anthropic's most capable widely released model. It is NOT a default workhorse: it is priced at exactly **2x Opus** ($10 / $50 per MTok in/out vs Opus $5 / $25), uses always-on adaptive thinking, and is reserved for the few decision points where its extra investigation and self-verification pay off.
+
+**When Fable is documented to help (route here, opt-in, cost shown):**
+- Architecture decisions, root-cause investigations, outage debugging.
+- Long-horizon tasks you would otherwise decompose.
+
+**When NOT to route to Fable:**
+- Security review. Fable's safety classifiers refuse cybersecurity content, and in non-interactive (`-p`) mode a flagged request ends the turn with a refusal instead of a transparent Opus re-run, which would break the unanimous-council gate. Security review stays on Opus, always. (Defensive-cyber capability lives in Mythos 5 via Project Glasswing, not Fable.)
+- Default planning/development/fast work. The 2x cost is only worth it for the cases above.
+
+### Mid-flight model switching
+
+You can change the model a **live run** uses, from the dashboard or by writing a state file. The switch applies at the **next iteration boundary** (each iteration spawns a fresh `claude -p`, which fixes the model per invocation, so it never changes mid-invocation). The override applies to the **current run only**: the runner clears a leftover override at the start of a fresh run, so a switch never silently carries into future runs. The override is also clamped by `LOKI_MAX_TIER`: if the operator set a cost ceiling, an override above it is clamped down with one honest log line, and the dashboard reports the clamped effective model. The clamp is scoped, not blanket: on the override path a `sonnet` ceiling downgrades only `fable` (to `PROVIDER_MODEL_DEVELOPMENT`, opus by default), while a plain `opus` override stays opus; a `haiku` ceiling pins to `PROVIDER_MODEL_FAST`; an `opus` ceiling caps only `fable` back to opus. (The clamp is enforced on the bash runner, which is the live `start` route; the experimental Bun runner does not yet port it.)
+
+- Dashboard: the Model selector in the session-control panel. The Fable option shows its 2x-Opus cost; an inline notice discloses the iteration-boundary timing. It calls `POST /api/session/model`.
+- File / CLI: write an allowlisted alias (`haiku`, `sonnet`, `opus`, `fable`) to `.loki/state/model-override`. Empty or absent file reverts to the tier mapping. Invalid content is ignored (the runtime warns once). The value is allowlist-validated because it is fed straight into `claude --model`.
+
+```bash
+# Switch a live run to Fable for the next iteration
+echo fable > .loki/state/model-override
+# Revert to the tier mapping
+rm -f .loki/state/model-override
+```
+
+### Architecture-tier opt-in: `LOKI_FABLE_ARCHITECT`
+
+`LOKI_FABLE_ARCHITECT=1` routes ONLY the **first iteration** (the architecture / REASON pass) to Fable; every later iteration uses the session tier (the default pin, e.g. Sonnet/Opus). Default OFF because of the 2x cost. An explicit `LOKI_CLAUDE_MODEL_PLANNING` / `LOKI_MODEL_PLANNING` still wins, and the `LOKI_MAX_TIER` ceiling still clamps Fable down. This first-iteration scope is deliberate: under the default session pinning there is no recurring "planning tier", so scoping to the architecture iteration is the only honest way to give the architecture pass Fable without converting the whole session. `loki plan` discloses the extra Fable architecture iteration in its quote.
+
+```bash
+LOKI_FABLE_ARCHITECT=1 loki start ./prd.md
+```
+
+### Financial / physical-stakes work (manual override, by design)
+
+For diffs that move money or mutate infrastructure (payments, billing, spend authorization, Terraform/k8s/infra changes), routing to Fable is **founder-directed and not doc-evidenced**, so Loki does NOT auto-route based on file-path heuristics in this release. Use the mid-flight switch (set the model to `fable` for those iterations, then clear it) as the deliberate, consent-based mechanism. This keeps the high-cost model an explicit human choice, not an implicit one.
+
+### Cost estimate honesty
+
+`loki plan` quotes the model the runner actually dispatches, on **every** path, for the levers the runner honors. This includes the stock no-lever default: the `sonnet` session pin resolves through the development tier to opus, so the quote names Opus (not Sonnet) on the default path. Set `LOKI_SESSION_MODEL=fable`, or have a pending `.loki/state/model-override` of `fable`, and the estimate uses Fable's $10/$50 pricing with a 2x-Opus note. The quote, the dashboard `effective` model, and the actual `claude --model` argument always agree on both routes: the session-pin tier route (no override) and the override-path clamp (override present) are each mirrored exactly in the estimator and the dashboard, so the same lever that changes the quote changes the run. `LOKI_MAX_TIER` is applied to the quote too, so the estimate never quotes a model above the operator's cost ceiling. (`LOKI_MODEL` is not a session lever and does not affect the run; use `LOKI_SESSION_MODEL`.)
+
+**Where the dispatched model is disclosed (precisely):**
+- Override path (a `.loki/state/model-override` alias): the runner logs the override and the clamp line (`model override: <model>`, plus the one honest clamp-down log line when `LOKI_MAX_TIER` reduces it); the dashboard `GET /api/session/model` `effective` field reports the clamped model.
+- Session pin / architect path (no override, the default): the runner logs the RARV effective-model line each iteration (`RARV Phase: <phase> -> Tier: <tier> (<model>)`), and `loki plan` discloses the provenance (`pinned via LOKI_SESSION_MODEL=<pin> -> <tier> tier -> <model>`) so the quoted model is legible against the pin alias. The `LOKI_FABLE_ARCHITECT=1` first-iteration Fable opt-in is disclosed as an extra architecture iteration in the quote.
+
+---
+
 ## Multi-Provider Support (v5.0.0)
 
-Loki Mode supports three AI providers. Claude has full features; Codex and Gemini run in **degraded mode** (sequential execution only, no Task tool, no parallel agents).
+Loki Mode supports five AI providers. Claude has full features; all others run in **degraded mode** (sequential execution only, no Task tool, no parallel agents).
 
 | Provider | Full Features | Degraded | CLI Flag |
 |----------|---------------|----------|----------|
 | **Claude Code** | Yes | No | `--provider claude` (default) |
 | **OpenAI Codex CLI** | No | Yes | `--provider codex` |
-| **Google Gemini CLI** | No | Yes | `--provider gemini` |
+| **Cline CLI** | No | Yes | `--provider cline` |
+| **Aider** | No | Yes | `--provider aider` |
 
 **Degraded mode limitations:**
 - No Task tool (cannot spawn subagents)
@@ -22,11 +89,11 @@ Loki Mode supports three AI providers. Claude has full features; Codex and Gemin
 
 **Default (v5.3.0):** Haiku disabled for quality. All tasks use Opus or Sonnet.
 
-| Tier | Purpose | Claude (default) | Claude (--allow-haiku) | Codex | Gemini |
-|------|---------|------------------|------------------------|-------|--------|
-| **planning** | PRD analysis, architecture, system design | opus | opus | effort=xhigh | thinking=high |
-| **development** | Feature implementation, complex bugs, tests | opus | sonnet | effort=high | thinking=medium |
-| **fast** | Unit tests, docs, linting, simple tasks | sonnet | haiku | effort=low | thinking=low |
+| Tier | Purpose | Claude (default) | Claude (--allow-haiku) | Codex |
+|------|---------|------------------|------------------------|-------|
+| **planning** | PRD analysis, architecture, system design | opus | opus | effort=xhigh |
+| **development** | Feature implementation, complex bugs, tests | opus | sonnet | effort=high |
+| **fast** | Unit tests, docs, linting, simple tasks | sonnet | haiku | effort=low |
 
 ### Enabling Haiku
 
@@ -60,11 +127,10 @@ When Haiku is enabled:
 
 **Claude-specific model names:** opus, sonnet, haiku (haiku requires --allow-haiku flag)
 **Codex effort levels:** xhigh, high, medium, low
-**Gemini thinking levels:** high, medium, low
 
 ## Task Tool Examples (Claude Only)
 
-**NOTE:** Task tool is Claude-specific. Codex and Gemini run in degraded mode without subagents.
+**NOTE:** Task tool is Claude-specific. Codex, Cline, and Aider run in degraded mode without subagents.
 
 ```python
 # Planning tier (opus) for Bootstrap, Discovery, Architecture
@@ -89,7 +155,7 @@ if [ "${PROVIDER_HAS_TASK_TOOL:-false}" = "true" ]; then
     # Claude: Use Task tool with parallel agents
     Task(model="haiku", description="Run tests", prompt="...")
 else
-    # Codex/Gemini: Run sequentially without subagents
+    # Codex/Cline/Aider: Run sequentially without subagents
     # Execute RARV cycle in main thread
 fi
 ```
@@ -116,7 +182,7 @@ fi
 
 ## Parallelization Strategy (Claude Only)
 
-**NOTE:** Parallelization requires Task tool, which is Claude-specific. Codex and Gemini run sequentially.
+**NOTE:** Parallelization requires Task tool, which is Claude-specific. Codex, Cline, and Aider run sequentially.
 
 ```python
 # Claude: Launch 10+ Haiku agents in parallel for unit test suite
@@ -125,7 +191,7 @@ for test_file in test_files:
          description=f"Run unit tests: {test_file}",
          run_in_background=True)
 
-# Codex/Gemini: Run tests sequentially (no parallelization)
+# Codex/Cline/Aider: Run tests sequentially (no parallelization)
 for test_file in test_files:
     run_test(test_file)  # Sequential execution
 ```
@@ -165,13 +231,16 @@ Claude models support an `effort` parameter that controls reasoning depth withou
 
 **Note:** The effort parameter and thinking prefixes serve different purposes. Effort controls the model's internal reasoning budget; thinking prefixes guide the structure of the response.
 
-### Codex --full-auto Flag
+### Codex --sandbox workspace-write Flag
 
-Codex CLI v0.98.0 supports `--full-auto` as the recommended autonomous mode flag, replacing the verbose `exec --dangerously-bypass-approvals-and-sandbox` invocation:
+Codex CLI deprecated `--full-auto` in v0.125+ (removed from `codex exec --help`,
+emits a deprecation warning if used). The documented replacement is
+`--sandbox workspace-write`. The `exec` subcommand is non-interactive by default
+(approval: never), so the sandbox flag alone keeps the loop autonomous:
 
 ```bash
-# Recommended (v0.98.0+)
-codex --full-auto "$prompt"
+# Recommended (codex 0.125+)
+codex exec --sandbox workspace-write "$prompt"
 
 # Legacy (still supported)
 codex exec --dangerously-bypass-approvals-and-sandbox "$prompt"
@@ -421,12 +490,11 @@ Task(
 )
 ```
 
-For Codex/Gemini (degraded mode):
+For Codex (degraded mode):
 ```python
-# Map tiers to effort/thinking levels
+# Map tiers to effort levels
 TIER_MAPPING = {
     "codex": {"HIGH": "xhigh", "MEDIUM": "high", "LOW": "low"},
-    "gemini": {"HIGH": "high", "MEDIUM": "medium", "LOW": "low"},
 }
 effort_level = TIER_MAPPING[provider][determine_tier(task)]
 ```

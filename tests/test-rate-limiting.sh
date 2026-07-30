@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # shellcheck disable=SC2034  # Variables may be unused in test context
 # shellcheck disable=SC2155  # Declare and assign separately
 # shellcheck disable=SC2329  # Unreachable code in test functions
@@ -307,7 +307,8 @@ else
 fi
 
 log_test "detect_rate_limit() falls back to calculated backoff"
-PROVIDER_NAME="gemini"
+# v7.5.18: gemini removed; use aider (also Tier 3 degraded).
+PROVIDER_NAME="aider"
 PROVIDER_RATE_LIMIT_RPM=60
 echo "Error: 429 rate limited" > "$TEMP_DIR/detect3.log"
 result=$(detect_rate_limit "$TEMP_DIR/detect3.log")

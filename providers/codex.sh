@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # OpenAI Codex CLI Provider Configuration
 # Shell-sourceable config for loki-mode multi-provider support
 
@@ -29,10 +29,14 @@ PROVIDER_CLI="codex"
 
 # CLI Invocation
 # Note: codex uses positional prompt after "exec" subcommand
-# VERIFIED: exec --full-auto confirmed in codex exec --help (v0.98.0)
-# --full-auto: sets --ask-for-approval on-request + --sandbox workspace-write (v0.98.0)
+# VERIFIED: codex 0.132.0 deprecates --full-auto (prints a deprecation warning
+# and the flag is gone from `codex exec --help`). Use --sandbox workspace-write,
+# which is the documented replacement and the sandbox --full-auto expanded to.
+# `codex exec` is the non-interactive subcommand: it runs at approval "never"
+# with no --ask-for-approval flag, so --sandbox workspace-write alone keeps the
+# loop fully autonomous (verified against codex 0.132.0: no approval prompt).
 # Alternative: "exec --dangerously-bypass-approvals-and-sandbox" (legacy, no sandbox)
-PROVIDER_AUTONOMOUS_FLAG="exec --full-auto"
+PROVIDER_AUTONOMOUS_FLAG="exec --sandbox workspace-write --skip-git-repo-check"
 PROVIDER_PROMPT_FLAG=""
 PROVIDER_PROMPT_POSITIONAL=true
 
@@ -41,18 +45,96 @@ PROVIDER_SKILL_DIR="${HOME}/.agents/skills"
 PROVIDER_SKILL_FORMAT="markdown"  # Codex v0.98+ loads skills from ~/.agents/skills
 
 # Capability Flags
+#
+# SUBAGENTS / TASK_TOOL stay false: Codex has no equivalent of Claude Code's
+# in-session subagent dispatch. These two are reporting-only in this codebase
+# (loader.sh display + the degraded-mode summary); nothing branches on them.
 PROVIDER_HAS_SUBAGENTS=false
-PROVIDER_HAS_PARALLEL=false
 PROVIDER_HAS_TASK_TOOL=false
 PROVIDER_HAS_MCP=true
-PROVIDER_MAX_PARALLEL=1
+#
+# PARALLEL: enabled 2026-07-27 after MEASURING it, not assuming it.
+#
+# The v0.98-era `false` was an untested assumption. On codex-cli 0.144.6 two
+# concurrent `codex exec` runs in separate git worktrees both completed, exit 0,
+# zero rate-limit errors. This flag gates exactly one behavior -- worktree
+# parallel sessions (run.sh:4832 spawn guard, run.sh:23473 mode downgrade) --
+# and that primitive is only "run the non-interactive CLI in N directories at
+# once". It needs no subagents and no Task tool, which is why those two stay
+# false above while this one does not.
+#
+# Enabling it required making the user-facing text honest first, because
+# "degraded" was being reported as if it always implied "sequential":
+# run.sh:23461 now enumerates the capabilities actually missing (read from
+# these flags) instead of hardcoding "Parallel agents and Task tool", and the
+# live-output banner only claims "Sequential execution only" when
+# PROVIDER_HAS_PARALLEL is genuinely false. PROVIDER_DEGRADED itself is
+# deliberately UNTOUCHED: its other consumers (run.sh:20340 workflow analysis,
+# done-recognition.sh:167) are claude-only guards and one is parity-locked with
+# the Bun route, so widening its meaning would ripple into prompt construction
+# for no gain here.
+#
+# MAX_PARALLEL is 2, not the Claude value. Two is what was actually verified,
+# and Codex's free ChatGPT tier -- the audience this matters for, since Codex is
+# the only zero-cost on-ramp in the category -- is rate-limited well before
+# process concurrency becomes the ceiling. Raise it only with evidence at the
+# higher number.
+PROVIDER_HAS_PARALLEL=true
+PROVIDER_MAX_PARALLEL=2
 
 # Model Configuration
-# Codex uses single model with effort parameter
-# NOTE: gpt-5.3-codex is the official model name for Codex CLI v0.98+
-PROVIDER_MODEL_PLANNING="gpt-5.3-codex"
-PROVIDER_MODEL_DEVELOPMENT="gpt-5.3-codex"
-PROVIDER_MODEL_FAST="gpt-5.3-codex"
+# Codex uses a single model with an effort parameter.
+#
+# DEFAULT IS EMPTY ON PURPOSE (2026-07-26). Pinning a model name here broke
+# Codex outright for ChatGPT-account users -- the account tier that matters
+# most, since Codex ships free with every ChatGPT plan and is the only
+# zero-cost on-ramp in the category. Verified against codex-cli 0.144.6:
+#
+#   codex exec --model gpt-5.3-codex "..."
+#     -> 400 invalid_request_error: "The 'gpt-5.3-codex' model is not
+#        supported when using Codex with a ChatGPT account."
+#   codex exec "..."            (no --model)
+#     -> works, 22255 tokens, correct output
+#
+# The old pin ("official model name for Codex CLI v0.98+") was written against
+# v0.98 and never re-verified; the installed CLI is 0.144.6. Replacing it with
+# another hardcoded name would repeat the same mistake with a fresher string --
+# valid model names differ per account tier and change with upstream releases,
+# so THIS FILE CANNOT KNOW THEM. Codex already resolves an account-appropriate
+# default (honoring ~/.codex/config.toml), so the correct behavior is to say
+# nothing and let it choose. An operator who wants a specific model still sets
+# LOKI_CODEX_MODEL or LOKI_MODEL_*, which are passed through below.
+CODEX_DEFAULT_MODEL=""
+
+# Known valid Codex model prefixes for validation (BUG-PROV-002 fix)
+# Generic LOKI_MODEL_* may contain Claude model aliases (e.g. "opus", "sonnet",
+# "haiku") which are invalid for Codex. Validate before accepting.
+CODEX_KNOWN_MODELS=("gpt-" "o1-" "o3-" "o4-" "codex-" "ft:gpt-")
+
+_codex_validate_model() {
+    local model="$1"
+    for prefix in "${CODEX_KNOWN_MODELS[@]}"; do
+        if [[ "$model" == ${prefix}* ]]; then
+            echo "$model"
+            return 0
+        fi
+    done
+    # Not a valid Codex model name (e.g. a Claude alias leaking in via the
+    # generic LOKI_MODEL_*) -- fall back to the default, which is now EMPTY,
+    # i.e. "pass no --model and let Codex pick". That is deliberately the same
+    # safe outcome as an unset model rather than a guessed name.
+    echo "$CODEX_DEFAULT_MODEL"
+}
+
+# Provider-specific env (LOKI_CODEX_MODEL) is trusted and used verbatim -- the
+# operator set a Codex-specific model on purpose (e.g. a fine-tune or org-scoped
+# name that need not match CODEX_KNOWN_MODELS). Only the GENERIC LOKI_MODEL_*
+# fallback is validated, since it may carry Claude aliases (opus/sonnet/haiku)
+# that are invalid for Codex. Validating the whole chain silently downgraded a
+# trusted LOKI_CODEX_MODEL to the default (BUG-PROV-003 fix).
+PROVIDER_MODEL_PLANNING="${LOKI_CODEX_MODEL:-$(_codex_validate_model "${LOKI_MODEL_PLANNING:-$CODEX_DEFAULT_MODEL}")}"
+PROVIDER_MODEL_DEVELOPMENT="${LOKI_CODEX_MODEL:-$(_codex_validate_model "${LOKI_MODEL_DEVELOPMENT:-$CODEX_DEFAULT_MODEL}")}"
+PROVIDER_MODEL_FAST="${LOKI_CODEX_MODEL:-$(_codex_validate_model "${LOKI_MODEL_FAST:-$CODEX_DEFAULT_MODEL}")}"
 
 # Effort levels (Codex-specific: maps to reasoning time, not model capability)
 PROVIDER_EFFORT_PLANNING="xhigh"
@@ -96,10 +178,29 @@ provider_version() {
 # Invocation function
 # Note: Codex uses positional prompt, not -p flag
 # Note: Reasoning effort is configured via environment or config, not CLI flag
+# v7.x pinned the resolved model explicitly via -m/--model so the run.sh cost
+# table matched what actually ran. That is still the behavior WHEN A MODEL IS
+# SET -- but the flag is now OMITTED when the resolved model is empty, because
+# a hardcoded name broke ChatGPT-account users outright (see CODEX_DEFAULT_MODEL
+# above). Omitting it lets Codex resolve an account-appropriate default; the
+# trade-off is that the cost table falls back to its generic estimate, which is
+# strictly better than a run that cannot start at all.
+_codex_model_flag() {
+    # Echo nothing when no model is resolved, so the caller's array stays empty.
+    [ -n "${1:-}" ] && printf '%s\n%s\n' "--model" "$1"
+    return 0
+}
+
 provider_invoke() {
     local prompt="$1"
     shift
-    codex exec --full-auto "$prompt" "$@"
+    local model_flag=()
+    while IFS= read -r _mf; do
+        [ -n "$_mf" ] && model_flag+=("$_mf")
+    done < <(_codex_model_flag "$PROVIDER_MODEL_DEVELOPMENT")
+    codex exec --sandbox workspace-write --skip-git-repo-check \
+        "${model_flag[@]+"${model_flag[@]}"}" \
+        "$prompt" "$@"
 }
 
 # Model tier to effort level parameter (Codex uses effort, not separate models)
@@ -113,15 +214,137 @@ provider_get_tier_param() {
     esac
 }
 
-# Tier-aware invocation
-# Note: Codex CLI does not support effort CLI flags
-# Effort must be configured via environment: CODEX_MODEL_REASONING_EFFORT
-# This function sets the env var before invocation
+# Dynamic model resolution (v6.0.0)
+# NOTE (BUG-PROV-012): Unlike other providers, Codex resolve_model_for_tier returns
+# an EFFORT LEVEL (xhigh/high/low), not a model name. Codex uses a single model
+# (gpt-5.3-codex) with varying effort. Callers that need the model name should use
+# PROVIDER_MODEL_DEVELOPMENT (or CODEX_DEFAULT_MODEL) directly.
+# The effort value is passed via CODEX_MODEL_REASONING_EFFORT env var at invocation.
+resolve_model_for_tier() {
+    local tier="$1"
+
+    # Handle capability aliases
+    case "$tier" in
+        best)    tier="planning" ;;
+        balanced) tier="development" ;;
+        cheap)   tier="fast" ;;
+    esac
+
+    local max_tier="${LOKI_MAX_TIER:-}"
+    # Normalize EXACTLY like claude.sh:356 (loki_apply_max_tier_clamp): trim +
+    # lowercase BEFORE the case match. Without this, a user-typed cap like "Haiku"
+    # or " haiku " (settings.json maxTier exports verbatim) fell through to the
+    # default arm and the cost ceiling was silently bypassed for codex while
+    # claude honored it. Both routes (this + applyCodexMaxTier in providers.ts)
+    # normalize identically. Parity fix.
+    max_tier="$(printf '%s' "$max_tier" | tr '[:upper:]' '[:lower:]' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    local effort=""
+
+    case "$tier" in
+        planning)    effort="$PROVIDER_EFFORT_PLANNING" ;;
+        development) effort="$PROVIDER_EFFORT_DEVELOPMENT" ;;
+        fast)        effort="$PROVIDER_EFFORT_FAST" ;;
+        *)           effort="$PROVIDER_EFFORT_DEVELOPMENT" ;;
+    esac
+
+    # Apply maxTier ceiling (maps to effort levels)
+    if [ -n "$max_tier" ]; then
+        case "$max_tier" in
+            haiku|low)   effort="low" ;;
+            sonnet|high)
+                if [ "$effort" = "xhigh" ]; then effort="high"; fi
+                ;;
+            opus|xhigh)  ;; # No cap
+        esac
+    fi
+
+    echo "$effort"
+}
+
+# Tier-aware invocation.
+#
+# Aligned with codex CLI 0.132.0 (verified: --full-auto deprecated/removed
+# from `codex exec --help`). `codex exec` is the non-interactive subcommand and
+# runs at approval "never" with no --ask-for-approval flag, so --sandbox
+# workspace-write alone keeps the loop autonomous (verified: no approval prompt
+# on codex 0.132.0). workspace-write is the documented --full-auto replacement
+# and the safer default (scoped disk writes) over danger-full-access; readable
+# in process listings.
+#
+# Optional env knobs:
+#   LOKI_CODEX_WEB_SEARCH=true      enable codex --search (live web)
+#   LOKI_CODEX_OUTPUT_LAST=false    disable --output-last-message capture
+#                                   (default ON; writes the final response
+#                                   to ${LOKI_LOG_FILE}.last-message)
+#
+# Codex CLI uses CODEX_MODEL_REASONING_EFFORT env var for effort control.
+# LOKI_CODEX_REASONING_EFFORT is the canonical namespaced env var (v6.37.1+).
+# CODEX_MODEL_REASONING_EFFORT is supported for backward compatibility.
 provider_invoke_with_tier() {
     local tier="$1"
     local prompt="$2"
     shift 2
     local effort
-    effort=$(provider_get_tier_param "$tier")
-    CODEX_MODEL_REASONING_EFFORT="$effort" codex exec --full-auto "$prompt" "$@"
+    effort=$(resolve_model_for_tier "$tier")
+
+    # Resolve the model name by tier. These three vars can diverge via the
+    # generic LOKI_MODEL_* env (each validated by _codex_validate_model), so
+    # honor the tier rather than hardcoding development. Capability aliases
+    # (best/balanced/cheap) mirror resolve_model_for_tier's mapping.
+    local model
+    case "$tier" in
+        planning|best)        model="$PROVIDER_MODEL_PLANNING" ;;
+        development|balanced) model="$PROVIDER_MODEL_DEVELOPMENT" ;;
+        fast|cheap)           model="$PROVIDER_MODEL_FAST" ;;
+        *)                    model="$PROVIDER_MODEL_DEVELOPMENT" ;;
+    esac
+
+    # --search is a TOP-LEVEL `codex` flag, not a `codex exec` flag. On codex
+    # 0.141.0 `codex exec ... --search` aborts with "unexpected argument
+    # '--search' found", silently breaking LOKI_CODEX_WEB_SEARCH. It must be
+    # placed before the `exec` subcommand. --output-last-message (-o) IS an
+    # `codex exec` flag and stays after `exec`. Keep the two in separate arrays.
+    local pre_exec_flags=()
+    if [ "${LOKI_CODEX_WEB_SEARCH:-false}" = "true" ]; then
+        pre_exec_flags+=(--search)
+    fi
+    local extra_flags=()
+    if [ "${LOKI_CODEX_OUTPUT_LAST:-true}" != "false" ] && [ -n "${LOKI_LOG_FILE:-}" ]; then
+        extra_flags+=(--output-last-message "${LOKI_LOG_FILE}.last-message")
+    fi
+
+    LOKI_CODEX_REASONING_EFFORT="$effort" \
+    CODEX_MODEL_REASONING_EFFORT="$effort" \
+    # Guard the array expansions: with no web-search / output-last knobs an
+    # array is empty, and a bare "${arr[@]}" under `set -u` aborts with
+    # "unbound variable" on bash 3.2 (stock macOS /bin/bash). ${arr[@]+...}
+    # expands to nothing when empty and preserves spaced elements otherwise.
+    # Same conditional as provider_invoke: omit --model entirely when none
+    # resolved, rather than passing an empty string (which codex rejects).
+    local model_flag=()
+    while IFS= read -r _mf; do
+        [ -n "$_mf" ] && model_flag+=("$_mf")
+    done < <(_codex_model_flag "$model")
+
+    codex \
+        "${pre_exec_flags[@]+"${pre_exec_flags[@]}"}" \
+        exec \
+        --sandbox workspace-write \
+        --skip-git-repo-check \
+        "${model_flag[@]+"${model_flag[@]}"}" \
+        "${extra_flags[@]+"${extra_flags[@]}"}" \
+        "$prompt" "$@"
+}
+
+# provider_invoke_argv <tier> <prompt> -- see providers/claude.sh for the full
+# rationale. Prints argv into _LOKI_INVOKE_ARGV so a caller can wrap it in
+# `timeout`, which cannot wrap a shell function.
+provider_invoke_argv() {
+    local tier="${1:-development}"
+    local prompt="${2:-}"
+    local model
+    model="$(provider_get_tier_param "$tier" 2>/dev/null || printf '%s' "${CODEX_DEFAULT_MODEL:-}")"
+    _LOKI_INVOKE_ARGV=(codex exec --sandbox workspace-write)
+    [ -n "$model" ] && _LOKI_INVOKE_ARGV+=(--model "$model")
+    _LOKI_INVOKE_ARGV+=("$prompt")
 }

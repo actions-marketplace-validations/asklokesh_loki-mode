@@ -6,9 +6,9 @@ Complete narration for Loki Mode demo video.
 
 ## Introduction (0:00 - 0:30)
 
-> Welcome to Loki Mode - a multi-agent autonomous startup system that works with Claude Code, OpenAI Codex, and Google Gemini.
+> Welcome to Loki Mode - an autonomous spec-to-product system. It runs the RARV-C closure loop until the work is actually done. Provider-agnostic: it works with Claude Code, OpenAI Codex, Cline, and Aider.
 >
-> Loki Mode takes your product requirements document and transforms it into a fully functioning application - with zero human intervention.
+> Loki Mode takes your product requirements document and transforms it into a fully functioning application - with minimal human intervention.
 >
 > Today I'll show you how it works by building a complete todo application from scratch.
 
@@ -143,7 +143,7 @@ Complete narration for Loki Mode demo video.
 >
 > [Show: Quality gate output]
 >
-> Critical, High, and Medium issues BLOCK the pipeline.
+> Critical and High issues BLOCK the pipeline; Medium and Low are advisory.
 > Low and Cosmetic issues get TODO comments but don't block.
 >
 > Tests must pass. Coverage must exceed 80%. No exceptions.
@@ -191,7 +191,7 @@ Complete narration for Loki Mode demo video.
 > - All tests passing
 > - Code reviewed and approved
 >
-> From PRD to working application - completely autonomous.
+> From PRD to working application - with minimal human oversight.
 
 ---
 
@@ -206,7 +206,7 @@ Complete narration for Loki Mode demo video.
 > 5. Enforced quality gates and test coverage
 > 6. Maintained context through the memory system
 >
-> All without a single human intervention.
+> All with minimal human intervention.
 
 ---
 

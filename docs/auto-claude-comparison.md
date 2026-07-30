@@ -85,7 +85,7 @@ Loki Mode is built on peer-reviewed research:
 **Verdict: Loki Mode wins** - Academically grounded.
 
 ### 2. Specialized Agent Types
-Loki Mode has 41 predefined agent types across 6 swarms:
+Loki Mode has 41 specialized agent roles across 8 domains - prompt-defined specifications the orchestrator adopts per phase, with parallel review (blind council) and optional worktree streams on Claude Code, sequential on other providers:
 - Engineering (8): frontend, backend, database, mobile, API, QA, perf, infra
 - Operations (8): DevOps, SRE, security, monitoring, incident, release, cost, compliance
 - Business (8): marketing, sales, finance, legal, support, HR, investor, partnerships
@@ -107,7 +107,7 @@ Loki Mode covers:
 
 **Auto-Claude:** Engineering only. No business/marketing agents.
 
-**Verdict: Loki Mode wins** - Complete startup automation vs coding only.
+**Verdict: Loki Mode wins** - Full spec-to-product lifecycle vs coding only.
 
 ### 4. Anti-Sycophancy Measures
 Loki Mode implements CONSENSAGENT (ACL 2025):
@@ -120,21 +120,24 @@ Loki Mode implements CONSENSAGENT (ACL 2025):
 **Verdict: Loki Mode wins** - Research-backed quality assurance.
 
 ### 5. Quality Gates
-Loki Mode has 14 quality gates:
+Loki Mode runs 8 deterministic quality gates plus full SDLC phase coverage.
+
+The 8 deterministic quality gates: static analysis (CodeQL, ESLint), test suite (pass/fail), blind 3-reviewer review with severity blocking, anti-sycophancy Devil's Advocate, mock-integrity, test-mutation, documentation coverage, and Magic Modules debate. (Backward-compatibility is a conditional healing-mode auditor, not a numbered gate.)
+
+Beyond the gates, the SDLC pipeline covers these phases:
 1. Static analysis (CodeQL, ESLint)
-2. Unit tests (>80% coverage)
+2. Unit tests (test suite passes; coverage % not measured this release)
 3. API/Integration tests
 4. E2E tests (Playwright)
 5. Security scanning (OWASP)
-6. SAML/OIDC/SSO integration
-7. Parallel code review (3 reviewers)
-8. Performance/load testing
-9. Accessibility (WCAG)
-10. Regression testing
-11. UAT simulation
-12. Anti-sycophancy check
-13. Scale-aware review intensity
-14. Continuous monitoring
+6. Parallel code review (3 reviewers)
+7. Performance/load testing
+8. Accessibility (WCAG)
+9. Regression testing
+10. UAT simulation
+11. Anti-sycophancy check
+12. Scale-aware review intensity
+13. Continuous monitoring
 
 **Auto-Claude:** Single QA validation loop (up to 50 iterations).
 
@@ -142,13 +145,16 @@ Loki Mode has 14 quality gates:
 
 ### 6. Published Benchmarks
 Loki Mode:
-- HumanEval: 98.78% Pass@1 (162/164)
-- SWE-bench: 99.67% patch generation (299/300)
-- Documented methodology with reproducible results
+- HumanEval: 98.78% Pass@1 (162/164, reproducible harness)
+- SWE-bench: not measured. A patch-generation harness exists (299/300 diffs
+  produced), but the official evaluator was never run, so there is no resolve
+  rate. Patch generation is not a success metric and is not comparable to
+  other tools' resolution scores.
 
 **Auto-Claude:** No published benchmarks.
 
-**Verdict: Loki Mode wins** - Verified performance claims.
+**Verdict: Loki Mode wins on HumanEval transparency** - one real, reproducible
+number versus none. No SWE-bench performance claim is made.
 
 ### 7. Licensing
 - Loki Mode: MIT (free, no restrictions)
@@ -169,7 +175,7 @@ Loki Mode:
 **Verdict: Loki Mode wins** - Simpler, lighter footprint.
 
 ### 10. Cursor Scale Patterns (v3.3.0)
-Loki Mode now incorporates proven patterns from Cursor's 100+ agent deployments:
+Loki Mode now incorporates proven patterns from Cursor's large-scale agent deployments:
 - Recursive sub-planners
 - Judge agents for cycle decisions
 - Optimistic concurrency control
@@ -233,7 +239,7 @@ Loki Mode now incorporates proven patterns from Cursor's 100+ agent deployments:
 3. **Anti-Sycophancy** - Blind review prevents false positives
 4. **Full SDLC** - Business, marketing, growth automation
 5. **Published Benchmarks** - Verify claims with reproducible tests
-6. **MIT License** - More adoption-friendly
+6. **Source-available (BUSL-1.1)** - Inspect and self-host the full code
 
 ---
 
@@ -247,10 +253,10 @@ Loki Mode now incorporates proven patterns from Cursor's 100+ agent deployments:
 
 **Loki Mode is better if you want:**
 - Research-backed architecture
-- Full startup automation (not just coding)
-- 41 specialized agents
+- Full spec-to-product lifecycle (not just coding)
+- 41 specialized agent roles
 - Anti-sycophancy measures
-- MIT license
+- Source-available (BUSL-1.1) license
 - No subscription requirement
 - Verified benchmarks
 
@@ -261,7 +267,7 @@ Auto-Claude has better UX and community. Loki Mode has better architecture and c
 Auto-Claude is a polished product. Loki Mode is a research-backed system.
 
 For pure coding tasks with GUI preference: **Auto-Claude wins**.
-For full autonomous startup building with quality guarantees: **Loki Mode wins**.
+For full autonomous spec-to-product delivery with quality guarantees: **Loki Mode wins**.
 
 ---
 

@@ -1,0 +1,28 @@
+{
+  "generated": "2026-07-30T06:14:06Z",
+  "fast_tier_s": 77,
+  "fast_checks": 66,
+  "fast_failures": 0,
+  "suites": [
+    {
+      "name": "run-shellcheck.sh",
+      "before": 114024,
+      "after": 57732
+    },
+    {
+      "name": "detect-test-mutations.sh",
+      "before": 12188,
+      "after": 3462
+    },
+    {
+      "name": "detect-mock-problems.sh",
+      "before": 11275,
+      "after": 4227
+    },
+    {
+      "name": "test-provider-invoke-argv.sh",
+      "before": 15682,
+      "after": 2865
+    }
+  ]
+}

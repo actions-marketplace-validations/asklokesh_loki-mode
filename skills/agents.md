@@ -1,6 +1,6 @@
 # Agent Dispatch & Structured Prompting
 
-> **Full agent type definitions:** See `references/agent-types.md` for complete 41 agent role specifications across 7 swarms (Engineering, Operations, Business, Data, Product, Growth, Review, Orchestration).
+> **Full agent type definitions:** See `references/agent-types.md` for complete 41 agent role specifications across 8 domains (Engineering, Operations, Business, Data, Product, Growth, Review, Orchestration). These are prompt-defined specifications the orchestrator adopts per phase; parallelism on Claude Code comes from the blind review council, the adversarial reviewer, and optional git-worktree streams, sequential on other providers.
 
 ---
 
@@ -93,11 +93,11 @@ Success: Endpoint works, tests pass, matches OpenAPI spec.
 
 ## Specialist Review Pattern (v5.30.0)
 
-**Code review uses 3 specialist reviewers selected from a pool of 5 named experts.**
+**Code review uses 3 specialist reviewers selected from a pool of 6 named experts.**
 
 See `quality-gates.md` for full specialist definitions, selection rules, and prompt templates.
 
-**Pool:** security-sentinel, performance-oracle, architecture-strategist, test-coverage-auditor, dependency-analyst
+**Pool:** security-sentinel, performance-oracle, architecture-strategist, test-coverage-auditor, dependency-analyst, legacy-healing-auditor
 
 **Selection:** architecture-strategist always included + top 2 by trigger keyword match against diff.
 
@@ -135,6 +135,7 @@ Task(
 - WAIT for all 3 before aggregating
 - IF unanimous PASS: run Devil's Advocate reviewer (anti-sycophancy)
 - Critical/High = BLOCK, Medium = TODO, Low = informational
+- IF every reviewer returns no usable verdict (all NO_OUTPUT / unparseable): the round is INCONCLUSIVE and BLOCKS, never silently passes (v7.41.1, bounded retry first; opt out `LOKI_REVIEW_INCONCLUSIVE_BLOCK=0`). The reviewer diff excludes `.loki/` and `.git/` so a tracked `.loki/` cannot overflow the prompt into the empty-output that caused the original silent pass. See `skills/quality-gates.md` for the env knobs.
 
 ---
 
@@ -245,12 +246,12 @@ Priority order for context:
 
 ---
 
-## The 37 Agent Roles
+## The 41 Agent Roles (37 Domain + 4 Orchestration)
 
 See `references/agent-types.md` for complete specifications. Summary:
 
-| Swarm | Agent Types | Count |
-|-------|-------------|-------|
+| Domain | Agent Types | Count |
+|--------|-------------|-------|
 | Engineering | frontend, backend, database, mobile, api, qa, perf, infra | 8 |
 | Operations | devops, sre, security, monitor, incident, release, cost, compliance | 8 |
 | Business | marketing, sales, finance, legal, support, hr, investor, partnerships | 8 |
@@ -259,4 +260,4 @@ See `references/agent-types.md` for complete specifications. Summary:
 | Growth | hacker, community, success, lifecycle | 4 |
 | Review | code, business, security | 3 |
 
-**Spawn only what you need.** Simple project: 5-10 agents. Complex startup: 100+.
+**Spawn only what you need.** Simple project: 5-10 agents. Complex startup: more as needed.

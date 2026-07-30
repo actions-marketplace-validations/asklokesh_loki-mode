@@ -62,7 +62,7 @@ Claude Code provides full feature support.
 npm install -g @anthropic-ai/claude-code
 
 # Authenticate
-claude login
+claude auth login
 ```
 
 ### OpenAI Codex CLI
@@ -74,19 +74,16 @@ Codex runs in degraded mode (sequential execution only).
 npm install -g @openai/codex-cli
 
 # Authenticate
-codex auth
+codex login
 ```
 
-### Google Gemini CLI
+### Cline CLI
 
-Gemini runs in degraded mode (sequential execution only).
+Cline runs in degraded mode (sequential execution only).
 
 ```bash
-# Install Gemini CLI
-npm install -g @google/gemini-cli
-
-# Authenticate
-gemini auth
+# Install Cline CLI
+npm install -g cline
 ```
 
 ---
@@ -110,9 +107,9 @@ loki --help
 
 ## Post-Installation
 
-### Create Your First PRD
+### Create Your First Spec
 
-Create a file called `my-prd.md`:
+A spec can be a PRD markdown file, a GitHub issue, or a YAML feature brief. The simplest is a markdown PRD. Create a file called `my-prd.md`:
 
 ```markdown
 # My Application
@@ -134,8 +131,11 @@ Build a simple todo application.
 ### Run Loki Mode
 
 ```bash
-# Start with your PRD
+# Start with your spec (PRD markdown file)
 loki start ./my-prd.md
+
+# Or use a GitHub issue as the spec
+# loki issue 123 --start
 
 # Monitor progress
 loki status
@@ -185,7 +185,7 @@ claude --version
 
 # If not found, install it
 npm install -g @anthropic-ai/claude-code
-claude login
+claude auth login
 ```
 
 ---

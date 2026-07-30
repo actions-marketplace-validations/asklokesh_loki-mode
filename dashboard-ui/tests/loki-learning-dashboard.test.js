@@ -15,7 +15,7 @@ import { THEMES } from '../core/loki-unified-styles.js';
 
 // Mock API client
 const mockApiClient = {
-  baseUrl: 'http://localhost:8420',
+  baseUrl: 'http://localhost:57374',
   getLearningMetrics: jest.fn(),
   getLearningTrends: jest.fn(),
   getLearningSignals: jest.fn(),
@@ -189,7 +189,7 @@ const MOCK_SIGNALS = [
 
 async function createDashboard(attributes = {}) {
   const el = document.createElement('loki-learning-dashboard');
-  el.setAttribute('api-url', 'http://localhost:8420');
+  el.setAttribute('api-url', 'http://localhost:57374');
 
   for (const [key, value] of Object.entries(attributes)) {
     el.setAttribute(key, value);
@@ -401,13 +401,12 @@ describe('LokiLearningDashboard', () => {
 
       // Click on a list item
       const listItem = el.shadowRoot.querySelector('.list-item');
-      if (listItem) {
-        listItem.click();
-        await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(listItem).toBeTruthy();
+      listItem.click();
+      await new Promise((resolve) => setTimeout(resolve, 50));
 
-        const detailPanel = el.shadowRoot.querySelector('.detail-panel');
-        expect(detailPanel).toBeTruthy();
-      }
+      const detailPanel = el.shadowRoot.querySelector('.detail-panel');
+      expect(detailPanel).toBeTruthy();
 
       removeDashboard(el);
     });
@@ -417,20 +416,18 @@ describe('LokiLearningDashboard', () => {
 
       // Open detail panel
       const listItem = el.shadowRoot.querySelector('.list-item');
-      if (listItem) {
-        listItem.click();
-        await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(listItem).toBeTruthy();
+      listItem.click();
+      await new Promise((resolve) => setTimeout(resolve, 50));
 
-        // Close it
-        const closeBtn = el.shadowRoot.querySelector('#close-detail');
-        if (closeBtn) {
-          closeBtn.click();
-          await new Promise((resolve) => setTimeout(resolve, 50));
+      // Close it
+      const closeBtn = el.shadowRoot.querySelector('#close-detail');
+      expect(closeBtn).toBeTruthy();
+      closeBtn.click();
+      await new Promise((resolve) => setTimeout(resolve, 50));
 
-          const detailPanel = el.shadowRoot.querySelector('.detail-panel');
-          expect(detailPanel).toBeFalsy();
-        }
-      }
+      const detailPanel = el.shadowRoot.querySelector('.detail-panel');
+      expect(detailPanel).toBeFalsy();
 
       removeDashboard(el);
     });
@@ -447,14 +444,13 @@ describe('LokiLearningDashboard', () => {
       });
 
       const listItem = el.shadowRoot.querySelector('.list-item');
-      if (listItem) {
-        listItem.click();
-        await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(listItem).toBeTruthy();
+      listItem.click();
+      await new Promise((resolve) => setTimeout(resolve, 50));
 
-        expect(eventFired).toBe(true);
-        expect(eventDetail).toHaveProperty('type');
-        expect(eventDetail).toHaveProperty('item');
-      }
+      expect(eventFired).toBe(true);
+      expect(eventDetail).toHaveProperty('type');
+      expect(eventDetail).toHaveProperty('item');
 
       removeDashboard(el);
     });

@@ -7,16 +7,40 @@ document.addEventListener('DOMContentLoaded', () => {
             return response.text();
         })
         .then(version => {
+            const v = version.trim();
+            if (!v) return;
             // Update all version badges (mobile header and sidebar)
-            const versionEls = document.querySelectorAll('.version');
-            if (version.trim()) {
-                versionEls.forEach(el => {
-                    el.textContent = 'v' + version.trim();
-                });
+            document.querySelectorAll('.version').forEach(el => {
+                el.textContent = 'v' + v;
+            });
+            // Update announcement banner version
+            const bannerVersion = document.getElementById('banner-version');
+            if (bannerVersion) {
+                bannerVersion.textContent = 'NEW in v' + v + ':';
             }
         })
         .catch(() => {
             // Silently fail - keep hardcoded version as fallback
+        });
+
+    // Auto-fetch latest release description for announcement banner
+    fetch('https://api.github.com/repos/asklokesh/loki-mode/releases/latest')
+        .then(response => {
+            if (!response.ok) throw new Error('Release fetch failed');
+            return response.json();
+        })
+        .then(release => {
+            const bannerText = document.getElementById('banner-text');
+            if (bannerText && release.name) {
+                // Extract a short summary from release name or first line of body
+                const summary = release.name.replace(/^v[\d.]+\s*[-:]\s*/, '');
+                if (summary) {
+                    bannerText.textContent = summary;
+                }
+            }
+        })
+        .catch(() => {
+            // Silently fail - keep hardcoded text as fallback
         });
 
     // Configure marked for secure rendering
@@ -93,25 +117,46 @@ document.addEventListener('DOMContentLoaded', () => {
     const navLinks = document.querySelectorAll('.nav-link');
     const sections = document.querySelectorAll('.section');
 
+    function navigateToSection(targetId) {
+        // Update active nav link
+        navLinks.forEach(l => {
+            if (l.getAttribute('href') === '#' + targetId) {
+                l.classList.add('active');
+            } else {
+                l.classList.remove('active');
+            }
+        });
+
+        // Show corresponding section
+        sections.forEach(section => {
+            if (section.id === targetId) {
+                section.classList.add('active');
+            } else {
+                section.classList.remove('active');
+            }
+        });
+    }
+
     navLinks.forEach(link => {
         link.addEventListener('click', (e) => {
             const href = link.getAttribute('href');
             if (href && href.startsWith('#')) {
                 e.preventDefault();
+                navigateToSection(href.slice(1));
+            }
+        });
+    });
 
-                // Update active nav link
-                navLinks.forEach(l => l.classList.remove('active'));
-                link.classList.add('active');
-
-                // Show corresponding section
-                const targetId = href.slice(1);
-                sections.forEach(section => {
-                    if (section.id === targetId) {
-                        section.classList.add('active');
-                    } else {
-                        section.classList.remove('active');
-                    }
-                });
+    // Handle section links outside the nav (banner "Learn more", hero buttons, etc.)
+    document.querySelectorAll('a[href^="#"]:not(.nav-link)').forEach(link => {
+        link.addEventListener('click', (e) => {
+            const href = link.getAttribute('href');
+            const targetId = href.slice(1);
+            const targetSection = document.getElementById(targetId);
+            if (targetSection && targetSection.classList.contains('section')) {
+                e.preventDefault();
+                navigateToSection(targetId);
+                window.scrollTo({ top: 0, behavior: 'smooth' });
             }
         });
     });
@@ -179,7 +224,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Load markdown function
     async function loadMarkdown(path, container) {
         try {
-            container.innerHTML = '<p style="text-align: center; color: #8b5cf6;">Loading...</p>';
+            container.innerHTML = '<p style="text-align: center; color: #5B4EEA;">Loading...</p>';
             const response = await fetch(path);
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);

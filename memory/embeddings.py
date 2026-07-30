@@ -257,8 +257,12 @@ def compute_quality_score(
     non_zero = np.count_nonzero(embedding)
     density = non_zero / len(embedding) if len(embedding) > 0 else 0
 
-    # Variance: measure of embedding diversity
-    variance = float(np.var(embedding))
+    # Variance: measure of embedding diversity. np.var of an empty array is NaN,
+    # and NaN would silently propagate through min(variance * 10, 1.0) (which
+    # returns NaN) into the final score, where min(1.0, NaN) yields a bogus
+    # perfect score of 1.0 for an empty embedding. Treat an empty vector as
+    # zero-variance so the score reflects its (lack of) content.
+    variance = float(np.var(embedding)) if len(embedding) > 0 else 0.0
 
     # Coverage: estimate based on text length vs max tokens
     # Rough estimate: 4 chars per token
@@ -306,6 +310,10 @@ class TextChunker:
         """
         if len(text) <= max_size:
             return [text]
+
+        # Guard against infinite loop when overlap >= max_size
+        if overlap >= max_size:
+            overlap = 0
 
         chunks = []
         start = 0
@@ -819,6 +827,7 @@ class EmbeddingEngine:
 
         # Cache
         self._cache: Dict[str, np.ndarray] = {}
+        self._max_cache_size = 10000
         self._quality_cache: Dict[str, EmbeddingQuality] = {}
 
         # Metrics
@@ -996,10 +1005,37 @@ class EmbeddingEngine:
             self._metrics["provider_calls"][provider_name] += 1
 
         except Exception as e:
-            logger.warning(f"Primary provider failed: {e}, trying fallback")
+            logger.warning("Primary provider failed: %s, trying fallback", e)
+            old_dimension = self.dimension
             self._use_fallback()
-            embedding = self._primary_provider.embed(text)
+            # Run the fallback through the SAME chunk + weighted-average path as
+            # the success branch so the vector is computed consistently (the old
+            # code embedded the raw, un-chunked text, producing a different vector
+            # for multi-chunk inputs).
+            if len(chunks) == 1:
+                embedding = self._primary_provider.embed(chunks[0])
+            else:
+                chunk_embeddings = self._primary_provider.embed_batch(chunks)
+                weights = np.array([len(c) for c in chunks], dtype=np.float32)
+                weights = weights / weights.sum()
+                embedding = np.average(chunk_embeddings, axis=0, weights=weights)
             embedding = self._normalize(embedding)
+            # The cache key computed above used the pre-fallback provider name.
+            # _use_fallback() switched the provider, so recompute the key to
+            # reflect the provider that actually produced this vector. Without
+            # this, the entry is stored under the old key while the next call
+            # looks it up under the new provider key, causing a permanent cache
+            # miss (and re-embedding) on every fallback request.
+            if self.config.cache_enabled:
+                cache_key = self._get_cache_key(text)
+            # If dimension changed after fallback, log a warning so callers
+            # know existing vector indices may be incompatible (BUG-MEM-006).
+            if self.dimension != old_dimension:
+                logger.warning(
+                    "Embedding dimension changed from %d to %d after fallback. "
+                    "Existing vector indices may need to be rebuilt.",
+                    old_dimension, self.dimension
+                )
 
         # Ensure proper shape and type
         embedding = np.asarray(embedding, dtype=np.float32)
@@ -1008,6 +1044,10 @@ class EmbeddingEngine:
 
         # Cache result
         if self.config.cache_enabled:
+            if len(self._cache) >= self._max_cache_size:
+                # Remove oldest entry (first key in dict - insertion order in Python 3.7+)
+                oldest_key = next(iter(self._cache))
+                del self._cache[oldest_key]
             self._cache[cache_key] = embedding
 
         # Track latency
@@ -1057,12 +1097,17 @@ class EmbeddingEngine:
         # Find texts that need computing
         texts_to_compute = []
         indices_to_compute = []
-        for i, (text, key) in enumerate(zip(texts, cache_keys)):
-            if not self.config.cache_enabled or cached_results.get(key) is None:
-                texts_to_compute.append(text)
-                indices_to_compute.append(i)
-            else:
-                self._metrics["cache_hits"] += 1
+        if not self.config.cache_enabled:
+            # No cache - all texts need computing
+            texts_to_compute = list(texts)
+            indices_to_compute = list(range(len(texts)))
+        else:
+            for i, (text, key) in enumerate(zip(texts, cache_keys)):
+                if cached_results.get(key) is None:
+                    texts_to_compute.append(text)
+                    indices_to_compute.append(i)
+                else:
+                    self._metrics["cache_hits"] += 1
 
         # Compute missing embeddings
         new_embeddings = None
@@ -1168,6 +1213,14 @@ class EmbeddingEngine:
 
         if corpus_embeddings.size == 0:
             return []
+
+        # A single corpus vector may arrive 1-D (shape (dimension,)) instead of
+        # the documented 2-D (n, dimension). Without this promotion, np.dot of a
+        # 1-D corpus with the 1-D query collapses to a 0-d scalar, and the
+        # subsequent len(similarities) raises an opaque
+        # "object of type 'numpy.float32' has no len()". atleast_2d is a no-op
+        # on an already-2-D corpus.
+        corpus_embeddings = np.atleast_2d(corpus_embeddings)
 
         # Normalize
         query_norm = self._normalize(query_embedding)

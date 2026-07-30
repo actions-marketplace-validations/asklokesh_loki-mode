@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #===============================================================================
 # Loki Mode - GitHub Issue Parser (v5.14.0)
 # Parses GitHub issues and extracts structured data for PRD generation
@@ -23,10 +23,8 @@ set -euo pipefail
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
-DIM='\033[2m'
 NC='\033[0m'
 
 # Logging functions (consistent with run.sh patterns)
@@ -260,8 +258,7 @@ parse_github_issue() {
 
     # Parse the reference
     local parsed_ref
-    parsed_ref=$(parse_issue_ref "$issue_ref")
-    if [ $? -ne 0 ]; then
+    if ! parsed_ref=$(parse_issue_ref "$issue_ref"); then
         return 1
     fi
 
@@ -274,9 +271,7 @@ parse_github_issue() {
 
     # Fetch issue data
     local issue_data
-    issue_data=$(gh issue view "$number" --repo "$owner/$repo" --json number,title,body,labels,assignees,milestone,state,url,createdAt,author 2>&1)
-
-    if [ $? -ne 0 ]; then
+    if ! issue_data=$(gh issue view "$number" --repo "$owner/$repo" --json number,title,body,labels,assignees,milestone,state,url,createdAt,author 2>&1); then
         log_error "Failed to fetch issue: $issue_data"
         return 1
     fi
@@ -614,8 +609,8 @@ main() {
 
     # Parse the issue
     local result
-    result=$(parse_github_issue "$issue_ref" "$format")
-    local exit_code=$?
+    local exit_code=0
+    result=$(parse_github_issue "$issue_ref" "$format") || exit_code=$?
 
     if [ $exit_code -ne 0 ]; then
         exit $exit_code

@@ -10,9 +10,11 @@ Supports namespace-based project isolation (v5.19.0).
 import json
 import math
 import os
+import re
 import tempfile
 import shutil
 import fcntl
+import threading
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
@@ -30,6 +32,29 @@ except ImportError:
 
 # Default namespace constant
 DEFAULT_NAMESPACE = "default"
+
+# Allowed namespace characters. A namespace becomes a single path segment under
+# the memory root, so it must not contain separators, traversal, or whitespace.
+_NAMESPACE_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
+
+
+def _validate_namespace_charset(namespace: str) -> None:
+    """Reject a namespace whose characters could escape its directory.
+
+    Charset-only check, shared by ``__init__`` and ``with_namespace`` so the two
+    validation sites cannot drift. Callers are responsible for deciding whether a
+    None/empty namespace is acceptable (it is in ``__init__`` for backward
+    compat; it is rejected in ``with_namespace``); this only runs once a concrete
+    non-default namespace string is present.
+
+    Raises:
+        ValueError: If the namespace contains anything outside [A-Za-z0-9_-].
+    """
+    if not _NAMESPACE_RE.match(namespace):
+        raise ValueError(
+            f"Invalid namespace '{namespace}': "
+            "only alphanumeric characters, hyphens, and underscores are allowed"
+        )
 
 
 class MemoryStorage:
@@ -63,14 +88,29 @@ class MemoryStorage:
                        If provided, memories are stored in base_path/{namespace}/
                        Defaults to None (uses base_path directly for backward compat).
         """
-        self._root_path = Path(base_path)
+        # LOKI_MEMORY_BASE_PATH env override (Phase F cross-project context).
+        # When set, all MemoryStorage instances under the same app graph
+        # write to the shared memory dir. Backward compatible: when unset,
+        # the caller-provided base_path is used (original behavior).
+        effective_base = os.environ.get("LOKI_MEMORY_BASE_PATH", base_path)
+        self._root_path = Path(effective_base)
         self._namespace = namespace
+
+        # Validate namespace to prevent path traversal. None/empty is accepted
+        # here for backward compat (it selects the default, un-namespaced root);
+        # only a concrete non-default namespace is charset-checked.
+        if namespace and namespace != DEFAULT_NAMESPACE:
+            _validate_namespace_charset(namespace)
 
         # Calculate effective base path (with namespace if specified)
         if namespace and namespace != DEFAULT_NAMESPACE:
             self.base_path = self._root_path / namespace
         else:
             self.base_path = self._root_path
+
+        # Reentrant lock tracking: prevents deadlock when _file_lock is
+        # called on the same path from nested operations in the same thread.
+        self._held_locks: threading.local = threading.local()
 
         self._ensure_directories()
         self._ensure_index()
@@ -97,7 +137,23 @@ class MemoryStorage:
 
         Returns:
             New MemoryStorage instance for the specified namespace
+
+        Raises:
+            ValueError: If namespace is empty/None/non-string, or contains
+                characters outside [A-Za-z0-9_-] (path-traversal defense).
         """
+        # with_namespace is an explicit "switch to this namespace" call, so an
+        # empty, None, whitespace-only, or non-string namespace is meaningless
+        # and must be rejected rather than silently resolving to the default
+        # root (which is what __init__ would do with a falsy namespace). Reject,
+        # do not normalize: normalization would mask a caller bug.
+        if not isinstance(namespace, str) or not namespace.strip():
+            raise ValueError(
+                f"Invalid namespace {namespace!r}: "
+                "must be a non-empty string"
+            )
+        if namespace != DEFAULT_NAMESPACE:
+            _validate_namespace_charset(namespace)
         return MemoryStorage(
             base_path=str(self._root_path),
             namespace=namespace,
@@ -120,25 +176,93 @@ class MemoryStorage:
 
         # Clean up stale lock files from previous crashed processes
         self._cleanup_stale_locks()
+        # BUG-EP-015: Clean up orphaned temp files from kill -9 crashes
+        self._cleanup_stale_tmp_files()
 
     def _cleanup_stale_locks(self) -> None:
-        """Remove stale .lock files older than 5 minutes (safe with concurrent processes)."""
+        """Remove stale .lock files older than 5 minutes (safe with concurrent processes).
+
+        Uses file age in seconds (monotonic comparison) instead of wall-clock
+        datetime comparison, which breaks when the system clock jumps.
+        """
         try:
-            stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+            import time
+            now_mono = time.monotonic()
+            now_real = time.time()
+            stale_seconds = 300  # 5 minutes
             for lock_file in self.base_path.rglob("*.lock"):
                 try:
-                    mtime = datetime.fromtimestamp(lock_file.stat().st_mtime, tz=timezone.utc)
-                    if mtime < stale_cutoff:
+                    file_mtime = lock_file.stat().st_mtime
+                    age_seconds = now_real - file_mtime
+                    if age_seconds > stale_seconds:
+                        # mtime alone is not proof the lock is abandoned: a
+                        # long-running (>5min) writer still holds it. Unlinking
+                        # it creates a new inode so a fresh writer can flock the
+                        # new file while the old holder keeps writing the old
+                        # one (two concurrent writers). Only remove it if we can
+                        # take the lock ourselves (i.e. nobody holds it).
+                        probe_fd = None
+                        try:
+                            probe_fd = open(lock_file, "a")
+                            fcntl.flock(probe_fd.fileno(),
+                                        fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        except (OSError, BlockingIOError):
+                            # Held by a live process -- leave it alone.
+                            continue
+                        finally:
+                            if probe_fd is not None:
+                                try:
+                                    fcntl.flock(probe_fd.fileno(),
+                                                fcntl.LOCK_UN)
+                                except OSError:
+                                    pass
+                                probe_fd.close()
                         lock_file.unlink()
                 except OSError:
                     pass
         except OSError:
             pass
 
+    def _cleanup_stale_tmp_files(self) -> None:
+        """Remove orphaned .tmp files older than 5 minutes from crash recovery.
+
+        BUG-EP-015: When a process is killed with SIGKILL during an atomic
+        write, the temp file (.tmp_*.json) is left behind because the rename
+        never completes. These accumulate over time.
+        """
+        try:
+            import time
+            now_real = time.time()
+            stale_seconds = 300  # 5 minutes
+            for tmp_file in self.base_path.rglob(".tmp_*.json"):
+                try:
+                    file_mtime = tmp_file.stat().st_mtime
+                    age_seconds = now_real - file_mtime
+                    if age_seconds > stale_seconds:
+                        tmp_file.unlink()
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
     def _ensure_index(self) -> None:
-        """Initialize index.json if it doesn't exist."""
+        """Initialize or repair index.json if it doesn't exist or is corrupted."""
         index_path = self.base_path / "index.json"
-        if not index_path.exists():
+        needs_init = not index_path.exists()
+
+        # BUG-EP-012: Check for corrupted index.json (exists but invalid JSON)
+        if not needs_init:
+            try:
+                text = index_path.read_text(encoding="utf-8", errors="replace")
+                json.loads(text)
+            except (json.JSONDecodeError, OSError):
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Corrupted index.json detected, recreating from scratch"
+                )
+                needs_init = True
+
+        if needs_init:
             initial_index = {
                 "version": self.VERSION,
                 "last_updated": datetime.now(timezone.utc).isoformat(),
@@ -147,9 +271,23 @@ class MemoryStorage:
             self._atomic_write(index_path, initial_index)
 
     def _ensure_timeline(self) -> None:
-        """Initialize timeline.json if it doesn't exist."""
+        """Initialize or repair timeline.json if it doesn't exist or is corrupted."""
         timeline_path = self.base_path / "timeline.json"
-        if not timeline_path.exists():
+        needs_init = not timeline_path.exists()
+
+        # BUG-EP-012: Check for corrupted timeline.json (exists but invalid JSON)
+        if not needs_init:
+            try:
+                text = timeline_path.read_text(encoding="utf-8", errors="replace")
+                json.loads(text)
+            except (json.JSONDecodeError, OSError):
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Corrupted timeline.json detected, recreating from scratch"
+                )
+                needs_init = True
+
+        if needs_init:
             initial_timeline = {
                 "version": self.VERSION,
                 "last_updated": datetime.now(timezone.utc).isoformat(),
@@ -166,7 +304,10 @@ class MemoryStorage:
     @contextmanager
     def _file_lock(self, path: Path, exclusive: bool = True):
         """
-        Context manager for file locking.
+        Context manager for reentrant file locking.
+
+        If the current thread already holds the lock for this path,
+        the call is a no-op (avoids deadlock from nested lock acquisition).
 
         Args:
             path: Path to the file to lock
@@ -176,6 +317,17 @@ class MemoryStorage:
             File handle with lock held
         """
         lock_path = path.with_suffix(path.suffix + ".lock")
+        lock_key = str(lock_path)
+
+        # Check if this thread already holds the lock (reentrant case)
+        if not hasattr(self._held_locks, "paths"):
+            self._held_locks.paths = set()
+
+        if lock_key in self._held_locks.paths:
+            # Already held by this thread -- skip to avoid deadlock
+            yield
+            return
+
         lock_path.parent.mkdir(parents=True, exist_ok=True)
 
         lock_file = None
@@ -184,15 +336,23 @@ class MemoryStorage:
             lock_file = open(lock_path, "w")
             lock_type = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
             fcntl.flock(lock_file.fileno(), lock_type)
+            self._held_locks.paths.add(lock_key)
             yield
         finally:
+            self._held_locks.paths.discard(lock_key)
             if lock_file is not None:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
                 lock_file.close()
-                try:
-                    os.remove(lock_path)
-                except OSError:
-                    pass
+                # Do NOT os.remove(lock_path) here. Unlinking the lock file on
+                # release is a flock+unlink inode-replacement race: with 3+
+                # contenders, holder A unlinks inode-1 after B (blocked on it)
+                # acquires it, then C opens the path, finds it gone, creates
+                # inode-2, and flocks inode-2 -- entering the critical section
+                # while B is still inside. That dropped index.json topics under
+                # concurrent store_pattern/store_episode (reproduced on Linux
+                # py3.13, 16 threads). Persistent lock files are the standard
+                # flock pattern; stale ones are GC'd by _cleanup_stale_locks,
+                # which is itself flock-safe (probe-before-unlink, wave-6).
 
     def _atomic_write(self, path: Path, data: dict) -> None:
         """
@@ -229,19 +389,50 @@ class MemoryStorage:
         """
         Load JSON data from a file.
 
+        Per-file resilience (Triage #15): a single corrupt, unreadable, or
+        non-UTF8 file must NOT propagate an exception to callers iterating
+        over many files (e.g. ``.loki/memory/episodic/*.json``). On any
+        load failure we log a warning and return None so the caller can
+        skip and continue.
+
         Args:
             path: Path to JSON file
 
         Returns:
-            Parsed JSON as dictionary, or None if file doesn't exist
+            Parsed JSON as dictionary, or None if file doesn't exist,
+            is unreadable, contains invalid JSON, or is not UTF-8.
         """
         path = Path(path)
         if not path.exists():
             return None
 
-        with self._file_lock(path, exclusive=False):
-            with open(path, "r") as f:
-                return json.load(f)
+        try:
+            with self._file_lock(path, exclusive=False):
+                with open(path, "r", encoding="utf-8") as f:
+                    try:
+                        return json.load(f)
+                    except json.JSONDecodeError as exc:
+                        import logging
+                        logging.getLogger(__name__).warning(
+                            "Skipping corrupt JSON file %s: %s", path, exc
+                        )
+                        return None
+                    except UnicodeDecodeError as exc:
+                        import logging
+                        logging.getLogger(__name__).warning(
+                            "Skipping non-UTF8 JSON file %s: %s", path, exc
+                        )
+                        return None
+        except (OSError, UnicodeDecodeError) as exc:
+            # OSError covers I/O errors, permission errors, and missing
+            # files that race with the existence check above.
+            # UnicodeDecodeError can also surface from the file_lock /
+            # open layer on some platforms.
+            import logging
+            logging.getLogger(__name__).warning(
+                "Skipping unreadable JSON file %s: %s", path, exc
+            )
+            return None
 
     def _generate_id(self, prefix: str) -> str:
         """
@@ -263,6 +454,21 @@ class MemoryStorage:
     # -------------------------------------------------------------------------
     # Episode Storage
     # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _sanitize_episode_id(episode_id) -> str:
+        """
+        Sanitize an episode id for use in a filename.
+
+        Separators and "." segments cannot leak into the path (mirrors
+        save_skill). save_episode and load_episode must use the SAME transform
+        or a round-tripped id with ":", "/", or "." chars would write to one
+        file and read from another.
+        """
+        return "".join(
+            c if c.isalnum() or c in "-_" else "_"
+            for c in str(episode_id)
+        )
 
     def save_episode(self, episode: EpisodeTrace) -> str:
         """
@@ -288,6 +494,11 @@ class MemoryStorage:
         episode_id = episode_data.get("id") or self._generate_id("episode")
         episode_data["id"] = episode_id
 
+        # Stamp namespace so retrieval can verify isolation (cross-namespace
+        # leak defense, v7.5.10). Defaults to DEFAULT_NAMESPACE for unscoped
+        # storage instances.
+        episode_data["_namespace"] = self._namespace or DEFAULT_NAMESPACE
+
         # Determine storage path based on date
         timestamp = episode_data.get("timestamp", datetime.now(timezone.utc).isoformat())
         if isinstance(timestamp, str):
@@ -295,34 +506,53 @@ class MemoryStorage:
         else:
             date_str = timestamp.strftime("%Y-%m-%d")
 
+        # Path-traversal defense: a poisoned/round-tripped episode whose
+        # timestamp is e.g. "../../../../tmp/evil" would otherwise escape the
+        # memory root because the path is built straight from the field. Only
+        # an exact YYYY-MM-DD date string is allowed as the directory; anything
+        # else falls back to today's UTC date. The episode_id is also
+        # sanitized (mirrors save_skill) so separators and "." segments cannot
+        # leak into the filename.
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_str):
+            date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        safe_episode_id = self._sanitize_episode_id(episode_id)
+
         date_dir = self.base_path / "episodic" / date_str
         date_dir.mkdir(parents=True, exist_ok=True)
 
-        file_path = date_dir / f"task-{episode_id}.json"
+        file_path = date_dir / f"task-{safe_episode_id}.json"
         self._atomic_write(file_path, episode_data)
 
         return episode_id
 
-    def load_episode(self, episode_id: str) -> Optional[EpisodeTrace]:
+    def load_episode(self, episode_id: str) -> Optional[dict]:
         """
         Load an episode trace by ID.
 
         Searches across all date directories.
 
+        Note: Returns a raw dict, not an EpisodeTrace object.
+        Callers should convert via EpisodeTrace.from_dict() if needed.
+
         Args:
             episode_id: The episode ID to load
 
         Returns:
-            EpisodeTrace object or None if not found
+            dict or None if not found
         """
         episodic_dir = self.base_path / "episodic"
         if not episodic_dir.exists():
             return None
 
+        # Sanitize the same way save_episode does so an id carrying ":", "/",
+        # or "." chars resolves to the file it was actually written to.
+        safe_episode_id = self._sanitize_episode_id(episode_id)
+
         # Search all date directories
         for date_dir in episodic_dir.iterdir():
             if date_dir.is_dir():
-                file_path = date_dir / f"task-{episode_id}.json"
+                file_path = date_dir / f"task-{safe_episode_id}.json"
                 if file_path.exists():
                     data = self._load_json(file_path)
                     if data:
@@ -407,8 +637,32 @@ class MemoryStorage:
                             lock_path.unlink()
                     except OSError:
                         pass
-                    # Clean up any remaining lock files before checking if dir is empty
+                    # Clean up any remaining lock files before checking if dir
+                    # is empty. A blanket unlink of every *.lock here is the same
+                    # flock+unlink inode-replacement race fixed in _file_lock and
+                    # _cleanup_stale_locks: a lock held by a concurrent writer of
+                    # a DIFFERENT episode in this same date dir would have its
+                    # inode unlinked, letting a third writer create a new inode
+                    # and enter the critical section concurrently (data loss).
+                    # Only unlink a lock we can take ourselves (nobody holds it);
+                    # held locks are left in place (their writer is still active).
                     for stale_lock in date_dir.glob("*.lock"):
+                        probe_fd = None
+                        try:
+                            probe_fd = open(stale_lock, "a")
+                            fcntl.flock(probe_fd.fileno(),
+                                        fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        except (OSError, BlockingIOError):
+                            # Held by a live writer -- leave it alone.
+                            continue
+                        finally:
+                            if probe_fd is not None:
+                                try:
+                                    fcntl.flock(probe_fd.fileno(),
+                                                fcntl.LOCK_UN)
+                                except OSError:
+                                    pass
+                                probe_fd.close()
                         try:
                             stale_lock.unlink()
                         except OSError:
@@ -451,6 +705,8 @@ class MemoryStorage:
             "created_at",
             datetime.now(timezone.utc).isoformat()
         )
+        # Stamp namespace for cross-namespace leak defense (v7.5.10).
+        pattern_data["_namespace"] = self._namespace or DEFAULT_NAMESPACE
 
         patterns_path = self.base_path / "semantic" / "patterns.json"
 
@@ -458,16 +714,30 @@ class MemoryStorage:
             # Load existing patterns
             if patterns_path.exists():
                 with open(patterns_path, "r") as f:
-                    patterns_file = json.load(f)
+                    try:
+                        patterns_file = json.load(f)
+                    except json.JSONDecodeError:
+                        patterns_file = {
+                            "version": self.VERSION,
+                            "patterns": []
+                        }
             else:
                 patterns_file = {
                     "version": self.VERSION,
                     "patterns": []
                 }
 
+            # Defensive: a pre-existing patterns.json that is valid JSON but
+            # lacks the "patterns" key (partial/external write, alternate
+            # schema, or a {"version": ...}-only file) would otherwise raise
+            # KeyError below and silently lose the save. Ensure the list exists.
+            patterns_file.setdefault("patterns", [])
+
             # Upsert: update existing pattern or append new
             existing_idx = None
             for i, p in enumerate(patterns_file["patterns"]):
+                if not isinstance(p, dict):
+                    continue
                 if p.get("id") == pattern_id:
                     existing_idx = i
                     break
@@ -494,15 +764,18 @@ class MemoryStorage:
 
         return pattern_id
 
-    def load_pattern(self, pattern_id: str) -> Optional[SemanticPattern]:
+    def load_pattern(self, pattern_id: str) -> Optional[dict]:
         """
         Load a semantic pattern by ID.
+
+        Note: Returns a raw dict, not a SemanticPattern object.
+        Callers should convert via SemanticPattern.from_dict() if needed.
 
         Args:
             pattern_id: The pattern ID to load
 
         Returns:
-            SemanticPattern object or None if not found
+            dict or None if not found
         """
         patterns_path = self.base_path / "semantic" / "patterns.json"
         patterns_file = self._load_json(patterns_path)
@@ -511,6 +784,8 @@ class MemoryStorage:
             return None
 
         for pattern in patterns_file.get("patterns", []):
+            if not isinstance(pattern, dict):
+                continue
             if pattern.get("id") == pattern_id:
                 return pattern
 
@@ -534,6 +809,8 @@ class MemoryStorage:
 
         pattern_ids = []
         for pattern in patterns_file.get("patterns", []):
+            if not isinstance(pattern, dict):
+                continue
             if category is None or pattern.get("category") == category:
                 pattern_ids.append(pattern.get("id"))
 
@@ -568,11 +845,16 @@ class MemoryStorage:
                 return False
 
             with open(patterns_path, "r") as f:
-                patterns_file = json.load(f)
+                try:
+                    patterns_file = json.load(f)
+                except json.JSONDecodeError:
+                    return False
 
             # Find and update pattern
             found = False
             for i, p in enumerate(patterns_file.get("patterns", [])):
+                if not isinstance(p, dict):
+                    continue
                 if p.get("id") == pattern_id:
                     pattern_data["updated_at"] = datetime.now(timezone.utc).isoformat()
                     patterns_file["patterns"][i] = pattern_data
@@ -598,6 +880,75 @@ class MemoryStorage:
                 if os.path.exists(temp_path):
                     os.unlink(temp_path)
                 raise
+
+        return True
+
+    def update_pattern_with_merge(self, pattern_id: str, merge_fn) -> bool:
+        """Atomically merge into an existing pattern under a single lock.
+
+        Closes the consolidation lost-update (BUG-MEM C1): the previous flow read
+        the pattern (load_pattern) and wrote the merged result (update_pattern) in
+        SEPARATE lock acquisitions, so a concurrent increment_pattern_usage() bump
+        landing between the read and the write was lost. Here the read of the
+        current on-disk record, the caller's merge, and the write all happen
+        inside ONE exclusive _file_lock on patterns.json -- the same path
+        increment_pattern_usage() and update_pattern() lock -- so they mutually
+        exclude and no bump is clobbered.
+
+        Args:
+            pattern_id: Id of the existing pattern to merge into.
+            merge_fn: Callable taking the current on-disk pattern dict and
+                returning the merged record (dict, or any object exposing
+                to_dict()/__dict__). It must preserve the id. The dict it
+                receives is a fresh read performed under the lock.
+
+        Returns:
+            True if the pattern was found and the merged record written, False if
+            the pattern id was not present (caller should fall back to a create).
+        """
+        if not pattern_id:
+            return False
+
+        patterns_path = self.base_path / "semantic" / "patterns.json"
+
+        with self._file_lock(patterns_path, exclusive=True):
+            if not patterns_path.exists():
+                return False
+
+            with open(patterns_path, "r", encoding="utf-8") as f:
+                try:
+                    patterns_file = json.load(f)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    return False
+
+            patterns = patterns_file.get("patterns", [])
+            target_idx = None
+            current = None
+            for i, p in enumerate(patterns):
+                if isinstance(p, dict) and p.get("id") == pattern_id:
+                    target_idx = i
+                    current = p
+                    break
+
+            if target_idx is None:
+                return False
+
+            # Caller merges against the fresh, lock-protected current record.
+            merged = merge_fn(current)
+            if hasattr(merged, "to_dict"):
+                merged_data = merged.to_dict()
+            elif hasattr(merged, "__dict__"):
+                merged_data = merged.__dict__.copy()
+            else:
+                merged_data = dict(merged)
+
+            # Never let a merge orphan the record by changing its id.
+            merged_data["id"] = pattern_id
+            merged_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+            patterns_file["patterns"][target_idx] = merged_data
+            patterns_file["last_updated"] = datetime.now(timezone.utc).isoformat()
+
+            self._atomic_write(patterns_path, patterns_file)
 
         return True
 
@@ -632,6 +983,8 @@ class MemoryStorage:
             "created_at",
             datetime.now(timezone.utc).isoformat()
         )
+        # Stamp namespace for cross-namespace leak defense (v7.5.10).
+        skill_data["_namespace"] = self._namespace or DEFAULT_NAMESPACE
 
         # Use skill name for filename if available, otherwise use ID
         skill_name = skill_data.get("name", skill_id)
@@ -646,15 +999,18 @@ class MemoryStorage:
 
         return skill_id
 
-    def load_skill(self, skill_id: str) -> Optional[ProceduralSkill]:
+    def load_skill(self, skill_id: str) -> Optional[dict]:
         """
         Load a procedural skill by ID.
+
+        Note: Returns a raw dict, not a ProceduralSkill object.
+        Callers should convert via ProceduralSkill.from_dict() if needed.
 
         Args:
             skill_id: The skill ID to load
 
         Returns:
-            ProceduralSkill object or None if not found
+            dict or None if not found
         """
         skills_dir = self.base_path / "skills"
         if not skills_dir.exists():
@@ -775,7 +1131,15 @@ class MemoryStorage:
         with self._file_lock(timeline_path, exclusive=True):
             if timeline_path.exists():
                 with open(timeline_path, "r") as f:
-                    timeline = json.load(f)
+                    try:
+                        timeline = json.load(f)
+                    except json.JSONDecodeError:
+                        timeline = {
+                            "version": self.VERSION,
+                            "recent_actions": [],
+                            "key_decisions": [],
+                            "active_context": {}
+                        }
             else:
                 timeline = {
                     "version": self.VERSION,
@@ -848,7 +1212,15 @@ class MemoryStorage:
         with self._file_lock(timeline_path, exclusive=True):
             if timeline_path.exists():
                 with open(timeline_path, "r") as f:
-                    timeline = json.load(f)
+                    try:
+                        timeline = json.load(f)
+                    except json.JSONDecodeError:
+                        timeline = {
+                            "version": self.VERSION,
+                            "recent_actions": [],
+                            "key_decisions": [],
+                            "active_context": {}
+                        }
             else:
                 timeline = {
                     "version": self.VERSION,
@@ -960,7 +1332,12 @@ class MemoryStorage:
         Returns:
             Calculated importance score between 0.0 and 1.0
         """
-        base = memory.get("importance", 0.5)
+        # Guard against an explicit null importance (corrupt or hand-edited
+        # record) crashing the arithmetic below with a TypeError. Use an is-None
+        # check (not `or`) so a legitimate stored importance of 0.0 is preserved
+        # rather than silently promoted to 0.5.
+        base = memory.get("importance")
+        base = 0.5 if base is None else base
 
         # Outcome adjustment for episodes
         outcome = memory.get("outcome", "")
@@ -976,8 +1353,21 @@ class MemoryStorage:
             if outcome == "success":
                 base = min(1.0, base + 0.05 * min(len(errors), 3))
 
-        # Access frequency boost (diminishing returns)
-        access_count = memory.get("access_count", 0)
+        # Access frequency boost (diminishing returns).
+        # `or 0` guards an explicit null access_count; the isinstance/`< 0`
+        # clamp additionally guards a non-numeric (e.g. a stored "5") or negative
+        # value (corrupt or hand-edited record) reaching the `> 0` comparison and
+        # log1p() below. A bare string raises TypeError on `"5" > 0`, and a
+        # negative <= -1 raises a math domain error in log1p; bool is excluded so
+        # a stray True is not treated as a count of 1. All coerce to 0 (no boost)
+        # so importance scoring never crashes the scan.
+        access_count = memory.get("access_count") or 0
+        if (
+            not isinstance(access_count, (int, float))
+            or isinstance(access_count, bool)
+            or access_count < 0
+        ):
+            access_count = 0
         if access_count > 0:
             # Log scale boost, caps at about 0.15 for 100+ accesses
             access_boost = 0.05 * math.log1p(access_count)
@@ -991,9 +1381,9 @@ class MemoryStorage:
 
         # Task type relevance boost
         if task_type:
-            context = memory.get("context", {})
-            phase = context.get("phase", memory.get("phase", "")).lower()
-            category = memory.get("category", "").lower()
+            context = memory.get("context") or {}
+            phase = (context.get("phase") or memory.get("phase") or "").lower()
+            category = (memory.get("category") or "").lower()
 
             task_type_lower = task_type.lower()
 
@@ -1061,7 +1451,12 @@ class MemoryStorage:
                 continue
 
             # Apply exponential decay
-            current_importance = memory.get("importance", 0.5)
+            # Use an is-None check (not get(..., 0.5) or `or`) so a record with
+            # an explicit null importance (corrupt/hand-edited file) falls back
+            # to the default instead of crashing the arithmetic, while a
+            # legitimate stored 0.0 is preserved (it then floors at 0.01 below).
+            current_importance = memory.get("importance")
+            current_importance = 0.5 if current_importance is None else current_importance
             decay_factor = math.exp(-decay_rate * days_elapsed / half_life_days)
             decayed_importance = current_importance * decay_factor
 
@@ -1090,12 +1485,17 @@ class MemoryStorage:
         """
         now = datetime.now(timezone.utc)
 
-        # Update access tracking
+        # Update access tracking. `or 0` guards against an explicit null
+        # access_count (corrupt/hand-edited record) crashing the increment.
         memory["last_accessed"] = now.isoformat()
-        memory["access_count"] = memory.get("access_count", 0) + 1
+        memory["access_count"] = (memory.get("access_count") or 0) + 1
 
-        # Boost importance (with diminishing returns for high importance)
-        current_importance = memory.get("importance", 0.5)
+        # Boost importance (with diminishing returns for high importance).
+        # Use an is-None check (not `or`) so an explicit null importance
+        # (corrupt/hand-edited record) falls back to the default without
+        # crashing, while a legitimate stored 0.0 is preserved.
+        current_importance = memory.get("importance")
+        current_importance = 0.5 if current_importance is None else current_importance
 
         # Diminishing returns: boost is reduced as importance approaches 1.0
         effective_boost = boost * (1.0 - current_importance)
@@ -1104,6 +1504,189 @@ class MemoryStorage:
         memory["importance"] = round(new_importance, 3)
 
         return memory
+
+    def persist_boost(
+        self,
+        memory: Dict[str, Any],
+        boost: float = 0.1,
+    ) -> bool:
+        """
+        Persist a retrieval-time boost to disk ("use it or lose it").
+
+        boost_on_retrieval mutates an in-memory dict only; without this the
+        stored importance/access_count never rises, so repeated retrieval can
+        never reinforce a memory against decay (retrieval-F1). This method
+        applies the SAME boost math to the record as it currently exists on
+        disk, under one exclusive _file_lock spanning a FRESH read -> mutate
+        -> _atomic_write (mirrors _decay_episodic / _decay_semantic).
+
+        Race-safety: the boost is applied to the freshly-read record, NOT to
+        the passed-in `memory` dict. So a concurrent content edit landed by
+        another writer is preserved (we only overwrite importance,
+        access_count, last_accessed), and no retrieval-only transient fields
+        (_score, _source, _collection) leak into the stored record. This is
+        the lost-update-safe pattern WAVE6 established for decay.
+
+        Keyed by memory["id"] and the collection marker retrieval attaches
+        (_source, falling back to _collection). Covers episodic (per-file) and
+        semantic patterns.json. Collections without an updater degrade
+        gracefully (return False, no crash):
+          - skills are keyed on disk by name, not id, so an id-keyed boost
+            cannot reliably target the file; skipped honestly.
+          - the legacy semantic/anti-patterns.json store has NO updater
+            anywhere in this module, so there is nothing to write back to;
+            skipped honestly rather than fabricating a writer.
+
+        Args:
+            memory: A retrieved memory dict (must carry "id" and a source
+                marker). The dict itself is not written to disk.
+            boost: Amount to boost importance (default 0.1).
+
+        Returns:
+            True if a record was found and persisted, False otherwise.
+        """
+        memory_id = memory.get("id")
+        if not memory_id:
+            return False
+
+        source = memory.get("_source") or memory.get("_collection") or ""
+
+        if source == "episodic":
+            return self._persist_boost_episodic(str(memory_id), boost)
+        if source == "semantic":
+            return self._persist_boost_semantic(str(memory_id), boost)
+
+        # skills (keyed by name on disk) and the legacy anti-patterns.json
+        # store (no updater exists in this module) cannot be safely targeted
+        # by an id-keyed boost; skip rather than fabricate a writer.
+        return False
+
+    def _persist_boost_episodic(self, memory_id: str, boost: float) -> bool:
+        """Apply and persist a boost to one episodic record, keyed by id.
+
+        Locates the per-file record (task-<id>.json across date dirs) then does
+        a lock-spanning fresh-read -> boost -> atomic-write, mirroring
+        _decay_episodic. The id is sanitized exactly as save_episode does so a
+        sanitized-on-write filename is still found.
+        """
+        episodic_dir = self.base_path / "episodic"
+        if not episodic_dir.exists():
+            return False
+
+        safe_id = "".join(
+            c if c.isalnum() or c in "-_" else "_"
+            for c in memory_id
+        )
+
+        for date_dir in episodic_dir.iterdir():
+            if not date_dir.is_dir():
+                continue
+            file_path = date_dir / f"task-{safe_id}.json"
+            if not file_path.exists():
+                continue
+
+            # One exclusive lock spanning read-mutate-write. boost_on_retrieval
+            # mutates the freshly-read record in place (importance/access_count/
+            # last_accessed only), so a concurrent content edit on disk is
+            # preserved. _atomic_write re-enters the same reentrant lock.
+            with self._file_lock(file_path, exclusive=True):
+                if not file_path.exists():
+                    return False
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                    return False
+                if not data:
+                    return False
+                self.boost_on_retrieval(data, boost=boost)
+                self._atomic_write(file_path, data)
+            return True
+
+        return False
+
+    def _persist_boost_semantic(self, memory_id: str, boost: float) -> bool:
+        """Apply and persist a boost to one semantic pattern, keyed by id.
+
+        Patterns live in a single semantic/patterns.json list. Lock-spanning
+        fresh read -> boost the matching entry -> atomic write, mirroring
+        _decay_semantic / save_pattern.
+        """
+        patterns_path = self.base_path / "semantic" / "patterns.json"
+        if not patterns_path.exists():
+            return False
+
+        with self._file_lock(patterns_path, exclusive=True):
+            if not patterns_path.exists():
+                return False
+            try:
+                with open(patterns_path, "r", encoding="utf-8") as f:
+                    patterns_file = json.load(f)
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                return False
+            if not patterns_file:
+                return False
+
+            patterns = patterns_file.get("patterns", [])
+            for pattern in patterns:
+                if not isinstance(pattern, dict):
+                    continue
+                if pattern.get("id") == memory_id:
+                    self.boost_on_retrieval(pattern, boost=boost)
+                    patterns_file["last_updated"] = datetime.now(
+                        timezone.utc
+                    ).isoformat()
+                    self._atomic_write(patterns_path, patterns_file)
+                    return True
+
+        return False
+
+    def increment_pattern_usage(self, pattern_id: str) -> bool:
+        """Atomically increment a semantic pattern's usage_count, keyed by id.
+
+        The entire read-mutate-write happens inside a single exclusive
+        _file_lock so concurrent increments cannot lose updates. Mirrors the
+        lock-spanning idiom of _persist_boost_semantic / save_pattern: fresh
+        read of patterns.json under the lock -> bump the matching entry ->
+        atomic write (which reuses the same reentrant lock).
+
+        Args:
+            pattern_id: Pattern identifier to increment.
+
+        Returns:
+            True if the pattern was found and incremented, False otherwise.
+        """
+        patterns_path = self.base_path / "semantic" / "patterns.json"
+        if not patterns_path.exists():
+            return False
+
+        with self._file_lock(patterns_path, exclusive=True):
+            if not patterns_path.exists():
+                return False
+            try:
+                with open(patterns_path, "r", encoding="utf-8") as f:
+                    patterns_file = json.load(f)
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                return False
+            if not patterns_file:
+                return False
+
+            patterns = patterns_file.get("patterns", [])
+            for pattern in patterns:
+                if not isinstance(pattern, dict):
+                    continue
+                if pattern.get("id") == pattern_id:
+                    # `or 0` guards an explicit null usage_count (corrupt or
+                    # hand-edited record); null and 0 are equivalent here.
+                    pattern["usage_count"] = (pattern.get("usage_count") or 0) + 1
+                    pattern["last_used"] = datetime.now(timezone.utc).isoformat()
+                    patterns_file["last_updated"] = datetime.now(
+                        timezone.utc
+                    ).isoformat()
+                    self._atomic_write(patterns_path, patterns_file)
+                    return True
+
+        return False
 
     def batch_apply_decay(
         self,
@@ -1153,11 +1736,23 @@ class MemoryStorage:
                 continue
 
             for file_path in date_dir.glob("task-*.json"):
-                data = self._load_json(file_path)
-                if data:
-                    original_importance = data.get("importance", 0.5)
+                # Hold one exclusive lock spanning the read-mutate-write so a
+                # concurrent writer cannot clobber the decayed record (lost
+                # update). Raw open/json.load inside the lock mirrors
+                # save_pattern; _atomic_write re-enters the same lock (no-op).
+                with self._file_lock(file_path, exclusive=True):
+                    if not file_path.exists():
+                        continue
+                    try:
+                        with open(file_path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                        continue
+                    if not data:
+                        continue
+                    original_importance = data.get("importance") or 0.5
                     memories = self.apply_decay([data], decay_rate, half_life_days)
-                    if memories[0].get("importance") != original_importance:
+                    if abs((memories[0].get("importance") or 0.5) - original_importance) > 0.001:
                         self._atomic_write(file_path, memories[0])
                         updated += 1
 
@@ -1169,24 +1764,40 @@ class MemoryStorage:
         if not patterns_path.exists():
             return 0
 
-        patterns_file = self._load_json(patterns_path)
-        if not patterns_file:
-            return 0
+        # Hold ONE exclusive lock spanning the read-mutate-write. Previously
+        # the read (_load_json) and write (_atomic_write) each took a separate
+        # lock scope, so a concurrent save_pattern/update_pattern between them
+        # was clobbered (stale-snapshot lost update). Mirror save_pattern:
+        # raw open/json.load inside the lock for the read; _atomic_write
+        # re-enters the same reentrant lock (no-op) for the write.
+        with self._file_lock(patterns_path, exclusive=True):
+            if not patterns_path.exists():
+                return 0
+            try:
+                with open(patterns_path, "r", encoding="utf-8") as f:
+                    patterns_file = json.load(f)
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                return 0
 
-        patterns = patterns_file.get("patterns", [])
-        if not patterns:
-            return 0
+            if not patterns_file:
+                return 0
 
-        updated = 0
-        for pattern in patterns:
-            original = pattern.get("importance", 0.5)
-            self.apply_decay([pattern], decay_rate, half_life_days)
-            if pattern.get("importance") != original:
-                updated += 1
+            patterns = patterns_file.get("patterns", [])
+            if not patterns:
+                return 0
 
-        if updated > 0:
-            patterns_file["last_updated"] = datetime.now(timezone.utc).isoformat()
-            self._atomic_write(patterns_path, patterns_file)
+            updated = 0
+            for pattern in patterns:
+                if not isinstance(pattern, dict):
+                    continue
+                original = pattern.get("importance") or 0.5
+                self.apply_decay([pattern], decay_rate, half_life_days)
+                if abs((pattern.get("importance") or 0.5) - original) > 0.001:
+                    updated += 1
+
+            if updated > 0:
+                patterns_file["last_updated"] = datetime.now(timezone.utc).isoformat()
+                self._atomic_write(patterns_path, patterns_file)
 
         return updated
 
@@ -1198,13 +1809,23 @@ class MemoryStorage:
             return 0
 
         for file_path in skills_dir.glob("*.json"):
-            data = self._load_json(file_path)
-            if data:
-                original = data.get("importance", 0.5)
-                self.apply_decay([data], decay_rate, half_life_days)
-                if data.get("importance") != original:
-                    self._atomic_write(file_path, data)
-                    updated += 1
+            # Hold one exclusive lock spanning the read-mutate-write so a
+            # concurrent writer cannot clobber the decayed record (lost
+            # update). Mirrors _decay_semantic / save_pattern.
+            with self._file_lock(file_path, exclusive=True):
+                if not file_path.exists():
+                    continue
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                    continue
+                if data:
+                    original = data.get("importance") or 0.5
+                    self.apply_decay([data], decay_rate, half_life_days)
+                    if abs((data.get("importance") or 0.5) - original) > 0.001:
+                        self._atomic_write(file_path, data)
+                        updated += 1
 
         return updated
 

@@ -10,6 +10,7 @@
 
 import { LokiElement } from '../core/loki-theme.js';
 import { getApiClient, ApiEvents } from '../core/loki-api-client.js';
+import { registerPoll } from '../core/loki-poll-registry.js';
 
 // Static fallback pricing per million tokens (USD) - updated 2026-02-07
 // At runtime, these are overridden by /api/pricing (which reads .loki/pricing.json)
@@ -17,17 +18,13 @@ import { getApiClient, ApiEvents } from '../core/loki-api-client.js';
 const DEFAULT_PRICING = {
   // Claude (Anthropic)
   opus:   { input: 5.00,   output: 25.00,  label: 'Opus 4.6',       provider: 'claude' },
-  sonnet: { input: 3.00,   output: 15.00,  label: 'Sonnet 4.5',     provider: 'claude' },
+  // Sonnet 5 is the default execution model (v7.104.0). The $3/$15 rate is the
+  // standard rate; the intro-pricing note is surfaced from /api/pricing.
+  sonnet: { input: 3.00,   output: 15.00,  label: 'Sonnet 5',       provider: 'claude' },
   haiku:  { input: 1.00,   output: 5.00,   label: 'Haiku 4.5',      provider: 'claude' },
   // OpenAI Codex
   'gpt-5.3-codex': { input: 1.50, output: 12.00, label: 'GPT-5.3 Codex', provider: 'codex' },
-  // Google Gemini
-  'gemini-3-pro':  { input: 1.25, output: 10.00, label: 'Gemini 3 Pro',   provider: 'gemini' },
-  'gemini-3-flash': { input: 0.10, output: 0.40, label: 'Gemini 3 Flash', provider: 'gemini' },
 };
-
-// Active pricing - starts with defaults, updated from API
-let MODEL_PRICING = { ...DEFAULT_PRICING };
 
 /**
  * @class LokiCostDashboard
@@ -55,6 +52,7 @@ export class LokiCostDashboard extends LokiElement {
     };
     this._api = null;
     this._pollInterval = null;
+    this._modelPricing = { ...DEFAULT_PRICING };
   }
 
   connectedCallback() {
@@ -74,7 +72,7 @@ export class LokiCostDashboard extends LokiElement {
     if (oldValue === newValue) return;
 
     if (name === 'api-url' && this._api) {
-      this._api.baseUrl = newValue;
+      this._api = getApiClient({ baseUrl: newValue });
       this._loadCost();
     }
     if (name === 'theme') {
@@ -88,8 +86,11 @@ export class LokiCostDashboard extends LokiElement {
   }
 
   async _loadPricing() {
+    // Drop a stale response if the api-url switched mid-flight.
+    const api = this._api;
     try {
-      const pricing = await this._api.getPricing();
+      const pricing = await api.getPricing();
+      if (api !== this._api) return;
       if (pricing && pricing.models) {
         const updated = {};
         for (const [key, m] of Object.entries(pricing.models)) {
@@ -98,24 +99,30 @@ export class LokiCostDashboard extends LokiElement {
             output: m.output,
             label: m.label || key,
             provider: m.provider || 'unknown',
+            // Display-only annotation (e.g. Sonnet 5 intro pricing). Optional.
+            note: m.note || '',
           };
         }
-        MODEL_PRICING = updated;
+        this._modelPricing = updated;
         this._pricingSource = pricing.source || 'api';
         this._pricingDate = pricing.updated || '';
         this._activeProvider = pricing.provider || 'claude';
         this.render();
       }
     } catch {
-      // Keep static defaults
+      // Keep instance defaults
     }
   }
 
   async _loadCost() {
+    // Drop a stale response if the api-url switched mid-flight.
+    const api = this._api;
     try {
-      const cost = await this._api.getCost();
+      const cost = await api.getCost();
+      if (api !== this._api) return;
       this._updateFromCost(cost);
     } catch (error) {
+      if (api !== this._api) return;
       this._data.connected = false;
       this.render();
     }
@@ -141,21 +148,22 @@ export class LokiCostDashboard extends LokiElement {
   }
 
   _startPolling() {
-    this._pollInterval = setInterval(async () => {
-      try {
-        const cost = await this._api.getCost();
-        this._updateFromCost(cost);
-      } catch (error) {
-        this._data.connected = false;
-        this.render();
-      }
-    }, 5000);
+    // Central registry (core/loki-poll-registry.js) gates this poll to the
+    // active + visible section in ONE place, replacing the per-component
+    // visibilitychange handler. connectedCallback already did the first load,
+    // so immediate is disabled to avoid a duplicate fetch.
+    this._poll = registerPoll({
+      loadFn: () => this._loadCost(),
+      intervalMs: 5000,
+      element: this,
+      immediate: false,
+    });
   }
 
   _stopPolling() {
-    if (this._pollInterval) {
-      clearInterval(this._pollInterval);
-      this._pollInterval = null;
+    if (this._poll) {
+      this._poll.stop();
+      this._poll = null;
     }
   }
 
@@ -267,13 +275,37 @@ export class LokiCostDashboard extends LokiElement {
     `;
   }
 
+  /**
+   * Map iteration number to RARV tier (matches autonomy/run.sh get_rarv_tier).
+   * 0=planning(opus), 1=development(sonnet), 2=development(sonnet), 3=fast(haiku)
+   */
+  _getRARVTier(iteration) {
+    if (iteration == null) return null;
+    const step = iteration % 4;
+    switch (step) {
+      case 0: return 'opus';
+      case 1: return 'sonnet';
+      case 2: return 'sonnet';
+      case 3: return 'haiku';
+      default: return 'sonnet';
+    }
+  }
+
   _getPricingColorClass(key, model) {
-    // Map model keys to CSS color classes
-    if (key === 'opus' || key.includes('opus')) return 'opus';
-    if (key === 'sonnet' || key.includes('sonnet')) return 'sonnet';
-    if (key === 'haiku' || key.includes('haiku')) return 'haiku';
-    if (model.provider === 'codex') return 'codex';
-    if (model.provider === 'gemini') return 'gemini';
+    // Use explicit tier from API if available (actual RARV mapping)
+    if (model.tier === 'planning') return 'opus';
+    if (model.tier === 'development') return 'sonnet';
+    if (model.tier === 'fast') return 'haiku';
+    // Use iteration-based RARV mapping if available
+    if (model.iteration != null) {
+      return this._getRARVTier(model.iteration) || '';
+    }
+    // Fallback: match model name patterns
+    const lower = (key || '').toLowerCase();
+    if (lower.includes('opus')) return 'opus';
+    if (lower.includes('sonnet')) return 'sonnet';
+    if (lower.includes('haiku')) return 'haiku';
+    if (model.provider === 'codex' || lower.includes('gpt') || lower.includes('codex')) return 'codex';
     return '';
   }
 
@@ -313,7 +345,7 @@ export class LokiCostDashboard extends LokiElement {
         .summary-card {
           background: var(--loki-bg-card);
           border: 1px solid var(--loki-border);
-          border-radius: 10px;
+          border-radius: 5px;
           padding: 14px 16px;
           transition: all var(--loki-transition);
         }
@@ -326,7 +358,7 @@ export class LokiCostDashboard extends LokiElement {
           font-size: 10px;
           font-weight: 600;
           text-transform: uppercase;
-          letter-spacing: 0.5px;
+          letter-spacing: 0.05em;
           color: var(--loki-text-muted);
           margin-bottom: 6px;
         }
@@ -335,7 +367,7 @@ export class LokiCostDashboard extends LokiElement {
           font-size: 22px;
           font-weight: 600;
           font-family: 'JetBrains Mono', monospace;
-          color: var(--loki-text-primary);
+          color: var(--loki-accent);
           line-height: 1.2;
         }
 
@@ -369,7 +401,7 @@ export class LokiCostDashboard extends LokiElement {
           font-size: 12px;
           font-weight: 600;
           text-transform: uppercase;
-          letter-spacing: 0.5px;
+          letter-spacing: 0.05em;
           color: var(--loki-text-muted);
         }
 
@@ -377,7 +409,7 @@ export class LokiCostDashboard extends LokiElement {
         .data-table-container {
           background: var(--loki-bg-card);
           border: 1px solid var(--loki-border);
-          border-radius: 10px;
+          border-radius: 5px;
           padding: 16px;
           overflow-x: auto;
         }
@@ -394,7 +426,7 @@ export class LokiCostDashboard extends LokiElement {
           font-size: 10px;
           font-weight: 600;
           text-transform: uppercase;
-          letter-spacing: 0.5px;
+          letter-spacing: 0.05em;
           color: var(--loki-text-muted);
           border-bottom: 1px solid var(--loki-border);
         }
@@ -440,7 +472,7 @@ export class LokiCostDashboard extends LokiElement {
         .budget-section {
           background: var(--loki-bg-card);
           border: 1px solid var(--loki-border);
-          border-radius: 10px;
+          border-radius: 5px;
           padding: 16px;
         }
 
@@ -502,7 +534,7 @@ export class LokiCostDashboard extends LokiElement {
         .pricing-ref {
           background: var(--loki-bg-card);
           border: 1px solid var(--loki-border);
-          border-radius: 10px;
+          border-radius: 5px;
           padding: 16px;
         }
 
@@ -515,7 +547,7 @@ export class LokiCostDashboard extends LokiElement {
 
         .pricing-item {
           background: var(--loki-bg-tertiary);
-          border-radius: 8px;
+          border-radius: 5px;
           padding: 10px 12px;
         }
 
@@ -530,7 +562,6 @@ export class LokiCostDashboard extends LokiElement {
         .pricing-model.sonnet { color: var(--loki-sonnet); }
         .pricing-model.haiku { color: var(--loki-haiku); }
         .pricing-model.codex { color: var(--loki-blue); }
-        .pricing-model.gemini { color: var(--loki-green); }
 
         .pricing-meta {
           font-size: 10px;
@@ -544,6 +575,13 @@ export class LokiCostDashboard extends LokiElement {
           color: var(--loki-text-muted);
           font-family: 'JetBrains Mono', monospace;
           line-height: 1.5;
+        }
+
+        .pricing-note {
+          font-size: 10px;
+          color: var(--loki-text-secondary);
+          margin-top: 4px;
+          line-height: 1.4;
         }
 
         /* Offline state */
@@ -643,10 +681,11 @@ export class LokiCostDashboard extends LokiElement {
             ${this._pricingDate ? `<span class="pricing-meta">Updated: ${this._escapeHTML(this._pricingDate)}</span>` : ''}
           </div>
           <div class="pricing-grid">
-            ${Object.entries(MODEL_PRICING).map(([key, m]) => `
+            ${Object.entries(this._modelPricing).map(([key, m]) => `
             <div class="pricing-item">
-              <div class="pricing-model ${this._getPricingColorClass(key, m)}">${m.label || key}</div>
-              <div class="pricing-rates">In: $${m.input.toFixed(2)} / Out: $${m.output.toFixed(2)}</div>
+              <div class="pricing-model ${this._getPricingColorClass(key, m)}">${this._escapeHTML(m.label || key)}</div>
+              <div class="pricing-rates">In: $${Number(m.input ?? 0).toFixed(2)} / Out: $${Number(m.output ?? 0).toFixed(2)}</div>
+              ${m.note ? `<div class="pricing-note">${this._escapeHTML(m.note)}</div>` : ''}
             </div>`).join('')}
           </div>
         </div>

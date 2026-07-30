@@ -7,12 +7,18 @@ No FAISS dependency required - uses pure numpy for cosine similarity.
 This module provides efficient vector storage and retrieval for the
 memory system's embedding-based search capabilities.
 """
+from __future__ import annotations
 
 import json
 import os
 from typing import Callable, Dict, List, Optional, Tuple
 
-import numpy as np
+try:
+    import numpy as np
+    NUMPY_AVAILABLE = True
+except ImportError:
+    np = None  # type: ignore
+    NUMPY_AVAILABLE = False
 
 
 class VectorIndex:
@@ -36,7 +42,20 @@ class VectorIndex:
         Args:
             dimension: The dimensionality of vectors. Default is 384
                       which matches MiniLM embedding size.
+
+        Raises:
+            ImportError: If numpy is not installed. Every operation in this
+                index (add, search, save, load) relies on numpy, so fail
+                fast with a clear message here rather than letting a later
+                call crash with an opaque ``AttributeError: 'NoneType'
+                object has no attribute ...`` once ``np`` is None. The
+                module-level NUMPY_AVAILABLE flag is what gates this check.
         """
+        if not NUMPY_AVAILABLE:
+            raise ImportError(
+                "numpy is required for the vector index. "
+                "Install it with: pip install numpy"
+            )
         self.dimension = dimension
         self.embeddings: List[np.ndarray] = []
         self.ids: List[str] = []
@@ -271,11 +290,30 @@ class VectorIndex:
         else:
             embeddings_matrix = np.array([]).reshape(0, self.dimension)
 
-        np.savez(
-            f"{path}.npz",
-            embeddings=embeddings_matrix,
-            dimension=np.array([self.dimension])
-        )
+        # Write to temp file then atomically rename to prevent corruption
+        import tempfile
+        npz_path = f"{path}.npz"
+        npz_dir = os.path.dirname(npz_path) or "."
+        # The temp file MUST end in ".npz". np.savez appends ".npz" to any
+        # target whose name does not already end in ".npz", so a ".npz.tmp"
+        # suffix would make numpy write the real archive to <tmp>.npz and leave
+        # the original temp file 0 bytes. os.replace would then move the empty
+        # file into place and orphan the real data (corrupting every index).
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=npz_dir, suffix=".npz")
+        os.close(tmp_fd)
+        try:
+            np.savez(
+                tmp_path,
+                embeddings=embeddings_matrix,
+                dimension=np.array([self.dimension])
+            )
+            os.replace(tmp_path, npz_path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
         # Save metadata as JSON sidecar
         sidecar_data = {
@@ -284,8 +322,23 @@ class VectorIndex:
             "dimension": self.dimension
         }
 
-        with open(f"{path}.json", "w") as f:
-            json.dump(sidecar_data, f, indent=2)
+        import tempfile
+        json_path = f"{path}.json"
+        # Use atomic write to avoid corruption on crash (BUG-MEM-013 fix)
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=os.path.dirname(json_path) or ".",
+            suffix=".json.tmp"
+        )
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                json.dump(sidecar_data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp_path, json_path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def load(self, path: str) -> None:
         """
@@ -312,7 +365,7 @@ class VectorIndex:
         self.dimension = int(data["dimension"][0])
 
         # Load metadata
-        with open(json_path, "r") as f:
+        with open(json_path, "r", encoding="utf-8") as f:
             sidecar_data = json.load(f)
 
         self.ids = sidecar_data["ids"]

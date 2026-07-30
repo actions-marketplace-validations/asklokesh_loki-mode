@@ -70,6 +70,63 @@ function getTimestamp(): string {
 }
 
 /**
+ * Sleep helper that does not busy-wait.
+ */
+function sleepSync(ms: number): void {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    // Intentional short spin -- only used for brief lock retries (< 200ms)
+  }
+}
+
+/**
+ * Write a file with an exclusive lockfile to prevent concurrent corruption.
+ * Creates a .lock file, writes data, then removes the lock.
+ * If the lock cannot be acquired after retries, the write is skipped
+ * and a warning is logged to stderr.
+ */
+function writeFileWithLock(filepath: string, data: string): void {
+  const lockfile = filepath + ".lock";
+  const maxRetries = 5;
+  const retryDelayMs = 200;
+  let acquired = false;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const fd = fs.openSync(lockfile, "wx");
+      fs.closeSync(fd);
+      acquired = true;
+      break;
+    } catch (e: unknown) {
+      if (e instanceof Error && "code" in e && (e as NodeJS.ErrnoException).code === "EEXIST") {
+        // Lock held by another process; wait and retry
+        if (attempt < maxRetries - 1) {
+          sleepSync(retryDelayMs);
+        }
+      } else {
+        throw e;
+      }
+    }
+  }
+
+  if (!acquired) {
+    // Lock could not be acquired after retries -- skip write to avoid corruption
+    process.stderr.write(`[loki-events] WARNING: could not acquire lock for ${filepath}, skipping write\n`);
+    return;
+  }
+
+  try {
+    fs.writeFileSync(filepath, data);
+  } finally {
+    try {
+      fs.unlinkSync(lockfile);
+    } catch {
+      // Ignore cleanup errors
+    }
+  }
+}
+
+/**
  * File-based Event Bus
  */
 export class EventBus {
@@ -81,7 +138,7 @@ export class EventBus {
   private processedIds: Set<string>;
   private subscribers: Array<{ types: EventType[] | null; callback: EventCallback }>;
   private running: boolean;
-  private pollInterval: NodeJS.Timer | null;
+  private pollInterval: ReturnType<typeof setInterval> | null;
 
   constructor(lokiDir: string = ".loki") {
     this.lokiDir = lokiDir;
@@ -132,7 +189,7 @@ export class EventBus {
     }
 
     try {
-      fs.writeFileSync(
+      writeFileWithLock(
         this.processedFile,
         JSON.stringify({ ids: Array.from(this.processedIds) })
       );
@@ -158,7 +215,7 @@ export class EventBus {
     const filepath = path.join(this.pendingDir, filename);
 
     try {
-      fs.writeFileSync(filepath, JSON.stringify(fullEvent, null, 2));
+      writeFileWithLock(filepath, JSON.stringify(fullEvent, null, 2));
     } catch (e) {
       throw new Error(`Failed to emit event: ${e}`);
     }
@@ -235,7 +292,13 @@ export class EventBus {
 
     if (archive) {
       try {
-        const files = fs.readdirSync(this.pendingDir).filter((f) => f.includes(event.id));
+        // Match the exact id at the filename boundary. Emitted files are named
+        // `${timestamp}_${id}.json`, so a substring match (f.includes(event.id))
+        // would also match a DIFFERENT event whose id contains this id as a
+        // substring, archiving/marking the wrong event file (event loss). The
+        // Python impl already uses the precise `*_${id}.json` glob; mirror it.
+        const suffix = `_${event.id}.json`;
+        const files = fs.readdirSync(this.pendingDir).filter((f) => f.endsWith(suffix));
         for (const file of files) {
           const src = path.join(this.pendingDir, file);
           const dst = path.join(this.archiveDir, file);

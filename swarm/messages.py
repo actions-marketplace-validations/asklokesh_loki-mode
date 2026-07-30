@@ -11,6 +11,7 @@ This module defines the message format and types for swarm communication:
 from __future__ import annotations
 
 import json
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -561,3 +562,121 @@ class MessageBus:
             except IOError:
                 pass
         return count
+
+
+class PubSubMessageBus:
+    """Pub/sub message bus for agent communication.
+
+    Enables custom agent topologies beyond the default swarm patterns.
+    Agents subscribe to topics and publish messages. The bus routes messages
+    to all subscribers of a topic.
+
+    Topics follow hierarchical naming: agent.engineering.*, task.completed, etc.
+    Wildcard matching supported: "task.*" matches "task.completed".
+    """
+
+    def __init__(self):
+        self._subscribers: Dict[str, List[Dict[str, Any]]] = {}
+        self._message_log: List[Dict[str, Any]] = []
+        self._dead_letter: List[Dict[str, Any]] = []
+        self._lock = threading.Lock()
+        self._sub_counter: int = 0
+
+    def subscribe(self, topic: str, handler) -> str:
+        """Subscribe to a topic. Returns subscription ID."""
+        with self._lock:
+            if topic not in self._subscribers:
+                self._subscribers[topic] = []
+            self._sub_counter += 1
+            sub_id = f"sub_{self._sub_counter}_{topic}"
+            self._subscribers[topic].append({"id": sub_id, "handler": handler})
+            return sub_id
+
+    def unsubscribe(self, sub_id: str) -> bool:
+        """Remove a subscription by ID."""
+        with self._lock:
+            for topic in self._subscribers:
+                original_len = len(self._subscribers[topic])
+                self._subscribers[topic] = [s for s in self._subscribers[topic] if s["id"] != sub_id]
+                if len(self._subscribers[topic]) != original_len:
+                    return True
+            return False
+
+    def publish(self, topic: str, message: Dict[str, Any], sender: str = "") -> int:
+        """Publish a message to a topic. Returns number of deliveries."""
+        envelope = {
+            "topic": topic,
+            "message": message,
+            "sender": sender,
+            "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
+            "delivered_to": [],
+        }
+
+        # Collect subscribers under lock, but invoke handlers outside to avoid deadlock
+        with self._lock:
+            self._message_log.append(envelope)
+
+            matched_subs = []
+
+            # Collect exact match subscribers
+            for sub in self._subscribers.get(topic, []):
+                matched_subs.append(sub)
+
+            # Collect wildcard subscribers
+            for pattern, subs in self._subscribers.items():
+                if pattern == topic:
+                    continue  # already collected via exact match
+                if "*" in pattern and self._matches_wildcard(pattern, topic):
+                    matched_subs.extend(subs)
+
+        # Deliver outside lock so handlers can publish without deadlocking
+        delivered = 0
+        for sub in matched_subs:
+            try:
+                sub["handler"](message, topic, sender)
+                with self._lock:
+                    envelope["delivered_to"].append(sub["id"])
+                delivered += 1
+            except Exception as e:
+                with self._lock:
+                    self._dead_letter.append({
+                        **envelope,
+                        "error": str(e),
+                        "subscriber": sub["id"],
+                    })
+
+        return delivered
+
+    @staticmethod
+    def _matches_wildcard(pattern: str, topic: str) -> bool:
+        """Check if topic matches a wildcard pattern (fnmatch-style)."""
+        import fnmatch
+        return fnmatch.fnmatch(topic, pattern)
+
+    def get_log(self, topic: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get message history, optionally filtered by topic."""
+        msgs = self._message_log
+        if topic:
+            msgs = [m for m in msgs if m["topic"] == topic]
+        return msgs[-limit:]
+
+    def get_dead_letters(self) -> List[Dict[str, Any]]:
+        """Get undeliverable messages."""
+        return list(self._dead_letter)
+
+    def clear(self) -> None:
+        """Clear all subscriptions and message history."""
+        with self._lock:
+            self._subscribers.clear()
+            self._message_log.clear()
+            self._dead_letter.clear()
+
+    @property
+    def subscriber_count(self) -> int:
+        """Total number of active subscriptions."""
+        return sum(len(subs) for subs in self._subscribers.values())
+
+    @property
+    def topics(self) -> List[str]:
+        """List of all topics with subscribers."""
+        return list(self._subscribers.keys())

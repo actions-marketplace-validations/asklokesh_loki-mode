@@ -142,7 +142,7 @@ GROWTH ──[continuous improvement loop]──> GROWTH
 - `Bash` - Command execution
 - `platform-orchestrator` - Deployment and service management
 
-**The 37 agent types are ROLES defined through prompts, not subagent_types.**
+**The 41 agent types are ROLES defined through prompts, not subagent_types.**
 
 ---
 
@@ -155,10 +155,10 @@ SKILL.md (~190 lines)         # Always loaded: RARV cycle, autonomy rules
 skills/
   00-index.md                  # Module routing table
   model-selection.md           # Task tool, parallelization
-  quality-gates.md             # 7-gate system, anti-sycophancy
+  quality-gates.md             # 8-gate system, anti-sycophancy
   testing.md                   # Playwright, E2E, property-based
   production.md                # CI/CD, batch processing
-  agents.md                    # 37 agent types, A2A patterns
+  agents.md                    # 41 agent types, A2A patterns
   parallel-workflows.md        # Git worktrees, parallel streams
   troubleshooting.md           # Error recovery, fallbacks
   artifacts.md                 # Code generation patterns
@@ -196,7 +196,14 @@ Main Worktree (orchestrator)
 
 ---
 
-## Quality Gates (7-Gate System)
+## Quality Gates
+
+Note: the canonical, implemented quality-gate set is the 8-gate system defined in
+`skills/quality-gates.md` (static analysis, test suite pass/fail, blind 3-reviewer
+code review with severity blocking, anti-sycophancy Devil's Advocate, mock
+integrity, test mutation, documentation coverage, Magic Modules debate). The
+list below is an aspirational SDLC taxonomy and may name phases that are not
+deterministic loop gates; treat `skills/quality-gates.md` as the source of truth.
 
 ### Gate 1: Static Analysis
 ```yaml
@@ -433,8 +440,8 @@ git reset --hard ${checkpoint_hash}
 
 - Load only 1-2 skill modules at a time
 - Use Task tool with subagents for exploration (isolates context)
-- After 25 iterations: Consolidate learnings to CONTINUITY.md
-- If context feels heavy: Create `.loki/signals/CONTEXT_CLEAR_REQUESTED`
+- Periodically consolidate learnings to CONTINUITY.md
+- Rely on provider-native context management when context feels heavy (no explicit clear signal)
 
 ---
 

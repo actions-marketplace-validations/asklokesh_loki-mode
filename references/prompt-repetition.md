@@ -14,13 +14,13 @@ Research-backed technique from arXiv 2512.14982v1: "Prompt Repetition Improves N
 
 ## When to Apply
 
-### ✅ USE Prompt Repetition For:
+### USE Prompt Repetition For:
 - **Haiku agents** (non-reasoning model)
 - **Structured tasks** (unit tests, linting, formatting)
 - **Position-dependent operations** (finding items in lists, parsing structured data)
 - **Simple bug fixes** (typos, imports, syntax errors)
 
-### ❌ DO NOT Use For:
+### DO NOT Use For:
 - **Opus agents** (reasoning model - neutral/slightly negative effect)
 - **Sonnet agents** (reasoning model - neutral effect)
 - **Complex reasoning tasks** (architecture decisions, planning)
@@ -75,7 +75,7 @@ Task(
 
 | Model | Task | Baseline | 2x Repetition | 3x Repetition |
 |-------|------|----------|---------------|---------------|
-| Gemini 2.0 Flash-Lite | NameIndex | 21.33% | 97.33% | 98.67% |
+| Google Flash-Lite 2.0 | NameIndex | 21.33% | 97.33% | 98.67% |
 | GPT-4o | NameIndex | 56.67% | 86.67% | 90.00% |
 | Claude 3 Sonnet | NameIndex | 48.00% | 82.67% | 85.33% |
 | Deepseek V3 | NameIndex | 62.67% | 88.00% | 91.33% |

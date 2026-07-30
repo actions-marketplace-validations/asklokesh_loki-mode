@@ -11,18 +11,50 @@ Usage:
 """
 
 import asyncio
+import fcntl
 import json
 import os
 import signal
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+
+# Auth gating for the standalone control app.
+#
+# This module also defines a self-contained FastAPI `app` whose own docstring
+# invites operators to expose it via `uvicorn dashboard.control:app`. When that
+# happens the state-mutating endpoints (start/stop/pause/resume) MUST honor the
+# same scope checks as the primary dashboard (dashboard/server.py), otherwise a
+# user who follows the docstring stands up an unauthenticated control plane that
+# can launch arbitrary builds and kill running sessions even when
+# LOKI_ENTERPRISE_AUTH / OIDC are configured.
+#
+# auth.require_scope is a no-op (allows access) when no auth method is enabled,
+# so this import is safe for the default anonymous-localhost workflow and only
+# enforces when the operator has explicitly turned auth on. The import is
+# defensive: if the package context is unavailable (e.g. the file is run from a
+# path where the relative import fails) we fall back to a gate that always
+# allows, preserving the prior behavior rather than crashing import.
+try:
+    from . import auth as _auth
+
+    def _require_control_scope():
+        return Depends(_auth.require_scope("control"))
+except Exception:  # pragma: no cover - defensive fallback for non-package runs
+    def _require_control_scope():
+        async def _noop() -> bool:
+            return True
+
+        return Depends(_noop)
+
+_CONTROL_DEP = _require_control_scope()
 
 # Configuration
 LOKI_DIR = Path(os.environ.get("LOKI_DIR", ".loki"))
@@ -32,6 +64,14 @@ EVENTS_FILE = LOKI_DIR / "events.jsonl"
 
 # Find skill directory
 def find_skill_dir() -> Path:
+    explicit = os.environ.get("LOKI_SKILL_DIR", "").strip()
+    if explicit:
+        configured = Path(explicit).expanduser().resolve()
+        if ((configured / "SKILL.md").exists()
+                and (configured / "autonomy" / "run.sh").exists()):
+            return configured
+        raise RuntimeError(f"LOKI_SKILL_DIR is not a Loki source tree: {configured}")
+
     candidates = [
         Path.home() / ".claude" / "skills" / "loki-mode",
         Path(__file__).parent.parent,
@@ -48,6 +88,67 @@ RUN_SH = SKILL_DIR / "autonomy" / "run.sh"
 # Ensure directories exist
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+# Utility: atomic write with optional file locking
+def atomic_write_json(file_path: Path, data: dict, use_lock: bool = True):
+    """
+    Atomically write JSON data to a file to prevent TOCTOU race conditions.
+    Uses temporary file + os.rename() for atomicity.
+    Optionally uses fcntl.flock on a dedicated lock file for mutual exclusion.
+    """
+    try:
+        lock_fd = -1
+        lock_path = str(file_path) + ".lock"
+
+        # Acquire exclusive lock on a dedicated lock file if requested.
+        # This ensures all writers to the same target contend on the same
+        # lock, unlike the previous approach which locked the temp file
+        # (each caller got its own temp file so the lock was a no-op).
+        if use_lock:
+            try:
+                lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            except (OSError, AttributeError):
+                # flock not available on this platform - continue without lock
+                if lock_fd >= 0:
+                    os.close(lock_fd)
+                lock_fd = -1
+
+        try:
+            # Write to temporary file in same directory (for atomic rename)
+            temp_fd, temp_path = tempfile.mkstemp(
+                dir=file_path.parent,
+                prefix=f".{file_path.name}.",
+                suffix=".tmp"
+            )
+
+            try:
+                with os.fdopen(temp_fd, 'w') as f:
+                    json.dump(data, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+
+                # Atomic rename
+                os.rename(temp_path, file_path)
+
+            except Exception:
+                # Clean up temp file on error
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+                raise
+
+        finally:
+            # Release the lock file (close releases flock automatically)
+            if lock_fd >= 0:
+                try:
+                    os.close(lock_fd)
+                except OSError:
+                    pass
+
+    except Exception as e:
+        raise RuntimeError(f"Failed to write {file_path}: {e}")
 
 # FastAPI app
 app = FastAPI(
@@ -76,6 +177,42 @@ class StartRequest(BaseModel):
     provider: str = "claude"
     parallel: bool = False
     background: bool = True
+
+    def validate_provider(self) -> None:
+        """Validate provider is from allowed list."""
+        allowed_providers = ["claude", "codex", "gemini", "cline", "aider"]
+        if self.provider not in allowed_providers:
+            raise ValueError(f"Invalid provider: {self.provider}. Must be one of: {', '.join(allowed_providers)}")
+
+    def validate_prd_path(self) -> None:
+        """Validate PRD path is safe and exists."""
+        if not self.prd:
+            return
+
+        # Check for path traversal sequences
+        if ".." in self.prd:
+            raise ValueError("PRD path contains path traversal sequence (..)")
+
+        # Resolve to absolute path and verify it exists
+        prd_path = Path(self.prd).resolve()
+        if not prd_path.exists():
+            raise ValueError(f"PRD file does not exist: {self.prd}")
+
+        # Verify it's a file, not a directory
+        if not prd_path.is_file():
+            raise ValueError(f"PRD path is not a file: {self.prd}")
+
+        # Verify path resolves within CWD or a reasonable parent
+        cwd = Path.cwd().resolve()
+        try:
+            prd_path.relative_to(cwd)
+        except ValueError:
+            # Not within CWD - check if it's within user's home or project directory
+            home = Path.home().resolve()
+            try:
+                prd_path.relative_to(home)
+            except ValueError:
+                raise ValueError(f"PRD path is outside allowed directories: {self.prd}")
 
 
 class StatusResponse(BaseModel):
@@ -170,14 +307,15 @@ def get_status() -> StatusResponse:
                         age_hours = (datetime.now(timezone.utc) - start_time_parsed).total_seconds() / 3600
                         if age_hours > 6:
                             session_data["status"] = "stopped"
-                            session_file.write_text(json.dumps(session_data))
+                            atomic_write_json(session_file, session_data, use_lock=True)
                         else:
                             running = True
                     except (ValueError, TypeError):
                         running = True
                 else:
                     running = True
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, OSError, KeyError):
+            # Partial JSON from concurrent write -- treat as unavailable
             pass
 
     # Determine state
@@ -215,7 +353,8 @@ def get_status() -> StatusResponse:
                 pending_tasks = len(pending)
             elif isinstance(pending, dict):
                 pending_tasks = len(pending.get("tasks", []))
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, OSError, KeyError):
+            # Partial JSON from concurrent write -- treat as unavailable
             pass
 
     # Read provider from state
@@ -229,7 +368,8 @@ def get_status() -> StatusResponse:
         try:
             orch = json.loads(orch_file.read_text())
             current_task = orch.get("currentTask", "")
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, OSError, KeyError):
+            # Partial JSON from concurrent write -- treat as unavailable
             pass
 
     return StatusResponse(
@@ -261,7 +401,7 @@ async def get_session_status():
     return get_status()
 
 
-@app.post("/api/control/start", response_model=ControlResponse)
+@app.post("/api/control/start", response_model=ControlResponse, dependencies=[_CONTROL_DEP])
 async def start_session(request: StartRequest):
     """
     Start a Loki Mode session.
@@ -272,6 +412,13 @@ async def start_session(request: StartRequest):
     Returns:
         ControlResponse with success status and PID
     """
+    # Validate input
+    try:
+        request.validate_provider()
+        request.validate_prd_path()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     # Check if already running
     status = get_status()
     if status.state == "running":
@@ -326,7 +473,7 @@ async def start_session(request: StartRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/control/stop", response_model=ControlResponse)
+@app.post("/api/control/stop", response_model=ControlResponse, dependencies=[_CONTROL_DEP])
 async def stop_session():
     """
     Stop the current Loki Mode session.
@@ -356,10 +503,13 @@ async def stop_session():
     session_file = LOKI_DIR / "session.json"
     if session_file.exists():
         try:
+            # Read current session data
             session_data = json.loads(session_file.read_text())
             session_data["status"] = "stopped"
-            session_file.write_text(json.dumps(session_data))
-        except (json.JSONDecodeError, KeyError):
+
+            # Atomic write with file locking to prevent race conditions
+            atomic_write_json(session_file, session_data, use_lock=True)
+        except (json.JSONDecodeError, OSError, KeyError, RuntimeError):
             pass
 
     # Emit stop event
@@ -372,7 +522,7 @@ async def stop_session():
     )
 
 
-@app.post("/api/control/pause", response_model=ControlResponse)
+@app.post("/api/control/pause", response_model=ControlResponse, dependencies=[_CONTROL_DEP])
 async def pause_session():
     """
     Pause the current Loki Mode session.
@@ -401,7 +551,7 @@ async def pause_session():
     )
 
 
-@app.post("/api/control/resume", response_model=ControlResponse)
+@app.post("/api/control/resume", response_model=ControlResponse, dependencies=[_CONTROL_DEP])
 async def resume_session():
     """
     Resume a paused Loki Mode session.
@@ -490,8 +640,9 @@ async def get_logs(lines: int = 50):
     Get recent log lines from the session log.
 
     Args:
-        lines: Number of lines to return (default 50)
+        lines: Number of lines to return (default 50, max 10000)
     """
+    lines = min(max(lines, 1), 10000)
     log_file = LOG_DIR / "session.log"
 
     if not log_file.exists():

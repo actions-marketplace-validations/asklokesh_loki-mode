@@ -9,6 +9,8 @@ providing temporal context before loading full memories.
 """
 
 import json
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -35,11 +37,16 @@ class TimelineLayer:
         """
         self.base_path = Path(base_path)
         self.timeline_path = self.base_path / "timeline.json"
-        self._cache: Optional[Dict[str, Any]] = None
 
     def load(self) -> Dict[str, Any]:
         """
         Load timeline.json from disk.
+
+        Always re-reads from disk: these files are tiny (~500 token target)
+        and are written by separate processes (the dashboard reads
+        timeline.json via server.py while the orchestrator writes it), so an
+        in-memory cache cannot be invalidated correctly across processes.
+        An honest fresh read beats a stale cache for retrieval accuracy.
 
         Returns:
             Timeline dictionary with actions, decisions, and context
@@ -49,8 +56,7 @@ class TimelineLayer:
 
         try:
             with open(self.timeline_path, "r") as f:
-                self._cache = json.load(f)
-                return self._cache
+                return json.load(f)
         except (json.JSONDecodeError, IOError):
             return self._create_empty_timeline()
 
@@ -70,7 +76,7 @@ class TimelineLayer:
 
     def _save(self, timeline: Dict[str, Any]) -> None:
         """
-        Save timeline to disk.
+        Save timeline to disk atomically via temp file + os.replace().
 
         Args:
             timeline: Timeline dictionary to save
@@ -78,10 +84,19 @@ class TimelineLayer:
         self.base_path.mkdir(parents=True, exist_ok=True)
         timeline["last_updated"] = datetime.now(timezone.utc).isoformat()
 
-        with open(self.timeline_path, "w") as f:
-            json.dump(timeline, f, indent=2)
-
-        self._cache = timeline
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(self.base_path), prefix=".tmp_timeline_", suffix=".json"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(timeline, f, indent=2)
+            os.replace(tmp_path, str(self.timeline_path))
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def add_action(
         self,

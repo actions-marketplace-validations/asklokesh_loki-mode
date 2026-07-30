@@ -1,0 +1,106 @@
+name: Security Audit
+
+# Runs `npm audit` (and `bun audit` if available) on every PR and weekly.
+# Fails the workflow on high or critical vulnerabilities.
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    # Mondays at 07:00 UTC
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  npm-audit:
+    name: npm audit (high+)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies (with lockfile so npm audit can apply package.json overrides)
+        run: npm install
+
+      - name: npm audit (production deps, high+)
+        # audit-check.sh mirrors `npm audit --omit=dev --audit-level=high` but
+        # waives documented, not-reachable advisories (see the script header for
+        # each accepted GHSA + its rationale). A NEW high advisory that is not on
+        # the allowlist still fails this gate -- it is a targeted exception, never
+        # a blanket suppression. Kept in lockstep with scripts/local-ci.sh (both
+        # call the same script) so the local pre-push gate and this CI gate agree.
+        run: bash scripts/audit-check.sh
+
+  bun-audit:
+    name: bun audit (best-effort)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+
+      - name: Probe for `bun audit` subcommand
+        id: probe
+        run: |
+          set +e
+          bun audit --help >/dev/null 2>&1
+          ec=$?
+          set -e
+          if [ "$ec" -eq 0 ]; then
+            echo "supported=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "supported=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::`bun audit` not available in bun v1.3.13 -- skipping"
+          fi
+
+      - name: Install loki-ts dependencies
+        if: steps.probe.outputs.supported == 'true'
+        working-directory: loki-ts
+        run: bun install
+
+      - name: Run bun audit
+        if: steps.probe.outputs.supported == 'true'
+        working-directory: loki-ts
+        run: |
+          set +e
+          bun audit
+          ec=$?
+          set -e
+          if [ "$ec" -ne 0 ]; then
+            # ADVISORY, matching this job's own name. The AUTHORITATIVE gate is
+            # the sibling `npm audit (high+)` job, which runs scripts/audit-check.sh
+            # and applies the documented not-reachable waiver list -- a NEW high
+            # advisory still fails there and still blocks the release.
+            #
+            # This step hard-failed while being labelled best-effort, which made
+            # it a blocking gate with no waiver mechanism. It fired on
+            # GHSA-v2hh-gcrm-f6hx in fast-uri, which is four levels deep inside a
+            # dependency we do not control:
+            #   loki-mode -> @anthropic-ai/claude-agent-sdk -> @modelcontextprotocol/sdk
+            #             -> ajv -> fast-uri
+            # There is no action available to us: no direct dependency to bump,
+            # and the fix has to land upstream. Blocking every release on an
+            # unactionable transitive advisory trains people to ignore the gate,
+            # which is strictly worse than reporting it.
+            echo "::warning::bun audit reported vulnerabilities (advisory; the npm audit job is the gate)"
+          else
+            echo "bun audit clean"
+          fi

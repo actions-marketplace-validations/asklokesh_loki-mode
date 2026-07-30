@@ -10,6 +10,7 @@
 > - `references/memory-system.md` - Episodic/semantic/procedural memory
 > - `references/tool-orchestration.md` - NVIDIA ToolOrchestra efficiency metrics
 > - `references/quality-control.md` - Code review and guardrails
+> - `references/magic-rarv-integration.md` - Autonomous magic generation in RARV-C cycle
 
 ## Module Selection Rules
 
@@ -26,8 +27,14 @@
 | Parallel features, git worktrees | `parallel-workflows.md` |
 | Scale patterns (50+ agents) | `parallel-workflows.md` + `references/cursor-learnings.md` |
 | GitHub issues, PRs, syncing | `github-integration.md` |
-| Multi-provider (Codex, Gemini) | `providers.md` |
+| Multi-provider (Codex, Cline, Aider) | `providers.md` |
+| OpenSpec delta context, brownfield modifications | `openspec-integration.md` |
+| MiroFish market validation, `--mirofish` flag | `mirofish-integration.md` |
+| Writing/updating documentation, `loki docs` | `documentation.md` |
+| UI components, design tokens, .loki/magic/, Gate 12 | `magic-modules.md` |
+| Legacy healing, modernization, archaeology | `healing.md` |
 | Plan deepening, knowledge extraction | `compound-learning.md` |
+| Managed Agents memory, multiagent council, flag hierarchy | `memory.md` |
 
 ## Module Descriptions
 
@@ -41,7 +48,7 @@
 
 ### quality-gates.md
 **When:** Code review, pre-commit checks, quality assurance
-- 7-gate quality system
+- 8-gate quality system (gate 7: documentation coverage, v6.75.0; backward compatibility is a conditional healing-mode auditor, not numbered)
 - Blind review + anti-sycophancy
 - Velocity-quality feedback loop (arXiv research)
 - Mandatory quality checks per task
@@ -100,6 +107,8 @@
 - Inter-stream communication via signals
 - Auto-merge completed features
 - Orchestrator state management
+- Supervisor / judge pattern (CONTINUE / COMPLETE / ESCALATE / PIVOT)
+- Dynamic resource-aware session concurrency (LOKI_DYNAMIC_CONCURRENCY)
 
 ### github-integration.md
 **When:** Working with GitHub issues, creating PRs, syncing status
@@ -109,6 +118,29 @@
 - Filter by labels, milestone, assignee
 - Requires `gh` CLI authenticated
 
+### openspec-integration.md
+**When:** Working with OpenSpec delta context, `--openspec` flag, brownfield modifications
+- Delta-aware development rules (ADDED/MODIFIED/REMOVED)
+- Task execution by group order
+- Scenario-to-test mapping (GIVEN/WHEN/THEN)
+- Source mapping and verification tracking
+- Complexity-based agent strategy
+
+### mirofish-integration.md
+**When:** Project has MiroFish market validation data, `--mirofish` flag used
+- Market validation context interpretation
+- Sentiment-aware feature prioritization
+- Risk-driven task ordering
+- Advisory-only (never gates RARV or Completion Council)
+
+### documentation.md
+**When:** Writing/updating documentation, `loki docs` commands, Repowise MCP available
+- Documentation types (README, ARCHITECTURE, API, DECISIONS, etc.)
+- Model selection for doc generation (Sonnet/Haiku/Opus)
+- Repowise MCP integration for codebase intelligence
+- Documentation quality criteria and prompts
+- Fallback to native git analysis when Repowise unavailable
+
 ### compound-learning.md (v5.30.0)
 **When:** After architecture phase (deepen plan), after verification (extract learnings)
 - Deepen-plan: 4 parallel research agents enhance plans before implementation
@@ -116,10 +148,21 @@
 - Solution retrieval: Load relevant cross-project solutions during REASON phase
 - Composable phases: plan, deepen, work, review, compound
 
+### healing.md (v6.67.0)
+**When:** Legacy codebase modernization, `loki heal`, brownfield projects, code archaeology
+- 5 healing principles (friction-as-semantics, failure-first, adapters, incremental, knowledge preservation)
+- Healing RARV cycle (characterize before modifying)
+- Codebase archaeology protocol
+- Friction map management
+- Healing phase gates (archaeology > stabilize > isolate > modernize > validate)
+- Legacy-healing-auditor code review specialist
+- Language-specific guides (COBOL, legacy Java, PHP, Python 2)
+- Full reference: `references/legacy-healing-patterns.md`
+
 ### providers.md (v5.0.0)
-**When:** Using non-Claude providers (Codex, Gemini), understanding degraded mode
+**When:** Using non-Claude providers (Codex, Cline, Aider), understanding degraded mode
 - Provider comparison matrix
-- Claude (full features) vs Codex/Gemini (degraded mode)
+- Claude (full features) vs Codex/Cline/Aider (degraded mode)
 - Provider selection via CLI flag or environment variable
 - Model tier mapping (planning/development/fast)
 - Degraded mode limitations and behavior

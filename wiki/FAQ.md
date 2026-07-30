@@ -6,7 +6,7 @@
 
 ### What is Loki Mode?
 
-Loki Mode is an autonomous AI development orchestrator that transforms a Product Requirements Document (PRD) into a fully deployed application with minimal human intervention. It manages multiple AI agents, runs comprehensive SDLC phases, and learns from every session.
+Loki Mode is an autonomous AI development orchestrator that transforms a spec -- a PRD markdown file, GitHub issue, YAML brief, or any natural-language description of what to build -- into a fully deployed application with minimal human intervention. It manages multiple AI agents, runs comprehensive SDLC phases, and learns from every session.
 
 ### Why is it called "Loki Mode"?
 
@@ -14,13 +14,14 @@ Named after the Norse god of mischief, Loki Mode operates autonomously and can s
 
 ### Is Loki Mode free?
 
-Yes, Loki Mode is open source under the MIT license. However, you need API access to Claude, Codex, or Gemini (which have their own pricing).
+Yes, Loki Mode is free and source-available under the BUSL-1.1 license. However, you need API access to Claude or Codex (which have their own pricing).
 
 ### What AI providers are supported?
 
 - **Claude Code** (Full features - recommended)
 - **OpenAI Codex CLI** (Degraded mode)
-- **Google Gemini CLI** (Degraded mode)
+- **Cline CLI** (Degraded mode)
+- **Aider** (Degraded mode)
 
 ---
 
@@ -43,11 +44,11 @@ docker pull asklokesh/loki-mode
 
 - Node.js 16+ (for npm install)
 - Claude Code CLI installed and authenticated
-- A PRD file describing what you want to build
+- A spec describing what you want to build (PRD markdown file, GitHub issue, or YAML feature brief)
 
-### How do I write a good PRD?
+### How do I write a good spec?
 
-Include:
+A spec is any clear description of what to build. The most common format is a markdown PRD. Include:
 - Clear overview of what to build
 - Requirements as checkboxes `- [ ]`
 - Tech stack preferences
@@ -78,11 +79,14 @@ Build a todo app with React.
 ### How do I start a session?
 
 ```bash
-# Option 1: CLI
+# Option 1: CLI with a PRD markdown file
 loki start ./my-prd.md
 
-# Option 2: In Claude
-# "Loki Mode with PRD at ./my-prd.md"
+# Option 2: CLI with a GitHub issue as the spec
+loki issue 123 --start
+
+# Option 3: In Claude
+# "Loki Mode with spec at ./my-prd.md"
 ```
 
 ### How do I stop a session?
@@ -177,14 +181,14 @@ export LOKI_ENTERPRISE_AUDIT=true
 - Parallel execution needed
 - Best quality results
 
-**Codex/Gemini** for:
+**Codex/Cline/Aider** for:
 - Cost optimization
 - Simple projects
 - Provider preference
 
 ### What's "degraded mode"?
 
-When using Codex or Gemini, some features aren't available:
+When using Codex, Cline, or Aider, some features aren't available:
 - No parallel agents (sequential only)
 - No Task tool (subagents)
 - No MCP integration
@@ -235,7 +239,7 @@ loki logs | grep -i error
 
 Common causes:
 - Rate limiting (will auto-retry)
-- PRD too vague
+- Spec too vague (PRD or issue lacks acceptance criteria)
 - Missing dependencies
 - Authentication expired
 
@@ -288,7 +292,7 @@ This runs in an isolated Docker container.
 
 ### Is there an enterprise version?
 
-No separate enterprise version. Enterprise features are built into the open source version and enabled via configuration:
+The Loki Mode CLI is source-available (BUSL-1.1). Some enterprise features ship in the CLI and are enabled via configuration (below). The commercial editions for teams and enterprises (Autonomi Cloud, Autonomi Enterprise) are separate offerings sold under the Autonomi brand. Enable the in-CLI enterprise features with:
 
 ```bash
 export LOKI_ENTERPRISE_AUTH=true
@@ -302,7 +306,7 @@ export LOKI_ENTERPRISE_AUDIT=true
 
 ### Can I use this commercially?
 
-Yes, MIT license allows commercial use.
+Loki Mode is source-available under BUSL-1.1, not MIT. The Additional Use Grant covers individual, non-commercial, internal-business (as a tool, not as a product offered to third parties), academic, and evaluation use. Other commercial use requires a separate license, contact founder@autonomi.dev. The license converts to Apache 2.0 on March 19, 2030.
 
 ---
 

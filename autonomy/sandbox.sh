@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #===============================================================================
 # Loki Mode - Docker Sandbox Manager
 # Provides isolated container execution for enhanced security
@@ -45,7 +45,7 @@ PROJECT_DIR="${PROJECT_DIR%/}"
 
 # Container name includes path hash to avoid collisions between similarly-named projects
 # macOS uses md5 instead of md5sum
-PROJECT_HASH=$(echo "$PROJECT_DIR" | md5sum 2>/dev/null | cut -c1-8 || md5 2>/dev/null | cut -c1-8 || echo "$$")
+PROJECT_HASH=$(echo "$PROJECT_DIR" | (md5sum 2>/dev/null || md5 -r 2>/dev/null || echo "$$") | cut -c1-8)
 CONTAINER_NAME="loki-sandbox-$(basename "$PROJECT_DIR" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')-${PROJECT_HASH}"
 
 # Sandbox settings
@@ -61,6 +61,39 @@ DASHBOARD_PORT="${LOKI_DASHBOARD_PORT:-57374}"
 
 # Security: Prompt injection disabled by default for enterprise security
 PROMPT_INJECTION_ENABLED="${LOKI_PROMPT_INJECTION:-false}"
+
+#===============================================================================
+# Docker Credential Mount Presets
+#===============================================================================
+
+# Preset definitions: "host_path:container_path:mode"
+# Container runs as user 'loki' (UID 1000), so mount to /home/loki/
+# Uses functions instead of declare -A for bash 3.2 compatibility (macOS default)
+_get_mount_preset() {
+    case "$1" in
+        gh)        echo "$HOME/.config/gh:/home/loki/.config/gh:ro" ;;
+        git)       echo "$HOME/.gitconfig:/home/loki/.gitconfig:ro" ;;
+        ssh)       echo "$HOME/.ssh/known_hosts:/home/loki/.ssh/known_hosts:ro" ;;
+        aws)       echo "$HOME/.aws:/home/loki/.aws:ro" ;;
+        azure)     echo "$HOME/.azure:/home/loki/.azure:ro" ;;
+        kube)      echo "$HOME/.kube:/home/loki/.kube:ro" ;;
+        terraform) echo "$HOME/.terraform.d:/home/loki/.terraform.d:ro" ;;
+        gcloud)    echo "$HOME/.config/gcloud:/home/loki/.config/gcloud:ro" ;;
+        npm)       echo "$HOME/.npmrc:/home/loki/.npmrc:ro" ;;
+        *)         echo "" ;;
+    esac
+}
+
+# Environment variables auto-passed per preset (comma-separated)
+_get_env_preset() {
+    case "$1" in
+        aws)       echo "AWS_REGION,AWS_PROFILE,AWS_DEFAULT_REGION" ;;
+        azure)     echo "AZURE_SUBSCRIPTION_ID,AZURE_TENANT_ID" ;;
+        gcloud)    echo "GOOGLE_PROJECT,GOOGLE_REGION,GCLOUD_PROJECT" ;;
+        terraform) echo "TF_VAR_*" ;;
+        *)         echo "" ;;
+    esac
+}
 
 #===============================================================================
 # Utility Functions
@@ -80,6 +113,88 @@ log_warn() {
 
 log_error() {
     echo -e "${RED}[SANDBOX]${NC} $1" >&2
+}
+
+#===============================================================================
+# A5: ALLOWED_PATHS + BLOCKED_COMMANDS enforcement (sandbox-local)
+#
+# sandbox.sh runs as its own process (set -euo pipefail) and does NOT source
+# run.sh, so the run.sh helpers are out of scope. These are self-contained
+# mirrors that read the same env vars (LOKI_ALLOWED_PATHS / LOKI_BLOCKED_COMMANDS)
+# so the sandbox -- the real security boundary -- enforces them at the point
+# where run.sh/sandbox.sh actually controls the surface: which host paths get
+# bind-mounted, and the operator-supplied `loki sandbox run <cmd>` argv.
+#
+# HONEST SCOPE: this does NOT restrict provider-driven agent writes inside the
+# container (those are contained by cap-drop/seccomp/read-only mounts, not a
+# path allowlist). It is defense-in-depth on the surfaces run.sh owns.
+#===============================================================================
+
+# Return 0 if target is within LOKI_ALLOWED_PATHS (or the allowlist is unset/
+# empty -> no restriction). realpath -m collapses ../ traversal before the
+# prefix check, so allowed/../../etc cannot slip past.
+_sandbox_path_within_allowed() {
+    local target="$1"
+    local allow="${LOKI_ALLOWED_PATHS:-}"
+    [ -z "$allow" ] && return 0
+    [ -z "$target" ] && return 1
+
+    local norm_target
+    norm_target="$(realpath -m -- "$target" 2>/dev/null || true)"
+    if [ -z "$norm_target" ]; then
+        norm_target="$(LOKI_AP_T="$target" python3 -c 'import os; print(os.path.realpath(os.environ["LOKI_AP_T"]))' 2>/dev/null || true)"
+    fi
+    [ -z "$norm_target" ] && return 1
+
+    local entry norm_entry
+    IFS=',' read -ra _AP_ARRAY <<< "$allow"
+    for entry in "${_AP_ARRAY[@]}"; do
+        entry="${entry#"${entry%%[![:space:]]*}"}"
+        entry="${entry%"${entry##*[![:space:]]}"}"
+        [ -z "$entry" ] && continue
+        # Tilde-expand allowlist entries so "~/proj" matches a resolved $HOME path.
+        # SC2088 disabled intentionally: we are pattern-MATCHING a literal "~/" at
+        # the start of a config-supplied string (no expansion wanted here), then
+        # expanding it ourselves via $HOME. The directive sits in front of the whole
+        # if-block (it cannot precede an elif branch -- SC1123).
+        # shellcheck disable=SC2088
+        if [[ "$entry" == "~/"* ]]; then
+            entry="$HOME/${entry#\~/}"
+        elif [[ "$entry" == "~" ]]; then
+            entry="$HOME"
+        fi
+        norm_entry="$(realpath -m -- "$entry" 2>/dev/null || true)"
+        if [ -z "$norm_entry" ]; then
+            norm_entry="$(LOKI_AP_E="$entry" python3 -c 'import os; print(os.path.realpath(os.environ["LOKI_AP_E"]))' 2>/dev/null || true)"
+        fi
+        [ -z "$norm_entry" ] && continue
+        if [ "$norm_target" = "$norm_entry" ] || [ "${norm_target#"${norm_entry}/"}" != "$norm_target" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Return 1 (block) if the command string contains a blocked pattern. Mirrors
+# run.sh check_command_allowed; default list matches run.sh's BLOCKED_COMMANDS.
+_sandbox_command_allowed() {
+    local command="$1"
+    # NOTE: the default list is assigned to a separate var first. It cannot be an
+    # inline ${VAR:-default} default because the default value contains a literal
+    # "}" (the fork-bomb ":(){ :|:& };:"), which would prematurely terminate the
+    # ${...} parameter expansion and corrupt the list.
+    local _default_blocked='rm -rf /,dd if=,mkfs,:(){ :|:& };:'
+    local blocked_list="${LOKI_BLOCKED_COMMANDS:-$_default_blocked}"
+    local blocked
+    IFS=',' read -ra _BC_ARRAY <<< "$blocked_list"
+    for blocked in "${_BC_ARRAY[@]}"; do
+        [ -z "$blocked" ] && continue
+        if [[ "$command" == *"$blocked"* ]]; then
+            log_error "SECURITY: blocked dangerous command (matched '$blocked'): $command"
+            return 1
+        fi
+    done
+    return 0
 }
 
 # Check if a port is available
@@ -129,6 +244,14 @@ warn_missing_api_keys() {
         gemini)
             if [[ -z "${GOOGLE_API_KEY:-}" ]]; then
                 log_warn "GOOGLE_API_KEY not set - Gemini commands will fail inside container"
+            fi
+            ;;
+        cline)
+            log_info "Cline manages its own API keys via 'cline auth' - ensure authentication is configured"
+            ;;
+        aider)
+            if [[ -z "${OPENAI_API_KEY:-}" ]] && [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+                log_warn "No API key set for Aider - set OPENAI_API_KEY or ANTHROPIC_API_KEY"
             fi
             ;;
     esac
@@ -250,7 +373,8 @@ create_worktree_sandbox() {
     local prd_path="${1:-}"
     local provider="${LOKI_PROVIDER:-claude}"
 
-    local timestamp=$(date +%Y%m%d-%H%M%S)
+    local timestamp
+    timestamp=$(date +%Y%m%d-%H%M%S)
     local sandbox_name="${WORKTREE_PREFIX}-${timestamp}"
     local sandbox_branch="${WORKTREE_PREFIX}-${timestamp}"
     local sandbox_path="${WORKTREE_BASE}/${sandbox_name}"
@@ -274,7 +398,8 @@ create_worktree_sandbox() {
 
     # Check for existing sandbox
     if [[ -f "$WORKTREE_STATE_FILE" ]]; then
-        local existing_path=$(jq -r '.sandbox_path // empty' "$WORKTREE_STATE_FILE" 2>/dev/null)
+        local existing_path
+        existing_path=$(jq -r '.sandbox_path // empty' "$WORKTREE_STATE_FILE" 2>/dev/null)
         if [[ -n "$existing_path" ]] && [[ -d "$existing_path" ]]; then
             log_warn "Existing sandbox found: $existing_path"
             log_info "Use 'loki sandbox stop' to stop it first."
@@ -313,19 +438,24 @@ CREATED_AT=$(date -Iseconds)
 PARENT_DIR=$PROJECT_DIR
 EOF
 
-    # Save state
+    # Save state using python3 for safe JSON encoding (avoids shell injection
+    # from paths containing quotes, backslashes, or other special characters)
     mkdir -p "$(dirname "$WORKTREE_STATE_FILE")"
-    cat > "$WORKTREE_STATE_FILE" << EOF
-{
-    "sandbox_path": "$sandbox_path",
-    "sandbox_branch": "$sandbox_branch",
-    "created_at": "$(date -Iseconds)",
-    "provider": "$provider",
-    "prd_path": "$prd_path",
-    "status": "created",
-    "isolation_type": "worktree"
+    python3 -c "
+import json, sys, datetime
+data = {
+    'sandbox_path': sys.argv[1],
+    'sandbox_branch': sys.argv[2],
+    'created_at': datetime.datetime.now().astimezone().isoformat(),
+    'provider': sys.argv[3],
+    'prd_path': sys.argv[4],
+    'status': 'created',
+    'isolation_type': 'worktree'
 }
-EOF
+with open(sys.argv[5], 'w') as f:
+    json.dump(data, f, indent=4)
+    f.write('\n')
+" "$sandbox_path" "$sandbox_branch" "$provider" "$prd_path" "$WORKTREE_STATE_FILE"
 
     log_success "Worktree sandbox created: $sandbox_path"
     return 0
@@ -341,7 +471,8 @@ start_worktree_sandbox() {
         create_worktree_sandbox "$prd_path" || return 1
     fi
 
-    local sandbox_path=$(jq -r '.sandbox_path' "$WORKTREE_STATE_FILE")
+    local sandbox_path
+    sandbox_path=$(jq -r '.sandbox_path' "$WORKTREE_STATE_FILE")
 
     if [[ ! -d "$sandbox_path" ]]; then
         log_error "Sandbox path does not exist: $sandbox_path"
@@ -388,8 +519,10 @@ stop_worktree_sandbox() {
         return 0
     fi
 
-    local sandbox_path=$(jq -r '.sandbox_path' "$WORKTREE_STATE_FILE")
-    local sandbox_branch=$(jq -r '.sandbox_branch' "$WORKTREE_STATE_FILE")
+    local sandbox_path
+    sandbox_path=$(jq -r '.sandbox_path' "$WORKTREE_STATE_FILE")
+    local sandbox_branch
+    sandbox_branch=$(jq -r '.sandbox_branch' "$WORKTREE_STATE_FILE")
 
     log_info "Stopping worktree sandbox..."
 
@@ -427,9 +560,12 @@ worktree_sandbox_status() {
         return 0
     fi
 
-    local sandbox_path=$(jq -r '.sandbox_path' "$WORKTREE_STATE_FILE")
-    local sandbox_branch=$(jq -r '.sandbox_branch' "$WORKTREE_STATE_FILE")
-    local created_at=$(jq -r '.created_at' "$WORKTREE_STATE_FILE")
+    local sandbox_path
+    sandbox_path=$(jq -r '.sandbox_path' "$WORKTREE_STATE_FILE")
+    local sandbox_branch
+    sandbox_branch=$(jq -r '.sandbox_branch' "$WORKTREE_STATE_FILE")
+    local created_at
+    created_at=$(jq -r '.created_at' "$WORKTREE_STATE_FILE")
 
     echo ""
     echo -e "${BOLD}Worktree Sandbox Status${NC}"
@@ -440,7 +576,8 @@ worktree_sandbox_status() {
     echo -e "  Created: $created_at"
 
     if [[ -d "$sandbox_path" ]]; then
-        local disk_usage=$(du -sh "$sandbox_path" 2>/dev/null | cut -f1)
+        local disk_usage
+        disk_usage=$(du -sh "$sandbox_path" 2>/dev/null | cut -f1)
         echo -e "  Disk:    $disk_usage"
 
         if [[ -f "$sandbox_path/.loki/STOP" ]]; then
@@ -482,7 +619,8 @@ worktree_sandbox_prompt() {
         return 1
     fi
 
-    local sandbox_path=$(jq -r '.sandbox_path' "$WORKTREE_STATE_FILE")
+    local sandbox_path
+    sandbox_path=$(jq -r '.sandbox_path' "$WORKTREE_STATE_FILE")
 
     if [[ ! -d "$sandbox_path" ]]; then
         log_error "Sandbox path does not exist"
@@ -503,7 +641,7 @@ cleanup_worktrees() {
     while IFS= read -r line; do
         if [[ "$line" == *"$WORKTREE_PREFIX"* ]]; then
             log_info "  Found: $line"
-            ((found++))
+            found=$((found+1))
         fi
     done < <(git worktree list 2>/dev/null)
 
@@ -516,7 +654,8 @@ cleanup_worktrees() {
     git worktree prune 2>/dev/null || true
 
     # Clean up orphaned branches
-    local branches=$(git branch --list "${WORKTREE_PREFIX}*" 2>/dev/null)
+    local branches
+    branches=$(git branch --list "${WORKTREE_PREFIX}*" 2>/dev/null)
     while IFS= read -r branch; do
         branch=$(echo "$branch" | tr -d '* ')
         if [[ -n "$branch" ]]; then
@@ -532,9 +671,47 @@ cleanup_worktrees() {
 #===============================================================================
 # Docker Desktop Sandbox (microVM-based isolation via Docker Desktop 4.58+)
 #===============================================================================
+#
+# v8.1 DEPRECATION SPLIT (binary-hosting is legacy; isolation is NOT):
+# This path creates a microVM from Docker Desktop's "claude" sandbox TEMPLATE,
+# which bakes the `claude` CLI binary into the VM so the agent can run inside it.
+# With v8's SDK route, the judge/text sites (and, under LOKI_SDK_MODE, the whole
+# engine) run pure-HTTPS with only ANTHROPIC_API_KEY -- NO in-VM `claude` binary
+# is needed. So the *binary-hosting* purpose of this template is obsolete.
+#
+# What is NOT obsolete, and matters MORE with an in-process SDK: isolating
+# untrusted CODE EXECUTION (npm install / build / test / the generated app).
+# In-process SDK judging runs at HOST privilege, so wrapping the code-exec in a
+# container/VM is still the right posture. The forward path is the existing
+# `start_sandbox` container/worktree isolation (the automatic fallback at the
+# `docker sandbox create` failure below); a future release ships a lightweight
+# `bun + SDK` sandbox image with no bundled agent binary.
+#
+# This release: annotation + a one-shot deprecation notice on selection only. No
+# behavior change, no removal. See tests/test-sandbox-deprecation.sh.
 
 # Desktop sandbox name follows same pattern as container name
 DESKTOP_SANDBOX_NAME="$CONTAINER_NAME"
+
+# Emit a one-shot deprecation notice for the microVM binary-hosting path. Names
+# the binary-hosting only and states explicitly that ISOLATION is retained (so it
+# is never misread as "the sandbox is going away"). Best-effort + non-blocking:
+# telemetry must never abort a sandbox start. Mirrors the cli_command_deprecated
+# pattern (event type/source/action + a human log line). Opt out with
+# LOKI_SANDBOX_DEPRECATION_QUIET=1.
+_desktop_deprecation_notice() {
+    [ "${LOKI_SANDBOX_DEPRECATION_QUIET:-0}" = "1" ] && return 0
+    log_warn "DEPRECATED: the Docker Desktop microVM 'claude' template hosts the"
+    log_warn "  claude BINARY in-VM, which the v8 SDK route no longer needs."
+    log_warn "  Code-execution ISOLATION is RETAINED via the container/worktree"
+    log_warn "  sandbox (unchanged); only the binary-hosting template is legacy."
+    # Best-effort telemetry (never abort the start on a telemetry miss).
+    if [ -f "$SKILL_DIR/events/emit.sh" ]; then
+        bash "$SKILL_DIR/events/emit.sh" sandbox cli sandbox_microvm_binary_deprecated \
+            isolation_retained=true path=docker-desktop >/dev/null 2>&1 || true
+    fi
+    return 0
+}
 
 # Install provider CLI inside sandbox if not pre-installed
 _desktop_install_provider_cli() {
@@ -552,23 +729,76 @@ _desktop_install_provider_cli() {
                 docker sandbox exec "$sandbox_name" npm install -g @google/gemini-cli 2>&1 | tail -1
             fi
             ;;
+        cline)
+            if ! docker sandbox exec "$sandbox_name" which cline &>/dev/null 2>&1; then
+                log_info "Installing Cline CLI in sandbox (one-time)..."
+                docker sandbox exec "$sandbox_name" npm install -g cline 2>&1 | tail -1
+            fi
+            ;;
+        aider)
+            if ! docker sandbox exec "$sandbox_name" which aider &>/dev/null 2>&1; then
+                log_info "Installing Aider in sandbox (one-time)..."
+                docker sandbox exec "$sandbox_name" pip install aider-chat 2>&1 | tail -1
+            fi
+            ;;
         # claude is pre-installed in the sandbox template
     esac
 }
 
 # Build environment variable args for docker sandbox exec
+# Uses printf %q to escape values and prevent shell expansion corruption
+# (API keys can contain $, !, and other special characters)
 _desktop_build_env_args() {
     DESKTOP_ENV_ARGS=()
-    [[ -n "${ANTHROPIC_API_KEY:-}" ]] && DESKTOP_ENV_ARGS+=("-e" "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY")
-    [[ -n "${OPENAI_API_KEY:-}" ]] && DESKTOP_ENV_ARGS+=("-e" "OPENAI_API_KEY=$OPENAI_API_KEY")
-    [[ -n "${GOOGLE_API_KEY:-}" ]] && DESKTOP_ENV_ARGS+=("-e" "GOOGLE_API_KEY=$GOOGLE_API_KEY")
-    [[ -n "${GITHUB_TOKEN:-}" ]] && DESKTOP_ENV_ARGS+=("-e" "GITHUB_TOKEN=$GITHUB_TOKEN")
-    [[ -n "${GH_TOKEN:-}" ]] && DESKTOP_ENV_ARGS+=("-e" "GH_TOKEN=$GH_TOKEN")
-    # Forward all LOKI_* env vars
+    local _escaped
+    if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+        printf -v _escaped '%s' "$ANTHROPIC_API_KEY"
+        DESKTOP_ENV_ARGS+=("-e" "ANTHROPIC_API_KEY=$_escaped")
+    fi
+    if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+        printf -v _escaped '%s' "$OPENAI_API_KEY"
+        DESKTOP_ENV_ARGS+=("-e" "OPENAI_API_KEY=$_escaped")
+    fi
+    if [[ -n "${GOOGLE_API_KEY:-}" ]]; then
+        printf -v _escaped '%s' "$GOOGLE_API_KEY"
+        DESKTOP_ENV_ARGS+=("-e" "GOOGLE_API_KEY=$_escaped")
+    fi
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        printf -v _escaped '%s' "$GITHUB_TOKEN"
+        DESKTOP_ENV_ARGS+=("-e" "GITHUB_TOKEN=$_escaped")
+    fi
+    if [[ -n "${GH_TOKEN:-}" ]]; then
+        printf -v _escaped '%s' "$GH_TOKEN"
+        DESKTOP_ENV_ARGS+=("-e" "GH_TOKEN=$_escaped")
+    fi
+    # Forward all LOKI_* env vars via --env-file to avoid shell expansion issues.
+    # Security: LOKI_* values may include secrets, so the env-file is created with
+    # mktemp (unpredictable name, no symlink race) and restricted to mode 600 before
+    # anything is written into it. The desktop path consumes this file via a
+    # foreground/blocking "docker sandbox exec" (see start_docker_desktop_sandbox),
+    # so the file is no longer needed once the script exits -- an EXIT trap is the
+    # correct cleanup point here. The trap value is baked in (double quotes) so the
+    # local path is captured now rather than re-evaluated at exit when it is out of
+    # scope. We append our removal so we do not clobber any existing INT/TERM trap.
+    local _env_file
+    _env_file="$(mktemp "${TMPDIR:-/tmp}/loki-sandbox-env.XXXXXX")"
+    chmod 600 "$_env_file"
+    local _has_loki_vars=false
     local var
     while IFS= read -r var; do
-        [[ -n "$var" ]] && DESKTOP_ENV_ARGS+=("-e" "$var=${!var}")
+        if [[ -n "$var" ]]; then
+            printf '%s=%s\n' "$var" "${!var}" >> "$_env_file"
+            _has_loki_vars=true
+        fi
     done < <(compgen -v LOKI_ 2>/dev/null || true)
+    if [[ "$_has_loki_vars" == "true" ]] && [[ -f "$_env_file" ]]; then
+        DESKTOP_ENV_ARGS+=("--env-file" "$_env_file")
+        # shellcheck disable=SC2064
+        trap "rm -f -- '$_env_file'" EXIT
+    else
+        # No LOKI_ vars were forwarded; the file is unused, remove it immediately.
+        rm -f -- "$_env_file"
+    fi
 }
 
 start_docker_desktop_sandbox() {
@@ -577,6 +807,10 @@ start_docker_desktop_sandbox() {
 
     validate_project_dir || return 1
     warn_missing_api_keys "$provider"
+
+    # v8.1: one-shot deprecation notice for the microVM binary-hosting path
+    # (isolation is retained; only the bundled-binary template is legacy).
+    _desktop_deprecation_notice
 
     # Check if sandbox already exists
     local sandbox_exists=false
@@ -605,8 +839,9 @@ start_docker_desktop_sandbox() {
     # Build environment variable args
     _desktop_build_env_args
 
-    # Build loki command
-    local loki_cmd="bash ${PROJECT_DIR}/autonomy/run.sh"
+    # Build loki command - use SKILL_DIR (the loki-mode install directory) rather than
+    # PROJECT_DIR, which is the user's project and may not contain autonomy/run.sh
+    local loki_cmd="bash ${SKILL_DIR}/autonomy/run.sh"
     if [[ -n "$prd_path" ]]; then
         local abs_prd
         abs_prd=$(cd "$(dirname "$prd_path")" && pwd)/$(basename "$prd_path")
@@ -642,6 +877,7 @@ start_docker_desktop_sandbox() {
         bash -c "$loki_cmd"
 }
 
+# shellcheck disable=SC2120
 stop_docker_desktop_sandbox() {
     local remove="${1:-false}"
 
@@ -727,7 +963,7 @@ docker_desktop_sandbox_prompt() {
     docker sandbox exec -w "$PROJECT_DIR" \
         ${DESKTOP_ENV_ARGS[@]+"${DESKTOP_ENV_ARGS[@]}"} \
         "$DESKTOP_SANDBOX_NAME" \
-        bash -c "echo '$message' > ${PROJECT_DIR}/.loki/HUMAN_INPUT.md"
+        bash -c "printf '%s\n' \"\$1\" > ${PROJECT_DIR}/.loki/HUMAN_INPUT.md" -- "$message"
 
     log_success "Prompt sent to sandbox"
 }
@@ -755,9 +991,137 @@ docker_desktop_sandbox_run() {
 # Docker Container Sandbox (standard Docker - fallback from Docker Desktop)
 #===============================================================================
 
+# Resolve Docker credential mount presets
+# Reads from: .loki/config/settings.json dockerMounts, LOKI_DOCKER_MOUNTS env var
+# Returns: string of -v and -e flags for docker run
+resolve_docker_mounts() {
+    RESOLVED_MOUNTS=()
+
+    # Read configured presets (JSON array of strings)
+    local presets_json=""
+    if [[ -f "${PROJECT_DIR}/.loki/config/settings.json" ]]; then
+        presets_json=$(python3 -c "
+import json, sys
+try:
+    with open(sys.argv[1] + '/.loki/config/settings.json') as f:
+        print(json.dumps(json.load(f).get('dockerMounts', [])))
+except: print('[]')
+" "${PROJECT_DIR}" 2>/dev/null || echo "[]")
+    fi
+
+    # Override with env var if set
+    if [[ -n "${LOKI_DOCKER_MOUNTS:-}" ]]; then
+        presets_json="$LOKI_DOCKER_MOUNTS"
+    fi
+
+    # Parse and resolve
+    if [[ "$presets_json" != "[]" ]] && [[ "$presets_json" != "" ]]; then
+        local preset_names
+        preset_names=$(python3 -c "
+import json, sys
+try:
+    data = json.loads(sys.argv[1])
+    if isinstance(data, list):
+        for item in data:
+            print(item)
+except: pass
+" "$presets_json" 2>/dev/null || echo "")
+
+        local name
+        while IFS= read -r name; do
+            [[ -z "$name" ]] && continue
+
+            local preset_value
+            preset_value="$(_get_mount_preset "$name")"
+            if [[ -z "$preset_value" ]]; then
+                log_warn "Unknown Docker mount preset: $name"
+                continue
+            fi
+
+            IFS=':' read -ra parts <<< "$preset_value"
+            local host_path="${parts[0]}"
+            local container_path="${parts[1]}"
+            local mode="${parts[2]:-ro}"
+
+            # Safe tilde expansion (no eval) - SC2088 disabled: tilde is intentionally
+            # treated as a literal string here for safe expansion without eval
+            # shellcheck disable=SC2088
+            if [[ "$host_path" == "~/"* ]]; then
+                host_path="$HOME/${host_path#\~/}"
+            elif [[ "$host_path" == "~" ]]; then
+                host_path="$HOME"
+            fi
+
+            # Only mount if host path exists
+            if [[ -e "$host_path" ]]; then
+                RESOLVED_MOUNTS+=("-v" "${host_path}:${container_path}:${mode}")
+                log_info "  Mount preset [$name]: $host_path -> $container_path ($mode)"
+            fi
+
+            # Add associated env vars
+            local env_list
+            env_list="$(_get_env_preset "$name")"
+            if [[ -n "$env_list" ]]; then
+                IFS=',' read -ra env_names <<< "$env_list"
+                local env_name
+                for env_name in "${env_names[@]}"; do
+                    if [[ "$env_name" == *"*" ]]; then
+                        # Wildcard: pass all matching env vars
+                        local prefix="${env_name%\*}"
+                        while IFS='=' read -r key val; do
+                            [[ "$key" == "$prefix"* ]] && [[ -n "$val" ]] && {
+                                RESOLVED_MOUNTS+=("-e" "$key")
+                                log_info "    Env wildcard [$name]: passing $key"
+                            }
+                        done < <(env)
+                    elif [[ -n "${!env_name:-}" ]]; then
+                        RESOLVED_MOUNTS+=("-e" "$env_name")
+                    fi
+                done
+            fi
+        done <<< "$preset_names"
+    fi
+}
+
 start_sandbox() {
-    local prd_path="${1:-}"
+    # Parse arguments: extract flags before positional args
+    local prd_path=""
     local provider="${LOKI_PROVIDER:-claude}"
+    local no_mounts=false
+    local -a custom_mounts=()
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --mount)
+                if [[ -n "${2:-}" ]]; then
+                    custom_mounts+=("$2")
+                    shift 2
+                else
+                    log_error "--mount requires HOST:CONTAINER:MODE argument"
+                    return 1
+                fi
+                ;;
+            --no-mounts)
+                no_mounts=true
+                shift
+                ;;
+            --provider)
+                if [[ -n "${2:-}" ]]; then
+                    provider="$2"
+                    shift 2
+                else
+                    shift
+                fi
+                ;;
+            *)
+                # First non-flag argument is the PRD path
+                if [[ -z "$prd_path" ]]; then
+                    prd_path="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
 
     # Set up signal handler to cleanup on Ctrl+C
     trap cleanup_container INT TERM
@@ -820,8 +1184,8 @@ start_sandbox() {
         "--security-opt=no-new-privileges:true"
         "--cap-drop=ALL"
         "--cap-add=CHOWN"
-        "--cap-add=SETUID"
-        "--cap-add=SETGID"
+        # SETUID/SETGID intentionally omitted: container runs as non-root (UID 1000)
+        # and should not be able to change UID/GID, which would undermine isolation
 
         # Network
         "--network=$SANDBOX_NETWORK"
@@ -834,13 +1198,65 @@ start_sandbox() {
         log_info "  Seccomp:  enabled"
     fi
 
+    # A5+: workspace-mount allowlist enforcement (opt-in via LOKI_ALLOWED_PATHS).
+    #
+    # The workspace bind-mount below is where provider-driven agent file writes
+    # actually land (the agent writes inside /workspace, which is $PROJECT_DIR on
+    # the host). Unlike the custom --mount surface, this mount was previously
+    # always made writable regardless of LOKI_ALLOWED_PATHS, so an allowlist that
+    # did not include the project dir was silently ignored for the main write
+    # surface.
+    #
+    # When LOKI_ALLOWED_PATHS is set and the workspace itself is OUTSIDE the
+    # allowlist, fail closed: refuse to start rather than bind-mount it writable.
+    # This is genuinely enforceable because docker mount mode (rw vs ro) and which
+    # host paths get bound are decided HERE, before the container exists -- the
+    # kernel enforces the resulting mount, not a wrapper check. We refuse rather
+    # than auto-downgrade to :ro because a read-only workspace cannot be written
+    # by the agent at all and would silently produce a no-op build; refusing makes
+    # the misconfiguration visible. (Allowlisted extra paths are still mounted via
+    # the custom --mount surface above, which also enforces the allowlist.)
+    #
+    # When LOKI_ALLOWED_PATHS is empty (default), _sandbox_path_within_allowed
+    # returns 0 unconditionally, so this is byte-identical to prior behavior.
+    if ! _sandbox_path_within_allowed "$PROJECT_DIR"; then
+        log_error "Workspace is outside LOKI_ALLOWED_PATHS, refusing to mount it writable: $PROJECT_DIR"
+        log_error "  Add the project directory to LOKI_ALLOWED_PATHS, or unset LOKI_ALLOWED_PATHS to disable path enforcement."
+        return 1
+    fi
+
     # Mount project directory
     if [[ "$SANDBOX_READONLY" == "true" ]]; then
         docker_args+=("--volume" "$PROJECT_DIR:/workspace:ro")
-        # Need a writable .loki directory
-        docker_args+=("--volume" "loki-sandbox-state:/workspace/.loki:rw")
+        # Need a writable .loki directory - copy existing state to a temp dir so we
+        # do not start with an empty volume (which would lose config/state).
+        # Security: created with mktemp -d (unpredictable name, no symlink/predictable
+        # race) and restricted to mode 700 since it holds a copy of the project's .loki
+        # state. Lifecycle: this directory is bind-mounted into a DETACHED container
+        # (see "--detach" in docker_args) that outlives this function, so an EXIT trap
+        # would delete it out from under the running container. Instead, its path is
+        # recorded on the container via a docker label and removed by stop_sandbox()
+        # right before the container is removed. The label survives across separate
+        # script invocations, which a $$-derived name would not.
+        local _loki_state_tmp
+        _loki_state_tmp="$(mktemp -d "${TMPDIR:-/tmp}/loki-sandbox-state.XXXXXX")"
+        chmod 700 "$_loki_state_tmp"
+        if [[ -d "$PROJECT_DIR/.loki" ]]; then
+            cp -a "$PROJECT_DIR/.loki/." "$_loki_state_tmp/" 2>/dev/null || true
+        fi
+        docker_args+=("--volume" "$_loki_state_tmp:/workspace/.loki:rw")
+        docker_args+=("--label" "loki.state_dir=$_loki_state_tmp")
     else
         docker_args+=("--volume" "$PROJECT_DIR:/workspace:rw")
+    fi
+
+    # Config self-protection: mount critical .loki/ paths as read-only
+    # Prevents agents from corrupting council state, config, or audit trail
+    if [[ -d "$PROJECT_DIR/.loki/council" ]]; then
+        docker_args+=("--volume" "$PROJECT_DIR/.loki/council:/workspace/.loki/council:ro")
+    fi
+    if [[ -f "$PROJECT_DIR/.loki/config.yaml" ]]; then
+        docker_args+=("--volume" "$PROJECT_DIR/.loki/config.yaml:/workspace/.loki/config.yaml:ro")
     fi
 
     # Mount git config (read-only) - mount to /home/loki since container runs as user loki
@@ -865,6 +1281,51 @@ start_sandbox() {
     if [[ -d "$HOME/.config/gh" ]]; then
         docker_args+=("--volume" "$HOME/.config/gh:/home/loki/.config/gh:ro")
     fi
+
+    # Apply Docker credential mount presets (additive on top of defaults above)
+    if [[ "$no_mounts" != "true" ]] && [[ "${LOKI_NO_DOCKER_MOUNTS:-}" != "true" ]]; then
+        resolve_docker_mounts
+        if [[ ${#RESOLVED_MOUNTS[@]} -gt 0 ]]; then
+            docker_args+=("${RESOLVED_MOUNTS[@]}")
+        fi
+    fi
+
+    # Apply custom --mount arguments
+    local custom_mount
+    for custom_mount in "${custom_mounts[@]+"${custom_mounts[@]}"}"; do
+        if [[ -n "$custom_mount" ]]; then
+            IFS=':' read -ra mount_parts <<< "$custom_mount"
+            local c_host="${mount_parts[0]:-}"
+            local c_container="${mount_parts[1]:-}"
+            local c_mode="${mount_parts[2]:-ro}"
+            if [[ -n "$c_host" ]] && [[ -n "$c_container" ]]; then
+                # Safe tilde expansion (no eval) - SC2088 disabled: intentional literal match
+                # shellcheck disable=SC2088
+                if [[ "$c_host" == "~/"* ]]; then
+                    c_host="$HOME/${c_host#\~/}"
+                elif [[ "$c_host" == "~" ]]; then
+                    c_host="$HOME"
+                fi
+                if [[ -e "$c_host" ]]; then
+                    # A5: when LOKI_ALLOWED_PATHS is set, reject a custom mount
+                    # whose host path is outside the allowlist. This is a write
+                    # surface run.sh/sandbox.sh genuinely controls (we decide what
+                    # to bind into the container), so the allowlist is enforced
+                    # here rather than only documented.
+                    if ! _sandbox_path_within_allowed "$c_host"; then
+                        log_error "Custom mount host path is outside LOKI_ALLOWED_PATHS, refusing to mount: $c_host"
+                        return 1
+                    fi
+                    docker_args+=("--volume" "${c_host}:${c_container}:${c_mode}")
+                    log_info "  Custom mount: $c_host -> $c_container ($c_mode)"
+                else
+                    log_warn "Custom mount source does not exist: $c_host"
+                fi
+            else
+                log_warn "Invalid mount format: $custom_mount (expected HOST:CONTAINER[:MODE])"
+            fi
+        fi
+    done
 
     # Pass API keys as environment variables (more secure than mounting files)
     if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
@@ -917,8 +1378,11 @@ start_sandbox() {
     local loki_cmd="loki start"
     if [[ -n "$prd_path" ]]; then
         # Convert to container path (handle paths with spaces)
+        # macOS realpath does not support --relative-to, so use Python fallback
         local relative_prd
-        relative_prd=$(realpath --relative-to="$PROJECT_DIR" "$prd_path" 2>/dev/null || basename "$prd_path")
+        relative_prd=$(realpath --relative-to="$PROJECT_DIR" "$prd_path" 2>/dev/null \
+            || python3 -c "import os.path; print(os.path.relpath('$prd_path', '$PROJECT_DIR'))" 2>/dev/null \
+            || basename "$prd_path")
         local container_prd="/workspace/${relative_prd}"
         # Quote path to handle spaces
         loki_cmd="$loki_cmd \"$container_prd\""
@@ -958,6 +1422,11 @@ stop_sandbox() {
     if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
         log_info "Stopping sandbox: $CONTAINER_NAME"
 
+        # Read the read-only-mode temp state dir path recorded as a container label
+        # (see start_sandbox H5 handling). It is removed once the container is gone.
+        local _state_dir=""
+        _state_dir=$(docker inspect --format '{{ index .Config.Labels "loki.state_dir" }}' "$CONTAINER_NAME" 2>/dev/null || true)
+
         # Try graceful stop first (touch STOP file)
         docker exec "$CONTAINER_NAME" touch /workspace/.loki/STOP 2>/dev/null || true
 
@@ -966,16 +1435,25 @@ stop_sandbox() {
         while [ $waited -lt 10 ]; do
             if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
                 log_success "Sandbox stopped gracefully"
+                # Remove the temp state dir now that the container has stopped.
+                if [[ -n "$_state_dir" ]] && [[ -d "$_state_dir" ]]; then
+                    rm -rf -- "$_state_dir" 2>/dev/null || true
+                fi
                 return 0
             fi
             sleep 1
-            ((waited++))
+            waited=$((waited+1))
         done
 
         # Force stop if still running
         log_info "Force stopping container..."
         docker stop --time 5 "$CONTAINER_NAME" 2>/dev/null || true
         docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+
+        # Remove the temp state dir now that the container is gone.
+        if [[ -n "$_state_dir" ]] && [[ -d "$_state_dir" ]]; then
+            rm -rf -- "$_state_dir" 2>/dev/null || true
+        fi
 
         log_success "Sandbox stopped"
     else
@@ -1033,6 +1511,13 @@ sandbox_run() {
         return 1
     fi
 
+    # A5: defense-in-depth on the operator-supplied command. The container is the
+    # real boundary, but an obviously-destructive command is blocked here before
+    # it is dispatched into the sandbox (honors LOKI_BLOCKED_COMMANDS).
+    if ! _sandbox_command_allowed "$cmd"; then
+        return 1
+    fi
+
     check_docker
 
     if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
@@ -1041,7 +1526,19 @@ sandbox_run() {
     fi
 
     log_info "Running command in sandbox: $cmd"
-    docker exec -it "$CONTAINER_NAME" bash -c "cd /workspace && $cmd"
+    # Trust contract: $cmd is the operator's CLI argv (`loki sandbox run <cmd>`),
+    # and the operator is the same person who is running the sandbox container
+    # on their own machine. Shell metacharacters are intentionally allowed so
+    # the operator can run pipelines, redirects, etc. inside the sandbox -- but
+    # the sandbox is the security boundary, not this shell-out. We:
+    #   1. set the working dir via `docker exec -w` instead of `cd && $cmd`,
+    #      so the user command cannot break out of the cd via metacharacters
+    #      that confuse the wrapper (e.g. unmatched quotes affecting cd);
+    #   2. pass `--` to bash so the user string cannot be re-interpreted as a
+    #      bash flag if it begins with `-`;
+    #   3. pass the user string as a separate argv element to bash -lc so it
+    #      is treated as the script body, not concatenated into a wrapper.
+    docker exec -it -w /workspace "$CONTAINER_NAME" bash -lc -- "$cmd"
 }
 
 # Start a dev server inside the sandbox
@@ -1062,8 +1559,10 @@ sandbox_serve() {
 
     if docker exec "$CONTAINER_NAME" test -f /workspace/package.json; then
         # Check for common dev server scripts
-        local has_dev=$(docker exec "$CONTAINER_NAME" jq -r '.scripts.dev // empty' /workspace/package.json 2>/dev/null)
-        local has_start=$(docker exec "$CONTAINER_NAME" jq -r '.scripts.start // empty' /workspace/package.json 2>/dev/null)
+        local has_dev
+        has_dev=$(docker exec "$CONTAINER_NAME" jq -r '.scripts.dev // empty' /workspace/package.json 2>/dev/null)
+        local has_start
+        has_start=$(docker exec "$CONTAINER_NAME" jq -r '.scripts.start // empty' /workspace/package.json 2>/dev/null)
 
         if [[ -n "$has_dev" ]]; then
             serve_cmd="npm run dev"
@@ -1087,6 +1586,17 @@ sandbox_serve() {
 
     log_success "Starting dev server: $serve_cmd"
     log_info ""
+
+    # Warn if the dev server port was not published when the container started
+    local port_published
+    port_published=$(docker port "$CONTAINER_NAME" "$port" 2>/dev/null || true)
+    if [[ -z "$port_published" ]]; then
+        log_warn "Port $port is NOT published to the host."
+        log_warn "The dev server will run inside the container but will not be accessible from localhost."
+        log_warn "To fix, restart the sandbox with: LOKI_EXTRA_PORTS='$port:$port' loki sandbox start"
+        log_info ""
+    fi
+
     log_info "Access the app at:"
     log_info "  http://localhost:$port"
     log_info ""
@@ -1175,7 +1685,8 @@ sandbox_phase() {
     fi
 
     # Get current phase from orchestrator state
-    local phase=$(docker exec "$CONTAINER_NAME" bash -c \
+    local phase
+    phase=$(docker exec "$CONTAINER_NAME" bash -c \
         "python3 -c \"import json; print(json.load(open('/workspace/.loki/state/orchestrator.json')).get('currentPhase', 'UNKNOWN'))\" 2>/dev/null" \
         || echo "UNKNOWN")
 
@@ -1420,10 +1931,25 @@ main() {
     done
 
     # Detect sandbox mode for commands that need it
+    # For stop/status/etc, read persisted mode first so we stop the correct sandbox type
     local sandbox_mode=""
+    local _mode_file="${PROJECT_DIR}/.loki/sandbox/mode"
     case "$command" in
-        start|stop|status|prompt|shell|logs|run|serve|test|phase)
+        start)
             sandbox_mode=$(detect_sandbox_mode "$mode") || exit 1
+            # Persist the detected mode so stop/status use the same mode
+            mkdir -p "$(dirname "$_mode_file")"
+            echo "$sandbox_mode" > "$_mode_file"
+            ;;
+        stop|status|prompt|shell|logs|run|serve|test|phase)
+            # Read persisted mode if no explicit mode override was given
+            if [[ "$mode" == "auto" ]] && [[ -f "$_mode_file" ]]; then
+                sandbox_mode=$(cat "$_mode_file" 2>/dev/null || true)
+            fi
+            # Fall back to detection if no persisted mode
+            if [[ -z "$sandbox_mode" ]]; then
+                sandbox_mode=$(detect_sandbox_mode "$mode") || exit 1
+            fi
             ;;
     esac
 
