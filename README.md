@@ -15,7 +15,7 @@ _The free, source-available autonomous coding agent by [Autonomi](https://www.au
 
 [Website](https://www.autonomi.dev/) | [Documentation](wiki/Home.md) | [Installation](docs/INSTALLATION.md) | [Changelog](CHANGELOG.md) | [Purple Lab -- deprecated v7.44.0](#purple-lab)
 
-**Current release: v8.2.0**
+**Current release: v8.3.0**
 
 </div>
 
@@ -67,6 +67,12 @@ We have not audited the closed-source products (Cursor, Devin, Replit Agent)
 feature by feature, so treat this as "unclaimed as far as we can verify" rather
 than a proven first. The receipt stands on its own either way: run the tour and
 check the hash.
+
+**Evaluating this against something else?** [docs/EVALUATING.md](docs/EVALUATING.md)
+puts a runnable command next to every claim we make, and states plainly what we
+do not have (no enterprise case studies, no independent benchmark placement, and
+generation is not air-gapped). It ends with the one question worth asking any
+agent vendor, including us.
 
 ---
 
