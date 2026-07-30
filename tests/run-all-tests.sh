@@ -22,9 +22,53 @@ echo -e "${BLUE}║          LOKI MODE - COMPREHENSIVE TEST SUITE               
 echo -e "${BLUE}╚════════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
+# SHARDING (v8.3.x). Shell tests took 13m01s of a ~15m pipeline -- 6x the next
+# slowest job -- because all 289 suites ran serially on one runner. With
+# LOKI_TEST_SHARD=i/n each runner executes only the suites whose index satisfies
+# (index % n == i), so N runners cut the wall clock by roughly N.
+#
+# INDEX-BASED, NOT A CURATED LIST, and that is the load-bearing choice. A
+# hand-maintained "shard 1 runs these files" list is a place for a suite to go
+# missing: add a run_test line, forget the list, and it silently never runs
+# again. Here every run_test call takes the next index, so a new suite lands in
+# some shard automatically and the union of shards is provably the whole set.
+#
+# The precedent this repo already paid for: a shellcheck "optimization" that was
+# ~2x faster and SILENTLY LOST 2 real failures. It was reverted. Speed that
+# stops noticing failures is worse than slow. tests/test-shard-coverage.sh
+# asserts the shards partition the suite list exactly -- every suite in exactly
+# one shard, none dropped, none duplicated.
+_shard_index=0
+_shard_i=""
+_shard_n=""
+if [ -n "${LOKI_TEST_SHARD:-}" ]; then
+    _shard_i="${LOKI_TEST_SHARD%%/*}"
+    _shard_n="${LOKI_TEST_SHARD##*/}"
+    case "$_shard_i$_shard_n" in
+        ''|*[!0-9]*)
+            echo "run-all-tests: LOKI_TEST_SHARD must be i/n with integers (got '$LOKI_TEST_SHARD')" >&2
+            exit 2 ;;
+    esac
+    if [ "$_shard_n" -lt 1 ] || [ "$_shard_i" -ge "$_shard_n" ]; then
+        echo "run-all-tests: invalid shard '$LOKI_TEST_SHARD' (need 0 <= i < n, n >= 1)" >&2
+        exit 2
+    fi
+    echo -e "${BLUE}Shard ${_shard_i} of ${_shard_n} -- running every ${_shard_n}th suite${NC}"
+    echo ""
+fi
+
 run_test() {
     local test_name="$1"
     local test_file="$2"
+
+    # Take this suite's index BEFORE any skip, so indices are stable regardless
+    # of which shard is running. Two shards must agree on which index a suite
+    # has, or the partition breaks.
+    local _idx=$_shard_index
+    _shard_index=$((_shard_index + 1))
+    if [ -n "$_shard_n" ] && [ $((_idx % _shard_n)) -ne "$_shard_i" ]; then
+        return 0
+    fi
 
     echo -e "${YELLOW}┌────────────────────────────────────────────────────────────────┐${NC}"
     echo -e "${YELLOW}│ Running: ${test_name}${NC}"
