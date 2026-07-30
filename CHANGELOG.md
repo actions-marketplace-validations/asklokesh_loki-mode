@@ -5,6 +5,70 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v8.3.0
+
+Minor release. **The first minute, the shop window, and the enterprise promise.**
+
+### doctor names what blocks you instead of counting it
+
+On a bare machine `loki doctor` printed 15 WARNINGS -- sentrux, GPG receipt
+signing, bash >= 4, Bun, python3.12, truecolor, the inline-image probe, every
+one of them OPTIONAL -- surrounding exactly 2 real blockers, then ended with
+"Some required prerequisites are missing" without naming them. A first-time user
+cannot separate the 2 that matter from the 15 that do not, and the honest
+reading of that screen is "this needs a lot of setup". That is where someone
+closes the terminal.
+
+It now names each blocker with its exact fix command, states plainly that
+everything else is optional, and points at `loki tour`, which works with no
+provider, no key and no network -- so a blocked user still reaches a real result
+in their first minute.
+
+### An evaluation page a buyer can falsify
+
+Our competitive material was a ten-column feature grid written January 2026
+against v2.36.9, unchanged while the repo reached v8.2.0. Six months and thirty
+releases stale, and the unverifiable KIND of comparison: every cell a subjective
+grade assigned by the vendor being graded.
+
+`docs/EVALUATING.md` replaces it with five claims that each carry a runnable
+command, all executed before publishing. It also carries a "What we do not have"
+section -- no enterprise case studies, no independent benchmark placement, no
+audit of the closed-source products, and generation is not air-gapped. The old
+grid is now labelled STALE and points there.
+
+### The brownfield read-only promise is now enforced, not asserted
+
+The README sends someone with a ten-year-old revenue-critical codebase to
+`loki modernize heal --assess` on the promise it changes nothing. Verified
+behaviourally -- zero file content changed, HEAD did not move, working tree
+clean afterwards -- and locked by a content-addressed test that hashes every
+file before and after. One stray write turns the safest thing we offer into the
+scariest, and there is no second evaluation.
+
+### The MCP registry manifest was 30+ releases stale
+
+`server.json` was pinned at 7.34.1 while the repo shipped 8.2.0. Nothing caught
+it because nothing checked it; the cost would have landed at submission time,
+advertising a weeks-old build to exactly the audience deciding whether this
+project is maintained. Now current, added to the release checklist in CLAUDE.md,
+and enforced by a test that also pre-checks the two things which would reject a
+submission after the interactive OAuth: the 100-char description cap and the
+namespace-ownership marker.
+
+### Failures that explain themselves
+
+The supervisor test surfaced only `AssertionError: 127 != 0` -- an exit code
+with none of the cause -- which cost two full investigations that both ended
+without a root cause. It now prints the child log and the resolved child PATH,
+and doing so immediately produced the lead those investigations missed: the log
+is empty, so the child never started and the failure is on the spawn side.
+
+Also fixed three tests that encoded assumptions about their environment rather
+than about the behaviour under test: one wedged only the mkdir locking path (a
+Linux runner has flock), one built a git fixture that failed silently without a
+configured identity, and one assumed its host had no blockers.
+
 ## v8.2.0
 
 Minor release. **Run any model, and find the feature that was already here.**
