@@ -335,3 +335,16 @@ provider_invoke_with_tier() {
         "${extra_flags[@]+"${extra_flags[@]}"}" \
         "$prompt" "$@"
 }
+
+# provider_invoke_argv <tier> <prompt> -- see providers/claude.sh for the full
+# rationale. Prints argv into _LOKI_INVOKE_ARGV so a caller can wrap it in
+# `timeout`, which cannot wrap a shell function.
+provider_invoke_argv() {
+    local tier="${1:-development}"
+    local prompt="${2:-}"
+    local model
+    model="$(provider_get_tier_param "$tier" 2>/dev/null || printf '%s' "${CODEX_DEFAULT_MODEL:-}")"
+    _LOKI_INVOKE_ARGV=(codex exec --sandbox workspace-write)
+    [ -n "$model" ] && _LOKI_INVOKE_ARGV+=(--model "$model")
+    _LOKI_INVOKE_ARGV+=("$prompt")
+}

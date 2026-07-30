@@ -781,13 +781,19 @@ verify_gate_nomock() {
         return 0
     fi
     local status_line
+    # The changed-file list goes over STDIN, not an env var. A single env string
+    # is capped at MAX_ARG_STRLEN (131071 bytes) on Linux; a large changed set
+    # (e.g. a generated source tree) makes execve fail with E2BIG, the fallback
+    # below fires, and the gate silently degrades to inconclusive. macOS has no
+    # per-string cap, so that failure was Linux-only.
     status_line=$(
-        _NM_FILES="$changed" \
-        _NM_TREE="$tree" \
-        _NM_OUT="$scan_file" \
-        _NM_BASE="${VERIFY_MERGE_BASE:-}" \
-        python3 -I "$scanner" 2>/dev/null \
-            || echo "INCONCLUSIVE:detector_error"
+        printf '%s\n' "$changed" | {
+            _NM_TREE="$tree" \
+            _NM_OUT="$scan_file" \
+            _NM_BASE="${VERIFY_MERGE_BASE:-}" \
+            python3 -I "$scanner" 2>/dev/null \
+                || echo "INCONCLUSIVE:detector_error"
+        }
     )
 
     case "$status_line" in

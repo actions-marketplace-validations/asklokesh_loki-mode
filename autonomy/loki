@@ -10593,8 +10593,133 @@ EOF
 }
 
 # Check system prerequisites
+# _loki_airgap_audit <json?> -- enumerate every network egress this engine can
+# perform, classify each as REQUIRED or optional, and say how to disable it.
+#
+# WHY THIS EXISTS
+#   Air-gapped deployment is a real enterprise requirement and the incumbent
+#   (Tabnine) states it can "be deployed in a completely air-gapped environment"
+#   without publishing WHICH hosts it would otherwise contact. A claim you
+#   cannot audit is a claim you have to take on faith.
+#
+#   Sourcegraph is the honest counter-example: their own whitepaper states that
+#   self-hosted Cody still "sends requests from the Sourcegraph instance to
+#   Anthropic's API". Self-hosted control plane, egressing inference.
+#
+#   So the credible position is not "trust us, we are air-gapped" -- it is here
+#   is every host, here is which ones are required, here is how to turn each one
+#   off, now verify it yourself with tcpdump. We would rather be auditable than
+#   assertive.
+#
+# Exit 0 when no REQUIRED egress remains (air-gap achievable in this config),
+# 1 otherwise. Deterministic: reads configuration, performs NO network calls.
+_loki_airgap_audit() {
+    local as_json="${1:-false}"
+
+    # Provider inference endpoint: the one egress that is genuinely required,
+    # unless the active provider serves weights locally.
+    local provider="${LOKI_PROVIDER:-claude}"
+    local model_host="" model_required="yes" model_note=""
+    case "$provider" in
+        claude)
+            model_host="${ANTHROPIC_BASE_URL:-https://api.anthropic.com}"
+            model_note="Claude Code inference. Set ANTHROPIC_BASE_URL to an in-network gateway, or switch to a local-weights provider."
+            ;;
+        codex)
+            model_host="${OPENAI_BASE_URL:-https://api.openai.com}"
+            model_note="Codex inference. Point at an in-network gateway or switch provider."
+            ;;
+        opencode|cline|aider)
+            model_host="${OPENAI_BASE_URL:-${OPENROUTER_API_KEY:+https://openrouter.ai}}"
+            if [ -z "$model_host" ] || printf '%s' "${LOKI_OPENCODE_MODEL:-}${LOKI_AIDER_MODEL:-}" | grep -qiE 'ollama|localhost|127\.0\.0\.1|lmstudio'; then
+                model_host="local weights"
+                model_required="no"
+                model_note="Local model runtime (Ollama / LM Studio / llama.cpp). No inference egress."
+            else
+                model_note="Remote model gateway. Use an ollama/ model id for zero-egress inference."
+            fi
+            ;;
+        *)
+            model_host="unknown (provider '$provider')"
+            model_note="Unrecognized provider; audit its config manually."
+            ;;
+    esac
+
+    # Optional egress, each individually disableable.
+    local tel_state="off"
+    [ "${LOKI_TELEMETRY:-}" = "on" ] && tel_state="on"
+    local upd_state="on"
+    [ "${LOKI_NO_UPDATE_CHECK:-0}" = "1" ] && upd_state="off"
+
+    if [ "$as_json" = "true" ]; then
+        _AG_PROV="$provider" _AG_HOST="$model_host" _AG_REQ="$model_required" \
+        _AG_NOTE="$model_note" _AG_TEL="$tel_state" _AG_UPD="$upd_state" \
+        python3 -c '
+import json, os
+req = os.environ["_AG_REQ"] == "yes"
+egress = [{
+    "name": "model_inference",
+    "host": os.environ["_AG_HOST"],
+    "required": req,
+    "disable": "use a local-weights provider (ollama/, lmstudio/) or an in-network gateway",
+    "note": os.environ["_AG_NOTE"],
+}, {
+    "name": "telemetry",
+    "host": "telemetry endpoint",
+    "required": False,
+    "enabled": os.environ["_AG_TEL"] == "on",
+    "disable": "loki telemetry off (already the default)",
+}, {
+    "name": "update_check",
+    "host": "registry.npmjs.org",
+    "required": False,
+    "enabled": os.environ["_AG_UPD"] == "on",
+    "disable": "export LOKI_NO_UPDATE_CHECK=1",
+}]
+blockers = [e for e in egress if e.get("required")]
+print(json.dumps({
+    "provider": os.environ["_AG_PROV"],
+    "airgap_ready": not blockers,
+    "required_egress": [e["name"] for e in blockers],
+    "egress": egress,
+}, indent=2))
+'
+        [ "$model_required" = "yes" ] && return 1
+        return 0
+    fi
+
+    echo -e "${BOLD}Network egress audit${NC}"
+    echo ""
+    echo "  Active provider: $provider"
+    echo ""
+    echo -e "${BOLD}Egress points${NC}"
+    if [ "$model_required" = "yes" ]; then
+        echo -e "  ${YELLOW}REQUIRED${NC}  model inference -> $model_host"
+    else
+        echo -e "  ${GREEN}none${NC}      model inference -> $model_host"
+    fi
+    echo "            $model_note"
+    echo -e "  optional  telemetry           [$tel_state]  disable: loki telemetry off (default off)"
+    echo -e "  optional  update check        [$upd_state]  disable: export LOKI_NO_UPDATE_CHECK=1"
+    echo ""
+    if [ "$model_required" = "yes" ]; then
+        echo -e "${YELLOW}Not air-gap ready in this configuration.${NC}"
+        echo "  One required egress remains: model inference."
+        echo "  To close it, serve the model in-network:"
+        echo "    loki provider set opencode"
+        echo "    export LOKI_OPENCODE_MODEL=ollama/qwen2.5-coder"
+        echo ""
+        echo "  Then re-run: loki doctor --airgap"
+        return 1
+    fi
+    echo -e "${GREEN}Air-gap ready: no required egress in this configuration.${NC}"
+    echo "  Verify independently -- run with the interface down, or watch with tcpdump."
+    return 0
+}
+
 cmd_doctor() {
     local json_output=false
+    local airgap_audit=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -10602,13 +10727,21 @@ cmd_doctor() {
                 json_output=true
                 shift
                 ;;
+            --airgap)
+                airgap_audit=true
+                shift
+                ;;
             --help|-h)
                 echo -e "${BOLD}loki doctor${NC} - Check system prerequisites"
                 echo ""
-                echo "Usage: loki doctor [--json]"
+                echo "Usage: loki doctor [--json] [--airgap]"
                 echo ""
                 echo "Options:"
                 echo "  --json    Output machine-readable JSON"
+                echo "  --airgap  Audit network egress: list every host this engine"
+                echo "            can contact, whether it is REQUIRED or optional,"
+                echo "            and how to disable it. Exits non-zero if any"
+                echo "            required egress remains."
                 echo ""
                 echo "Checks: node, python3, jq, git, curl, bash version,"
                 echo "        claude/codex CLIs, disk space, and cockpit render capability."
@@ -10616,11 +10749,16 @@ cmd_doctor() {
                 ;;
             *)
                 echo -e "${RED}Unknown option: $1${NC}"
-                echo "Usage: loki doctor [--json]"
+                echo "Usage: loki doctor [--json] [--airgap]"
                 return 1
                 ;;
         esac
     done
+
+    if [ "$airgap_audit" = true ]; then
+        _loki_airgap_audit "$json_output"
+        return $?
+    fi
 
     if [ "$json_output" = true ]; then
         cmd_doctor_json
@@ -11007,6 +11145,24 @@ except Exception:
         echo -e "  ${YELLOW}WARN${NC}  sentrux - not installed (optional, brew install sentrux/tap/sentrux)"
         warn_count=$((warn_count + 1))
     fi
+    # Evidence Receipt signing state (optional). Unsigned receipts are the
+    # default and are still checkable (hash + diff re-derivation); what they
+    # cannot prove is PROVENANCE, so proof-verify.py reports
+    # generator_trusted: true. Surface the state here because it is otherwise
+    # invisible until someone reads a receipt. WARN (never FAIL): unsigned is
+    # a supported, documented mode, not a broken install.
+    if [ -n "${LOKI_PROOF_GPG_KEY:-}" ]; then
+        if command -v gpg &>/dev/null; then
+            echo -e "  ${GREEN}PASS${NC}  Receipt signing: LOKI_PROOF_GPG_KEY set and gpg available"
+            pass_count=$((pass_count + 1))
+        else
+            echo -e "  ${YELLOW}WARN${NC}  Receipt signing: LOKI_PROOF_GPG_KEY set but gpg NOT on PATH - receipts will be UNSIGNED"
+            warn_count=$((warn_count + 1))
+        fi
+    else
+        echo -e "  ${YELLOW}WARN${NC}  Receipt signing: UNSIGNED (set LOKI_PROOF_GPG_KEY to a gpg key id; see docs/SIGNED-RECEIPTS.md)"
+        warn_count=$((warn_count + 1))
+    fi
     echo ""
 
     echo -e "${CYAN}System:${NC}"
@@ -11242,6 +11398,23 @@ sentrux = {
     'required': 'optional'
 }
 
+# Evidence Receipt signing state. Unsigned is the DEFAULT and is a supported
+# mode, so this is never 'fail'. Exposed because signing state is otherwise
+# invisible until someone reads a receipt, and it is exactly what decides
+# whether proof-verify.py reports generator_trusted: true. Sibling of
+# checks/disk/sentrux -- deliberately NOT counted in the summary tally so
+# existing consumers see unchanged numbers.
+signing_key_set = bool(os.environ.get('LOKI_PROOF_GPG_KEY', '').strip())
+signing_gpg_available = shutil.which('gpg') is not None
+signing_enabled = signing_key_set and signing_gpg_available
+receipt_signing = {
+    'enabled': signing_enabled,
+    'key_configured': signing_key_set,
+    'gpg_available': signing_gpg_available,
+    'status': 'pass' if signing_enabled else 'warn',
+    'required': 'optional'
+}
+
 # v7.7.17: memory subsystem health surface. Reports the latest entries
 # from .loki/memory/.errors.log (rotated by memory/error_log.py) so
 # developers see regressions in the previously-silent-fail call sites
@@ -11295,6 +11468,7 @@ result = {
         'status': disk_status
     },
     'sentrux': sentrux,
+    'receipt_signing': receipt_signing,
     'memory': memory,
     'summary': {
         'passed': pass_count,
@@ -14885,6 +15059,33 @@ with open(manifest_path, 'w') as f:
 # usable.
 # ---------------------------------------------------------------------------
 cmd_verify() {
+    # --fast: deterministic checks only, in milliseconds. Measured on this repo
+    # (1,932 tracked files): 298 ms cold, 87 ms warm, 19 ms diff-scoped, against
+    # an 11,040 ms shell-based baseline.
+    #
+    # It runs ONLY exogenous checks -- no model call, no network -- so every
+    # verdict is reproducible by anyone with the same commit. That is the point,
+    # not a limitation: a verdict you can re-derive is a fact, and a fact is what
+    # an IDE, a CI step, or another vendor's agent can safely act on without
+    # trusting our model choices.
+    #
+    # The full `loki verify` remains the deeper, slower path.
+    for _fv_arg in "$@"; do
+        if [ "$_fv_arg" = "--fast" ]; then
+            local _fv_py="$_LOKI_SCRIPT_DIR/lib/fast_verify.py"
+            if [ ! -f "$_fv_py" ]; then
+                echo -e "${RED}Error: fast_verify not found at $_fv_py${NC}" >&2
+                return 3
+            fi
+            local _fv_argv=()
+            for _a in "$@"; do
+                [ "$_a" = "--fast" ] || _fv_argv+=("$_a")
+            done
+            python3 "$_fv_py" "${_fv_argv[@]+"${_fv_argv[@]}"}"
+            return $?
+        fi
+    done
+
     local verify_mod="$_LOKI_SCRIPT_DIR/verify.sh"
     if [ ! -f "$verify_mod" ]; then
         echo -e "${RED}Error: verify module not found at $verify_mod${NC}" >&2
@@ -32314,6 +32515,12 @@ cmd_proof() {
             echo "  --hosted             Publish to LOKI_HOSTED_ENDPOINT (open-core seam; no official backend yet)"
             echo ""
             echo "Proofs are generated automatically at run completion (LOKI_PROOF=0 to opt out)."
+            echo ""
+            echo "Signing (off by default): receipts are UNSIGNED unless LOKI_PROOF_GPG_KEY is"
+            echo "set to a gpg key id. Unsigned, the integrity hash proves the bytes were not"
+            echo "edited after hashing but NOT who produced them, so verify reports"
+            echo "generator_trusted: true. Export LOKI_PROOF_GPG_KEY to close that gap."
+            echo "See docs/SIGNED-RECEIPTS.md."
             [ "$sub" = "" ] && exit 1
             exit 0
             ;;

@@ -5,6 +5,184 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v8.2.0
+
+Minor release. **Run any model, and find the feature that was already here.**
+
+### Telemetry can no longer outlive the run that emitted it
+
+v8.1.0 fixed a specific unbounded wait in `events/emit.sh`. It was a real fix
+and it was not sufficient. Measured on a development machine on 2026-07-30,
+after that release shipped: **63 orphaned `emit.sh` processes alive, the oldest
+10 hours 51 minutes, each burning roughly 5% CPU**, contributing to a load
+average of 63 on a 14-core machine. Every one of them started after the fix
+landed, so whatever wedges `emit.sh` is not the path that was repaired.
+
+Patching each individual hang is an arms race, because a hang anywhere in the
+script has the same cost to the user: a hot laptop and a process that never
+ends. `emit.sh` is fire-and-forget telemetry -- nothing waits on its result, and
+a dropped event is strictly cheaper than a wedged process. So rather than
+proving no path can block, this release caps the lifetime of every path.
+
+A watchdog now SIGKILLs the emit process after `LOKI_EMIT_MAX_SECONDS`
+(default 10; set `0` to disable). It is deliberately blunt -- no cleanup hook,
+no graceful drain -- because the failure mode being defended against is exactly
+"the graceful paths did not run".
+
+Being straight about the limits of this fix: the root cause of those 63 orphans
+is still unknown. The watchdog bounds the damage to 10 seconds; it does not
+explain the hang. An earlier diagnosis blaming the lock-retry loop's attempt
+counter was tested and disproven -- a deterministic wedge terminates in 2s on
+the pre-fix code too, so that loop was already correctly bounded.
+
+`tests/test-emit-self-reaper.sh` asserts a genuinely blocked emit is reaped at
+its deadline (with a non-vacuity check that it actually blocked first), that a
+healthy emit is untouched and still writes its event, and that the watchdog
+leaves no stray processes of its own.
+
+### Verification in milliseconds
+
+Verification that takes minutes cannot be embedded in an IDE, a CI step, an MCP
+tool, or another vendor's agent. `autonomy/lib/fast_verify.py` makes the
+deterministic checks fast enough to be a dependency.
+
+Measured on this repo, 1,932 tracked source files:
+
+| scope | before | after |
+|---|---|---|
+| full repo, cold | 11,040 ms | **298 ms** |
+| full repo, warm | 11,040 ms | **87 ms** |
+| diff-scoped | 11,040 ms | **19 ms** |
+
+The work was never slow; the architecture was. One detector performed **four
+separate full-tree `find` walks** (110 ms each) and spawned ~25 subprocesses at
+~24 ms of interpreter startup apiece. `git ls-files` returns the same set in
+37 ms, already deduplicated and gitignore-aware.
+
+Five rules: walk once and classify in that pass; run detectors as pure functions
+in one process; cache findings by **content hash**, so a moved file keeps its
+result, a changed file gets a new key, and there is no staleness window;
+scope to the diff; and admit **no model call and no network** on this path.
+
+That last rule is the point, not a limitation. A verdict you can re-derive is a
+fact; a verdict a model produced is an opinion. A test greps for
+`anthropic|openai|requests|urllib|httpx|provider_invoke` and fails if any appear,
+so the constraint cannot erode.
+
+Three surfaces, same engine: `loki verify --fast`, the `loki_verify_fast` MCP
+tool (20 ms end-to-end), and the Python API.
+
+### The receipt separates evidence from opinion
+
+Only four of the eight quality gates are **exogenous** -- deterministic and
+impossible for the agent to author: static analysis, mock integrity, test
+mutation, documentation coverage. The other four are model-coupled: the agent
+writes both the test and the fix, and the council, devil's advocate, and magic
+debate are LLM judgments.
+
+Published research measured a strict three-judge ensemble still accepting 55% of
+errors, and our "blind" council is blind only to *itself* -- every reviewer reads
+the same candidate diff, which scores plausibility rather than correctness.
+
+The Evidence Receipt now reports the two groups separately, and the headline
+verdict is computed from the **exogenous four only**. Advisory results are shown
+but can never lift a verdict. Unknown or renamed gates default to exogenous, so a
+gate can never silently lose its power to block.
+
+`proof-verify.py` mirrors the same provenance rules. It is the independent
+re-derivation users are told to trust, and a generator it cannot reproduce would
+report drift on a receipt nobody tampered with -- a false alarm from our own
+trust artifact. A drift guard asserts both sides agree on every gate-name shape.
+
+### opencode: the model-agnostic route
+
+`providers/opencode.sh` makes opencode a first-class provider. It is a
+*registry*, not a fixed table: 75+ providers through the AI SDK and Models.dev,
+any OpenAI-compatible endpoint, plus local models via Ollama, LM Studio, and
+llama.cpp. Users can add providers that are not in its built-in list, which
+means we stop maintaining a per-vendor model list.
+
+```bash
+loki provider set opencode
+export OPENROUTER_API_KEY=sk-or-...
+loki start ./prd.md              # defaults to deepseek-v3.2, open weights
+```
+
+Why opencode and not aider: capability was never the question, maintenance was.
+Verified 2026-07-29 -- `anomalyco/opencode` at 190,871 stars with v1.18.9
+released 2026-07-28, against `Aider-AI/aider` whose last release was v0.86.0 on
+2025-08-09, with Roo Code archived and Continue read-only. Integrating a dormant
+project would have been a slow-motion outage.
+
+The CLI surface was verified against the installed binary rather than assumed:
+`opencode run [message..]` takes its prompt positionally, with `-m/--model`.
+
+**Loader fix found on the way in.** `loader.sh` required
+`PROVIDER_AUTONOMOUS_FLAG` to be non-empty, so a CLI that needs no autonomy flag
+was rejected as "incomplete". It now sits alongside `PROVIDER_PROMPT_FLAG` in
+the allow-empty set. The variable must still be *defined*, so an author who
+forgets it entirely is still caught, and there is a test asserting exactly that.
+
+### The judges work on any provider, and keep their timeout
+
+Eight auxiliary judge sites shell out to `claude -p` directly instead of going
+through the provider abstraction. The reason is written into the source:
+*"`timeout` needs a real command, not a shell function."* That is true, and it
+is why the obvious fix is wrong -- routing them through `provider_invoke` would
+mean dropping their timeout, reintroducing the hang class that left 59 orphaned
+processes alive for 21 hours in v8.1.0.
+
+New seam: `provider_invoke_argv <tier> <prompt>` populates `_LOKI_INVOKE_ARGV`
+with a real command line *without* executing it, so a caller can write
+
+```bash
+provider_invoke_argv development "$prompt"
+timeout 120 "${_LOKI_INVOKE_ARGV[@]}"
+```
+
+and get provider-agnostic dispatch **and** a preserved timeout. Measured against
+a stub CLI that sleeps 300s: the argv form returns 124 after 3 seconds, the
+shell-function form returns 127 immediately because `timeout` cannot exec a
+function. That asymmetry is asserted in the test suite.
+
+`_loki_done_recog_provider_ok` and `_loki_prd_enrich_provider_ok` now ask a
+**capability** question rather than an identity one. They required
+`LOKI_PROVIDER=claude`, so users on codex, opencode, cline, or aider silently
+lost done-recognition and PRD enrichment. Any provider exposing the seam now
+qualifies, with the legacy claude-binary check retained as a fallback.
+
+### Weak models can be judged without being punished for formatting
+
+A strict JSON carve is the most model-sensitive contract in the engine: schema
+adherence varies most across models, while every coding model can state a
+verdict in prose. When the carve yields nothing, the council now scans for a
+standalone verdict word and accepts it **only** if exactly one of
+APPROVE/REJECT appears. Output mentioning both, or neither, stays
+`INCONCLUSIVE`.
+
+Recovering a verdict the model genuinely stated is legitimate; inventing one is
+not. Recovered verdicts carry `"recovered": true` so they stay auditable, and
+the twelve pre-existing no-fabrication assertions still pass unchanged.
+
+### Brownfield is no longer hidden
+
+`loki modernize heal` has shipped since v6.67.0 and the README mentioned it
+once. Greenfield ("build me an app") is the crowded half of this market; the
+ten-year-old repo that pays the bills is the valuable half, and we were hiding
+our answer to it.
+
+The README now opens with the read-only path:
+
+```bash
+loki modernize heal ./your-repo --assess     # changes nothing
+```
+
+which reports language mix, a four-level maturity rating, technical-debt
+signals, and a ranked list of where to start, ordered by blast radius. Every
+claim in that section was verified by running it against a legacy fixture,
+including `--assess --json` and the `--compliance healthcare|fintech|government`
+presets.
+
 ## v8.1.0
 
 Minor release. **The telemetry layer could hang forever and burn the CPU.** For
