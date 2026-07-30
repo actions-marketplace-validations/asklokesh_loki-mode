@@ -10772,6 +10772,15 @@ cmd_doctor() {
 
     local pass_count=0
     local fail_count=0
+    # FUNNEL FIX (v8.2.x): collect the NAME + FIX of every hard failure, not just
+    # a count. A first-time user on a bare machine sees 15 warnings (sentrux, GPG
+    # signing, bash 4, Bun, python3.12, truecolor, inline-image probe -- all
+    # OPTIONAL) around 2 real blockers, then a summary that says only "Some
+    # required prerequisites are missing" without naming them. That is the point
+    # where someone closes the terminal. Naming the blockers and their exact
+    # install command turns a wall of yellow into a two-line to-do.
+    local _doctor_blockers=""
+    _doctor_block() { _doctor_blockers="${_doctor_blockers}\n  - $1"; }
     local warn_count=0
 
     # Helper: check command exists and optionally check version
@@ -10784,6 +10793,7 @@ cmd_doctor() {
         if ! command -v "$cmd" &> /dev/null; then
             if [ "$required" = "required" ]; then
                 echo -e "  ${RED}FAIL${NC}  $name - not found"
+                _doctor_block "$name is not installed"
                 fail_count=$((fail_count + 1))
             elif [ "$required" = "recommended" ]; then
                 echo -e "  ${YELLOW}WARN${NC}  $name - not found (recommended)"
@@ -10849,6 +10859,7 @@ cmd_doctor() {
                { [ "$cur_major" -eq "$min_major" ] 2>/dev/null && [ "$cur_minor" -lt "$min_minor" ] 2>/dev/null; }; then
                 if [ "$required" = "required" ]; then
                     echo -e "  ${RED}FAIL${NC}  $name$version_display - requires >= $min_version"
+                    _doctor_block "$name must be >= $min_version"
                     fail_count=$((fail_count + 1))
                 else
                     echo -e "  ${YELLOW}WARN${NC}  $name$version_display - recommended >= $min_version"
@@ -10920,6 +10931,7 @@ cmd_doctor() {
         else
             echo -e "  ${RED}FAIL${NC}  No AI provider CLI installed -- at least one is required"
             echo -e "         ${YELLOW}Install: npm install -g @anthropic-ai/claude-code${NC}"
+            _doctor_block "No AI provider CLI. Fix: npm install -g @anthropic-ai/claude-code"
             fail_count=$((fail_count + 1))
             # v7.29.0: on a TTY (non-json), append the consent-gated install offer.
             # In report mode the helper is a no-op on non-TTY/CI, so the doctor
@@ -11024,6 +11036,7 @@ except Exception:
             _target=$(readlink "$sdir" 2>/dev/null || echo "unknown")
             echo -e "  ${RED}FAIL${NC}  $sname  ${DIM}(broken symlink -> $_target)${NC}"
             echo -e "         ${YELLOW}Fix: loki setup-skill${NC}"
+            _doctor_block "$sname is a broken symlink. Fix: loki setup-skill"
             fail_count=$((fail_count + 1))
         else
             echo -e "  ${YELLOW}WARN${NC}  $sname  ${DIM}(not found - run 'loki setup-skill')${NC}"
@@ -11187,6 +11200,7 @@ except Exception:
         if [ -n "$disk_avail" ] && [ "$disk_avail" -gt 0 ] 2>/dev/null; then
             if [ "$disk_avail" -lt 1 ]; then
                 echo -e "  ${RED}FAIL${NC}  Disk space: ${disk_avail}GB available (need >= 1GB)"
+                _doctor_block "Free up disk: ${disk_avail}GB available, need >= 1GB"
                 fail_count=$((fail_count + 1))
             elif [ "$disk_avail" -lt 5 ]; then
                 echo -e "  ${YELLOW}WARN${NC}  Disk space: ${disk_avail}GB available (low)"
@@ -11289,8 +11303,11 @@ except Exception:
     echo ""
 
     if [ "$fail_count" -gt 0 ]; then
-        echo -e "${RED}Some required prerequisites are missing.${NC}"
-        echo "Install missing dependencies and run 'loki doctor' again."
+        echo -e "${RED}Blocking ($fail_count). Everything else above is optional.${NC}"
+        printf '%b\n' "$_doctor_blockers"
+        echo ""
+        echo "Then re-run: loki doctor"
+        echo "Meanwhile 'loki tour' works right now -- no provider, no key, no spend."
         return 1
     elif [ "$warn_count" -gt 0 ]; then
         echo -e "${YELLOW}All required checks passed with some warnings.${NC}"
@@ -19104,7 +19121,7 @@ $(cat "$f" 2>/dev/null)
 
     # --- Tally results ---
     local count_critical=0 count_high=0 count_medium=0 count_low=0 count_info=0
-    for f in "${findings[@]}"; do
+    for f in "${findings[@]+"${findings[@]}"}"; do
         local sev
         sev=$(echo "$f" | cut -d'|' -f3)
         case "$sev" in
@@ -19126,7 +19143,7 @@ $(cat "$f" 2>/dev/null)
     if [ "$review_format" = "json" ]; then
         local json_findings="["
         local first=true
-        for f in "${findings[@]}"; do
+        for f in "${findings[@]+"${findings[@]}"}"; do
             local f_file f_line f_sev f_cat f_finding f_suggestion
             f_file=$(echo "$f" | cut -d'|' -f1)
             f_line=$(echo "$f" | cut -d'|' -f2)
@@ -19155,7 +19172,7 @@ $(cat "$f" 2>/dev/null)
             # Group by severity
             for sev_name in CRITICAL HIGH MEDIUM LOW INFO; do
                 local printed_header=false
-                for f in "${findings[@]}"; do
+                for f in "${findings[@]+"${findings[@]}"}"; do
                     local f_sev
                     f_sev=$(echo "$f" | cut -d'|' -f3)
                     [ "$f_sev" != "$sev_name" ] && continue
@@ -30081,7 +30098,7 @@ TEST_SUGGEST_PY
 
     # --- Tally findings ---
     local count_critical=0 count_high=0 count_medium=0 count_low=0 count_info=0
-    for f in "${findings[@]}"; do
+    for f in "${findings[@]+"${findings[@]}"}"; do
         local sev
         sev=$(echo "$f" | cut -d'|' -f3)
         case "$sev" in
@@ -30097,7 +30114,7 @@ TEST_SUGGEST_PY
     # Determine exit code based on --fail-on threshold
     local exit_code=0
     if [ "$fail_threshold" -lt 99 ]; then
-        for f in "${findings[@]}"; do
+        for f in "${findings[@]+"${findings[@]}"}"; do
             local sev sev_num
             sev=$(echo "$f" | cut -d'|' -f3)
             sev_num=$(_ci_sev_level "$sev")
@@ -30117,7 +30134,7 @@ TEST_SUGGEST_PY
     if [ "$ci_format" = "json" ]; then
         # JSON output via python for proper escaping
         export LOKI_CI_JSON_FINDINGS=""
-        for f in "${findings[@]}"; do
+        for f in "${findings[@]+"${findings[@]}"}"; do
             LOKI_CI_JSON_FINDINGS+="${f}"$'\n'
         done
         export LOKI_CI_JSON_META="ci_env=${ci_env}|pr=${ci_pr_number}|ts=${report_timestamp}|files=${file_count}|exit=${exit_code}"
@@ -30199,7 +30216,7 @@ CI_JSON_OUT
             echo ""
             for sev_name in CRITICAL HIGH MEDIUM LOW INFO; do
                 local has_sev=false
-                for f in "${findings[@]}"; do
+                for f in "${findings[@]+"${findings[@]}"}"; do
                     local f_sev
                     f_sev=$(echo "$f" | cut -d'|' -f3)
                     [ "$f_sev" != "$sev_name" ] && continue
@@ -30259,7 +30276,7 @@ for t in tests:
         else
             for sev_name in CRITICAL HIGH MEDIUM LOW INFO; do
                 local printed_header=false
-                for f in "${findings[@]}"; do
+                for f in "${findings[@]+"${findings[@]}"}"; do
                     local f_sev
                     f_sev=$(echo "$f" | cut -d'|' -f3)
                     [ "$f_sev" != "$sev_name" ] && continue
