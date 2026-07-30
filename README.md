@@ -21,6 +21,40 @@ _The free, source-available autonomous coding agent by [Autonomi](https://www.au
 
 ---
 
+## See the receipt before you install anything
+
+Every agent claims it finished. Ours hands you an artifact you can check:
+
+```bash
+npx loki-mode tour     # no install, no API key, no spend, no network
+```
+
+That prints a real Evidence Receipt from a past build. Note what it says:
+
+```
+Headline: VERIFIED WITH GAPS
+
+| Fact          | Value                                    |
+| Files changed | 8                                        |
+| Diff sha256   | c2be6fff3e774c387f276277b25fc424f07b667… |
+| Tests         | verified (node-test)                     |
+| Build         | not_run                                  |
+| Security      | findings                                 |
+| Cost          | $10.3218                                 |
+```
+
+**"WITH GAPS" is the point.** Build was not run. Security has findings. The
+receipt says so on its own front page, and separates deterministic FACTS -- the
+diff hash, the test result, the cost -- from AI ASSESSMENTS, because only four
+of the eight quality gates are agent-independent and a receipt that implied
+otherwise would be marketing.
+
+Recompute the diff hash yourself and check it matches. That is the whole idea:
+you are not asked to trust the agent's self-report, which is the one thing every
+coding agent is structurally bad at.
+
+---
+
 > **How it works:** Drop a spec -- a PRD, GitHub issue, OpenAPI/JSON/YAML, or one-line brief. Loki Mode classifies complexity (`run.sh:detect_complexity()`), assembles an agent team from 41 specialized agent roles across 8 domains - prompt-defined specifications the orchestrator adopts per phase, with parallel review (blind council) and optional worktree streams on Claude Code, sequential on other providers - and runs autonomous RARV cycles (Reason - Act - Reflect - Verify, see `run.sh:run_autonomous()`) with 8 quality gates (see `skills/quality-gates.md`). Code is not "done" until it passes automated verification. Output is a Git repo with source, tests, configs, and audit logs.
 
 ---
