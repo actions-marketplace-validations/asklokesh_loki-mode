@@ -87,15 +87,36 @@ else
 fi
 
 echo
-echo "T2 -- a healthy machine sees no blocker block"
+echo "T2 -- the blocker section is CONDITIONAL, not unconditional"
 
-# Non-vacuity in the other direction: the new section must not fire when there
-# is nothing to report, or it becomes noise on every healthy run.
+# Non-vacuity in the other direction: the section must not fire when there is
+# nothing to report, or it becomes noise on every healthy run.
+#
+# ASSERT THE CONDITION, NOT THE HOST. The first version of this ran doctor on
+# the test machine and required no blocker section -- which assumed the host is
+# healthy. A GitHub runner has no provider CLI and no Node, so it legitimately
+# HAS blockers, and the test failed on CI while passing on a developer laptop.
+# The invariant that actually matters is the coupling: section present exactly
+# when fail_count > 0. Derive both from the same run so the assertion holds on
+# any host.
 healthy=$(bash "$LOKI" doctor 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
-if printf '%s' "$healthy" | grep -q "Blocking ("; then
-    bad "blocker section printed on a machine with no failures"
+_failed=$(printf '%s' "$healthy" | grep -oE '[0-9]+ failed' | head -1 | grep -oE '[0-9]+')
+[ -n "$_failed" ] || _failed=0
+
+if [ "$_failed" -eq 0 ]; then
+    if printf '%s' "$healthy" | grep -q "Blocking ("; then
+        bad "blocker section printed although doctor reported 0 failures"
+    else
+        ok "no blocker section when doctor reports 0 failures"
+    fi
 else
-    ok "no blocker section when nothing is blocking"
+    # This host has real blockers (a CI runner with no provider CLI, say). The
+    # correct assertion here is the mirror image: the section MUST appear.
+    if printf '%s' "$healthy" | grep -q "Blocking ("; then
+        ok "blocker section present because this host reports $_failed failure(s)"
+    else
+        bad "doctor reported $_failed failure(s) but printed no blocker section"
+    fi
 fi
 
 echo
