@@ -50,8 +50,23 @@ of the eight quality gates are agent-independent and a receipt that implied
 otherwise would be marketing.
 
 Recompute the diff hash yourself and check it matches. That is the whole idea:
-you are not asked to trust the agent's self-report, which is the one thing every
-coding agent is structurally bad at.
+you are not asked to trust the agent's self-report.
+
+Self-reported completion is the failure users actually hit. A survey of the
+open issue trackers of seven coding harnesses (OpenHands, Cline, Aider,
+SWE-agent, Roo-Code, OpenCode, Continue) found the recurring complaint is the
+agent silently not doing the work -- "always stuck at Preparing write"
+([opencode#11112](https://github.com/anomalyco/opencode/issues/11112), 76
+comments), "Continue not making changes to code"
+([continue#7143](https://github.com/continuedev/continue/issues/7143)), "Agent
+does not execute functions"
+([continue#5696](https://github.com/continuedev/continue/issues/5696)). None of
+those seven publishes a machine-checkable completion artifact.
+
+We have not audited the closed-source products (Cursor, Devin, Replit Agent)
+feature by feature, so treat this as "unclaimed as far as we can verify" rather
+than a proven first. The receipt stands on its own either way: run the tour and
+check the hash.
 
 ---
 
