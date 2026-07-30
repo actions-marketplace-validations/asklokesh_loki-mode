@@ -5,6 +5,109 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v8.3.3
+
+Patch. **The first-run path is now covered on the shell most users actually have.**
+
+v8.3.2 fixed one bash 4 construct that made `loki quickstart` return zero
+templates on macOS. Fixing one call site does not close the class: any future
+bash-4-only construct anywhere in the first-run path reintroduces the same
+failure, and our test harness runs homebrew bash 5, so the suite structurally
+could not see the shell most users have.
+
+The first-run path is audited clean of `declare -A`, `${var^^}`, `${var,,}`,
+`readarray` and `mapfile`, and `tests/test-first-run-bash32.sh` now walks the
+commands a brand-new user actually runs, in order, under `/bin/bash`
+explicitly. Running them under `$SHELL` would reproduce the exact blind spot
+that let the v8.3.2 bug ship.
+
+Verified under bash 3.2.57: the welcome banner and all three next steps
+render, `loki tour` produces an Evidence Receipt with its honest "VERIFIED
+WITH GAPS" headline, and the quickstart scorer returns three ranked templates
+where it previously returned none.
+
+Nothing requiring a provider, key, network or spend is asserted. The test
+covers what works before a user commits anything, which is also the honest
+boundary of what we advertise as keyless.
+
+## v8.3.2
+
+Patch. **loki quickstart was returning nothing on every Mac.**
+
+### The guided first build was broken on macOS stock bash
+
+`_qs_score_templates` used `declare -A`, a bash 4 associative array. macOS
+ships bash 3.2.57 as `/bin/bash`, frozen since 2007 for licensing reasons and
+never updated by Apple. On the stock shell of the most common developer
+platform the scorer printed `declare: -A: invalid option` and returned ZERO
+templates, so the guided first build we point new users at from both the
+welcome screen and `loki doctor` showed an empty picker.
+
+Three things hid it. The function BODY parses fine under 3.2, so `bash -n` and
+sourcing both looked healthy and only CALLING it failed. It degraded to empty
+rather than crashing. And the test harness runs homebrew bash 5, where it works
+perfectly.
+
+Rewritten with a flat name/score list folded by awk. Verified as a pure
+portability change, not a behaviour change: output is identical between bash
+3.2 and bash 5 across five briefs, and identical to the pre-fix bash 5 output
+across six. Ranking stays correct, with "chrome extension" ranking
+chrome-extension first and "saas billing" ranking saas-starter first.
+
+`tests/test-quickstart-bash32.sh` runs the scorer under `/bin/bash`
+explicitly, because testing it under `$SHELL` would reproduce exactly the blind
+spot that let this ship.
+
+### Two tests existed but the gate never ran them
+
+`test-shard-coverage.sh` and `test-quickstart-bash32.sh` were both written,
+both passing, and both silently unregistered: the edits that were supposed to
+add them to the runner failed to match their anchor text and reported it in
+output that went unread. The gate stayed at 289 suites while two new tests sat
+outside it.
+
+Caught by noticing the suite count did not move, which is the only reliable
+tell. Both are registered now and the count is 291.
+
+## v8.3.1
+
+Patch. **The gate stops lying about why it failed.**
+
+### CI is 2.33x faster, measured
+
+Shell tests was 13m01s of a ~15m pipeline, six times the next slowest job,
+because 289 suites ran serially on one runner. A 4-way shard cut it to 5m35s.
+
+Both figures are observed, not projected. An earlier projection in this repo
+said ~3m15s and was wrong: it assumed the suites cost roughly the same, so four
+shards would be a clean quarter. They do not. Shard timings were 5m35s, 2m33s,
+3m50s and 2m26s, and the wall clock follows the slowest shard rather than the
+mean. The projection has been replaced with the measurement rather than quietly
+removed.
+
+### Two latent bugs the sharding exposed
+
+Both passed serially and failed sharded, which is what made them worth finding.
+
+`test-embeddings.sh` called `skip()` and then `exit 1`, so an unavailable
+optional dependency was reported to the runner as a failing suite. It hid
+behind suite ORDER: run serially, an earlier suite left the module importable
+and the branch never executed. It now exits 0 while still printing the reason
+and a visible SKIP line, so the missing dependency stays reported rather than
+swallowed.
+
+`test-memory-speed-privacy.sh` piped the benchmark through `2>&1`, folding any
+stderr line the interpreter emits into the same stream as the JSON document.
+The parse then died with "Expecting value: line 1 column 1" and named the
+parser instead of the warning that caused it. Stderr now stays on stderr, and
+an empty document is reported as "bench produced NO output" rather than as a
+malformed one, because those are different failures and conflating them costs
+an investigation.
+
+A gate that cannot tell "optional thing not installed" from "the code is
+broken" is one people learn to ignore, and that is how three red releases
+shipped over a real bug earlier the same day.
+
 ## v8.3.0
 
 Minor release. **The first minute, the shop window, and the enterprise promise.**

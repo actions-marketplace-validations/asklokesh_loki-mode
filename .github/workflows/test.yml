@@ -62,8 +62,29 @@ jobs:
         run: python3 -m pytest
 
   shell-tests:
-    name: Shell tests
+    name: Shell tests (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
+    # SHARDED because this job WAS the pipeline. Measured 2026-07-30:
+    #   Shell tests  13m01s   <- sets the wall clock single-handedly
+    #   Bun (ubuntu)  2m17s
+    #   Python 3.13   1m59s
+    #   Helm lint        8s
+    # 289 suites ran serially on one runner. Four shards cut that to roughly
+    # 3m15s, putting the whole pipeline near the ~2.5m the other jobs already
+    # take.
+    #
+    # fail-fast is OFF deliberately: one shard failing must not cancel the
+    # others, or a single red suite hides every other failure and the next
+    # push rediscovers them one cycle at a time.
+    #
+    # Safety: tests/test-shard-coverage.sh proves the shards partition the
+    # suite list exactly (every suite in exactly one shard, none dropped, none
+    # duplicated) and that an invalid shard spec exits non-zero rather than
+    # silently running nothing.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -94,7 +115,9 @@ jobs:
       - name: Install Node.js dependencies
         run: npm install --no-package-lock
 
-      - name: Run shell tests
+      - name: Run shell tests (shard ${{ matrix.shard }} of 4)
+        env:
+          LOKI_TEST_SHARD: ${{ matrix.shard }}/4
         run: bash tests/run-all-tests.sh
 
   helm-lint:

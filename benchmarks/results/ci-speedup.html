@@ -49,6 +49,32 @@ regex to an anchored glob, flipping paths like <code>src/latest_thing.py</code> 
 A test-fitting commit then loses its test file, skips the blocking check, and <b>exits 0 where it
 previously blocked</b>. Its own evidence missed it: 316 byte-identical findings on this repo, where
 no such filename exists. Corpus-bound parity cannot detect a latent input-class narrowing.</p>
+
+<h2>CI pipeline: one job was the whole wall clock</h2>
+<p class=sub>GitHub Actions job durations, run for commit bcf9fbce (v8.3.0), measured 19:41-19:54 UTC.</p>
+<table>
+<tr><th>Job</th><th class=n>Duration</th><th>Note</th></tr>
+<tr><td><b>Shell tests</b></td><td class=n><b>13m 01s</b></td><td>289 suites, serial, one runner</td></tr>
+<tr><td>Bun tests (ubuntu)</td><td class=n>2m 17s</td><td>test step itself is 41s</td></tr>
+<tr><td>Python 3.13</td><td class=n>1m 59s</td><td></td></tr>
+<tr><td>Node.js 24</td><td class=n>44s</td><td></td></tr>
+<tr><td>Helm lint</td><td class=n>8s</td><td></td></tr>
+</table>
+<p class=note>Shell tests was <b>6x the next slowest job</b> and set the pipeline wall clock by itself.
+Everything else finished inside ~2.5 minutes. The fix is a 4-way shard
+(<code>LOKI_TEST_SHARD=i/n</code>), splitting 289 suites as 73 / 72 / 72 / 72.</p>
+<p class=note><b>MEASURED, not projected.</b> Observed shard timings on commit 9d63f16b:
+5m35s / 2m33s / 3m50s / 2m26s. The pipeline wall clock is the <b>slowest</b> shard, so
+13m01s became <b>5m35s: a 2.33x cut</b>.
+<br><br>My earlier projection said ~3m15s and was wrong. It assumed the 289 suites cost the
+same each, so four shards would be a clean quarter. They are not: suite cost varies widely, the
+split is uneven, and the wall clock follows the worst shard rather than the mean. The projection
+is replaced here rather than quietly deleted, because a number that was published and turned out
+optimistic should be visibly corrected.</p>
+<p class=note>Safety, because a faster gate that stops noticing failures is worse than a slow one:
+<code>tests/test-shard-coverage.sh</code> (14/14) proves the shards partition the suite list exactly,
+that every suite lands in exactly one shard, and that an invalid shard spec exits non-zero rather
+than silently running nothing. The split was verified by <b>executed</b> counts, not arithmetic alone.</p>
 <footer>The fast tier covers syntax, structure and the entire trust core, and <b>prints every check
 it deferred</b> plus the command to run them -- without that, tiering would itself be a false-green.
 <code>LOCAL_CI_TIER=full</code> is required before push or release.</footer>
