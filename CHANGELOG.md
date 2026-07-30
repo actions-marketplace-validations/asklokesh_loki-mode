@@ -5,6 +5,45 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v8.3.2
+
+Patch. **loki quickstart was returning nothing on every Mac.**
+
+### The guided first build was broken on macOS stock bash
+
+`_qs_score_templates` used `declare -A`, a bash 4 associative array. macOS
+ships bash 3.2.57 as `/bin/bash`, frozen since 2007 for licensing reasons and
+never updated by Apple. On the stock shell of the most common developer
+platform the scorer printed `declare: -A: invalid option` and returned ZERO
+templates, so the guided first build we point new users at from both the
+welcome screen and `loki doctor` showed an empty picker.
+
+Three things hid it. The function BODY parses fine under 3.2, so `bash -n` and
+sourcing both looked healthy and only CALLING it failed. It degraded to empty
+rather than crashing. And the test harness runs homebrew bash 5, where it works
+perfectly.
+
+Rewritten with a flat name/score list folded by awk. Verified as a pure
+portability change, not a behaviour change: output is identical between bash
+3.2 and bash 5 across five briefs, and identical to the pre-fix bash 5 output
+across six. Ranking stays correct, with "chrome extension" ranking
+chrome-extension first and "saas billing" ranking saas-starter first.
+
+`tests/test-quickstart-bash32.sh` runs the scorer under `/bin/bash`
+explicitly, because testing it under `$SHELL` would reproduce exactly the blind
+spot that let this ship.
+
+### Two tests existed but the gate never ran them
+
+`test-shard-coverage.sh` and `test-quickstart-bash32.sh` were both written,
+both passing, and both silently unregistered: the edits that were supposed to
+add them to the runner failed to match their anchor text and reported it in
+output that went unread. The gate stayed at 289 suites while two new tests sat
+outside it.
+
+Caught by noticing the suite count did not move, which is the only reliable
+tell. Both are registered now and the count is 291.
+
 ## v8.3.1
 
 Patch. **The gate stops lying about why it failed.**

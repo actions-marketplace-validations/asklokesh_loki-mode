@@ -6,7 +6,7 @@
 FROM ubuntu:24.04
 
 LABEL maintainer="Lokesh Mure"
-LABEL version="8.3.1"
+LABEL version="8.3.2"
 # v7.4.5 fix (BUG-3): override the OCI-standard image.version label that
 # BuildKit auto-injects from the FROM ubuntu:24.04 base. Registries and
 # scanners read this; without the override they reported the Ubuntu version

@@ -65,7 +65,13 @@
       "critical_path_s": 335,
       "before_s": 781,
       "speedup": "2.33x (781s -> 335s on the slowest shard)",
-      "note": "OBSERVED CI timings, replacing the earlier ~195s projection. The real number is 335s, not 195s: shards are uneven because suite cost varies, so the wall clock is the SLOWEST shard, not the mean. The projection assumed even cost and was optimistic."
+      "note": "OBSERVED CI timings, replacing the earlier ~195s projection. The real number is 335s, not 195s: shards are uneven because suite cost varies, so the wall clock is the SLOWEST shard, not the mean. The projection assumed even cost and was optimistic.",
+      "green_run": {
+        "commit": "20cdb0ae (v8.3.1)",
+        "shards": "success success success success",
+        "note": "First fully green sharded run. The two failures on the prior commit were latent bugs the sharding EXPOSED (a skip that exited 1; stderr folded into a JSON stream), both fixed in v8.3.1 -- not regressions caused by sharding.",
+        "verified_utc": "2026-07-30T20:44:41Z"
+      }
     }
   }
 }
