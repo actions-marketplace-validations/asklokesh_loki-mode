@@ -44,13 +44,35 @@ echo "T1 -- a wedged emit.sh is killed at its deadline"
 # per-event files under events/pending/. Holding the wrong lock is why the first
 # version of this test reported "terminated in 0s" -- the non-vacuity assertion
 # caught that the wedge was never actually applied.
+#
+# PLATFORM SPLIT, and it is load-bearing. emit.sh takes one of two mutually
+# exclusive paths: `flock` when flock(1) exists (Linux/CI), and a mkdir mutex
+# otherwise (macOS ships no flock(1), so that is the path real Mac users take).
+# Holding only the lockdir wedges ONLY the mkdir path -- which is why this test
+# passed on macOS and then failed its own non-vacuity check on ubuntu CI with
+# "emit returned in 0s -- it never blocked". Wedge whichever path this platform
+# actually takes; the non-vacuity assertion below is what caught the gap.
 mkdir -p "$WORK/.loki/events/pending"
 EVENTS_FILE="$WORK/.loki/events.jsonl"
 LOCKDIR="$EVENTS_FILE.lockdir"
-mkdir -p "$LOCKDIR"
-# Keep mtime CURRENT so the lock never looks stale for the duration of the test.
-( while :; do touch "$LOCKDIR" 2>/dev/null || true; sleep 0.2; done ) &
-TOUCHER=$!
+
+if command -v flock >/dev/null 2>&1; then
+    # flock path: emit.sh binds FD 9 to $EVENTS_FILE.lock and takes an exclusive
+    # lock with `-w 5`. Hold that same lock for longer than emit's own deadline
+    # so the emit genuinely waits on it.
+    LOCK_TARGET="$EVENTS_FILE.lock"
+    : > "$LOCK_TARGET"
+    ( flock -x 9; sleep 30 ) 9>"$LOCK_TARGET" &
+    TOUCHER=$!
+    # Give the holder a moment to actually acquire before the emit starts,
+    # otherwise the emit can win the lock and the wedge never applies.
+    sleep 1
+else
+    mkdir -p "$LOCKDIR"
+    # Keep mtime CURRENT so the lock never looks stale for the test's duration.
+    ( while :; do touch "$LOCKDIR" 2>/dev/null || true; sleep 0.2; done ) &
+    TOUCHER=$!
+fi
 
 start=$(date +%s)
 (

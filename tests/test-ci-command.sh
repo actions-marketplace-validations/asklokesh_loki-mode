@@ -146,9 +146,13 @@ GH_TEST_DIR=$(mktemp -d)
     echo "clean" > app.py
     git add app.py
     git commit -q -m "init"
+    # Leave this change UNCOMMITTED. `ci --pr` tries `gh pr diff` first, and on a
+    # CI runner there is no gh auth and no PR, so it falls back to `git diff`
+    # (uncommitted changes). Committing everything made that fallback empty, so
+    # the command correctly printed "No changes to review" and the test read it
+    # as a missing header. Passed locally only because a developer machine has
+    # gh authenticated. The fixture, not the command, was wrong.
     echo "changed" >> app.py
-    git add app.py
-    git commit -q -m "change"
 ) >/dev/null 2>&1
 gh_output=$(cd "$GH_TEST_DIR" && "$LOKI" ci --pr --format github 2>&1) || true
 rm -rf "$GH_TEST_DIR"
