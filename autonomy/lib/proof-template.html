@@ -640,6 +640,23 @@
                 ? " (" + esc(tOutcome) + ")" : "") +
              "</div>";
     }
+    // Name the GATE that stopped the run, with how close it came to its
+    // threshold. "intervention" tells a reader that something blocked them;
+    // "code_review (failed 3 times, threshold 3)" tells them what to fix. The
+    // engine already surfaced this in COMPLETION.txt and PAUSED.md -- the
+    // signed receipt was the only surface that stayed silent about it.
+    // Display-only, and silent when no gate escalation was recorded.
+    var tGate = String(g(p, "facts.execution.blocking_gate", "") || "").trim();
+    if (tGate) {
+      var gFail = g(p, "facts.execution.blocking_gate_failures", null);
+      var gThr = g(p, "facts.execution.blocking_gate_threshold", null);
+      var detail = "";
+      if (typeof gFail === "number" && typeof gThr === "number") {
+        detail = " (failed " + esc(String(gFail)) + " times, threshold " +
+                 esc(String(gThr)) + ")";
+      }
+      term += '<div class="h-sub">Blocked by: ' + esc(tGate) + detail + "</div>";
+    }
     el.className = "honesty " + v.cls;
     el.innerHTML =
       '<span class="h-mark" aria-hidden="true">' + v.mark + "</span>" +
