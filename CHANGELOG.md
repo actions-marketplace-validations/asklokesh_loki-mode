@@ -5,6 +5,213 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v8.5.2
+
+Patch. **The timeout-safe provider seam was the broken one.**
+
+For Codex, `provider_get_tier_param` returns an EFFORT level (xhigh, high, low),
+not a model name. The code says so in its own BUG-PROV-012 note.
+`provider_invoke_argv` passed it to `--model` anyway, so every argv-based
+invocation sent `--model high` and the API rejected it:
+
+```
+400 invalid_request_error: The 'high' model is not supported
+    when using Codex with a ChatGPT account.
+```
+
+This mattered more than an ordinary bug because `provider_invoke` was fine, so
+the broken path was the argv seam, which exists precisely so a call can be
+wrapped in `timeout` (a shell function cannot be exec'd by timeout). A hung
+provider could not be bounded without also breaking the invocation. And it
+failed silently: five trials produced no artifact while looking like slow runs.
+
+Effort now travels in `CODEX_MODEL_REASONING_EFFORT`, exported so it survives
+the `timeout` wrapper, and an empty model name omits the flag rather than
+sending `--model ""`. Verified end to end: 51 seconds, artifact correct.
+
+### Measuring codex properly, and what it showed
+
+Five trials of an identical artifact-verified task through the provider layer,
+free tier, no API spend:
+
+```
+300s (timeout)  48s  80s  71s  67s
+4 of 5 succeeded, median 69s, range 48 to 80s
+```
+
+The timeout is reported rather than discarded. Dropping it would turn a 4-of-5
+success rate into an implied 5-of-5 and overstate reliability.
+
+The spread is the actual finding, and it is why a single sample was refused
+earlier: one shot had timed out and would have been published as "codex:
+timeout" when the same command completed in 51 seconds minutes later. That
+would have been a fabricated competitive claim.
+
+This is still not a cross-CLI comparison, and the artifact says so. Only codex
+has been measured to five trials; opencode, aider, Claude Code and cursor-agent
+have not been run on this task, so no ranking is asserted.
+
+## v8.5.1
+
+Patch. **The free on-ramp is proven by a build, not by a tier label.**
+
+Codex is the only free on-ramp left since Gemini's free tier ended on
+2026-06-18, and this project had it pinned at "Tier 3" on v0.98 assumptions
+while the installed CLI had moved to 0.146.0. The label was the stale part, not
+the code.
+
+Measured on 2026-07-30, one complete invocation through the Loki provider layer
+rather than as a direct CLI call, because a raw CLI call proves nothing about
+whether Loki can drive it:
+
+```
+provider    codex-cli 0.146.0, ChatGPT auth, no API key
+task        create hello.txt containing exactly "hi"
+wall clock  72s
+tokens      55,889
+API cost    $0.00
+artifact    hello.txt present with exactly the expected content
+```
+
+A keyless path that demonstrably completes a build is the strongest answer to
+"why would I install this", and it is the model-agnostic claim made concrete
+instead of architectural.
+
+`benchmarks/results/free-onramp.json` records it with an explicit scope limit:
+one task, one invocation, not a quality or speed comparison against a flagship
+and not a multi-iteration build.
+
+The accompanying test deliberately does not invoke the provider. CI has no
+ChatGPT auth, and a test requiring a login would be skipped forever and rot.
+It asserts what breaks silently instead: that `provider_invoke` is defined after
+loading, that the autonomous flag is non-empty (an empty one makes codex run
+interactively and hang a build), and that `--sandbox` and `--model` exist on the
+installed binary rather than in documentation.
+
+### A comparison we chose not to publish
+
+A cross-CLI speed table was attempted and deliberately withheld. The same codex
+command that completed in 72 seconds later timed out at both 200 and 300
+seconds on the identical task and machine, while a trivial prompt answered in 9
+seconds, so the CLI is healthy and the variance is task-level.
+
+A one-sample-per-cell table would have recorded "codex: timeout" as a fact about
+a competitor when that exact command had already succeeded. That is a fabricated
+competitive claim, and a comparison that makes a competitor look bad on an
+unstable sample is worse than no comparison: it gets caught, and it takes the
+credibility of every other number with it. Recorded as INCONCLUSIVE in
+`benchmarks/results/cross-cli-headtohead.json` with the contradiction and what
+would make it publishable.
+
+## v8.5.0
+
+Minor release. **Know what you paid for, and what the wait was.**
+
+### The receipt now separates progress from rework
+
+Iterations multiply both wall clock and cost, and the Evidence Receipt reported
+only a count. A user seeing "6 iterations" could not tell real work from a gate
+false positive forcing five redos, and neither could we, which is worse: it hid
+whether an expensive run was a slow model or our own harness being wrong.
+
+That is not hypothetical. A measured run here had the agent claim done on every
+iteration while a mock-integrity false positive blocked all six, and a start-sha
+bug made the council see a permanently empty diff so it could never vote done.
+Both were harness defects billed to the user as model cost.
+
+The receipt now carries the split, with the share and the basis:
+
+```
+progress 2 ($0.24) | rework 1 ($0.12) | 33% of the run
+```
+
+"Paying for your own errors" is a named churn driver in this category and no
+competitor surfaces it. It composes with the receipt rather than bolting on:
+rework cost is a deterministic fact derived from records already written, so it
+sits with the facts, not the AI assessments.
+
+Two limits are stated in the artifact itself. Rework counts failed iterations
+only, so an iteration that completed but was forced to repeat by a gate counts
+as progress, which makes the number a floor rather than a ceiling. And with no
+efficiency records the attribution is omitted entirely rather than reporting
+zero rework, because claiming 0% for a run nobody measured would be fabricated
+reassurance.
+
+### The longest silence, not the total time
+
+A ten-minute build reporting something every twenty seconds feels fast. A
+four-minute build silent for three of them feels broken. The loudest complaints
+about agents in this category are not that they were wrong, but that they went
+quiet: "always stuck at Preparing write" (76 comments), "not making changes to
+code", "agent does not execute functions".
+
+`autonomy/lib/silence_report.py` reports the worst gaps and names the step each
+one followed, because a duration alone cannot be fixed:
+
+```
+214.0s  after 'code_review_start' before 'code_review_complete'
+```
+
+Idle time between sessions is excluded and said so explicitly. Measured against
+a real 4,240 event stream, 4,234 gaps were correctly ignored as a human being
+away from the keyboard, leaving three genuine in-build gaps. Without that
+filter, lunch breaks swamp the signal.
+
+Both tools refuse to invent data: malformed records are skipped rather than
+defaulted, and an absent file reports "nothing to measure" instead of a
+zero-silence claim.
+
+## v8.4.0
+
+Minor release. **Time to first preview is no longer invisible.**
+
+### The number that describes whether the product felt fast
+
+`app-runner.sh` has recorded `seconds_to_first_preview` since v8: write-once,
+atomic, and it already refused absurd values. Nothing ever read it. A grep
+across the whole repository found exactly one reference, the line that writes
+it. Not the run summary, not the Evidence Receipt, not the dashboard.
+
+Research on this category puts the delight peak at a working preview around
+four minutes and the churn peak at a long silent wait, so this is the single
+number that best describes whether a build felt fast. It was invisible to the
+person who waited for it and to us.
+
+The run summary now shows it beside the live app URL:
+
+```
+Files:         1 (+1 / -0)
+First preview: 247s
+```
+
+A run where no app ever came up prints nothing rather than "0s". A fabricated
+zero would claim instant preview for a run that never previewed, which is the
+same false-green the Evidence Receipt exists to prevent. Negative and malformed
+values are refused too, and a corrupt file does not break the summary.
+
+### The efficiency baseline is collectable, proven without spending
+
+`.loki/metrics/efficiency/` was empty in this checkout, which meant every claim
+about speed or cost was intuition with no "before" to compare against. The
+obvious move is to run a real build and see what lands, but that costs money and
+tens of minutes, and a broken recorder means spending both and having nothing.
+
+So the pipeline was proven first with no provider, no key and no spend:
+`track_iteration_complete` writes a complete per-iteration record with the
+DISPATCHED model (not a provider default, a mislabel that once made a
+model-equivalence benchmark unfalsifiable), and `collect_efficiency` folds
+records while keeping the property the whole baseline rests on: an absent
+record reports `usd=None`, a genuine zero reports `0.0`. If those collapsed,
+every published cost figure would be unfalsifiable.
+
+### Also
+
+Four suspected gaps were investigated and found already implemented, so no code
+changed: the simple-tier fast path is fully wired (seven consumers, including a
+doc-suite skip worth roughly 270 seconds per simple build and a council floor
+that drops from three iterations to one), reviewer count already scales with
+complexity, and all three behaviours already had registered passing tests.
+
 ## v8.3.3
 
 Patch. **The first-run path is now covered on the shell most users actually have.**

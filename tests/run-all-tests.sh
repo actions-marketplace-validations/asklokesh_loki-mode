@@ -686,6 +686,14 @@ run_test "Session knobs stay default-OFF (gates the v8 SDK-flip audit)" "$SCRIPT
 run_test "shards partition the suite list (no silently dropped suite)" "$SCRIPT_DIR/test-shard-coverage.sh"
 run_test "quickstart scorer works on macOS bash 3.2 (first-run path)" "$SCRIPT_DIR/test-quickstart-bash32.sh"
 run_test "first-run path works on macOS bash 3.2 (welcome, tour, quickstart)" "$SCRIPT_DIR/test-first-run-bash32.sh"
+run_test "competitor verify surface (head-to-head, locally reproducible)" "$SCRIPT_DIR/test-competitor-verify-surface.sh"
+run_test "efficiency baseline pipeline (writer + collector, honest zero)" "$SCRIPT_DIR/test-efficiency-baseline-pipeline.sh"
+run_test "time-to-first-preview reaches the user (not just disk)" "$SCRIPT_DIR/test-first-preview-surfaced.sh"
+run_test "iteration attribution (progress vs rework, honest null)" "$SCRIPT_DIR/test-iteration-attribution.sh"
+run_test "receipt attributes cost to progress vs rework" "$SCRIPT_DIR/test-receipt-rework-attribution.sh"
+run_test "silence report (longest in-build gap, idle excluded)" "$SCRIPT_DIR/test-silence-report.sh"
+run_test "free on-ramp stays wired (codex, zero API spend)" "$SCRIPT_DIR/test-free-onramp.sh"
+run_test "codex argv seam: effort is not a model name" "$SCRIPT_DIR/test-codex-argv-model.sh"
 run_test "ShellCheck Linting" "$SCRIPT_DIR/run-shellcheck.sh"
 
 # Summary

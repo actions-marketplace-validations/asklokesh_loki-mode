@@ -15,7 +15,7 @@ _The free, source-available autonomous coding agent by [Autonomi](https://www.au
 
 [Website](https://www.autonomi.dev/) | [Documentation](wiki/Home.md) | [Installation](docs/INSTALLATION.md) | [Changelog](CHANGELOG.md) | [Purple Lab -- deprecated v7.44.0](#purple-lab)
 
-**Current release: v8.3.3**
+**Current release: v8.5.2**
 
 </div>
 
@@ -63,10 +63,15 @@ does not execute functions"
 ([continue#5696](https://github.com/continuedev/continue/issues/5696)). None of
 those seven publishes a machine-checkable completion artifact.
 
-We have not audited the closed-source products (Cursor, Devin, Replit Agent)
-feature by feature, so treat this as "unclaimed as far as we can verify" rather
-than a proven first. The receipt stands on its own either way: run the tour and
-check the hash.
+We measured every named competitor that ships a local CLI -- opencode 1.18.9,
+aider 0.86.2, codex-cli 0.146.0, Claude Code 2.1.220, cursor-agent -- and none
+exposes a command that verifies the agent's own output. Rerun it yourself with
+`bash tests/test-competitor-verify-surface.sh`.
+
+That is a measurement of the CLI surface, not of whole products: a web UI or an
+API could expose something `--help` does not, and Devin and Replit Agent ship no
+local CLI so they are not covered. The receipt stands on its own either way:
+run the tour and check the hash.
 
 **Evaluating this against something else?** [docs/EVALUATING.md](docs/EVALUATING.md)
 puts a runnable command next to every claim we make, and states plainly what we
