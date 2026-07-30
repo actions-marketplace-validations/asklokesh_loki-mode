@@ -693,6 +693,7 @@ run_test "iteration attribution (progress vs rework, honest null)" "$SCRIPT_DIR/
 run_test "receipt attributes cost to progress vs rework" "$SCRIPT_DIR/test-receipt-rework-attribution.sh"
 run_test "silence report (longest in-build gap, idle excluded)" "$SCRIPT_DIR/test-silence-report.sh"
 run_test "free on-ramp stays wired (codex, zero API spend)" "$SCRIPT_DIR/test-free-onramp.sh"
+run_test "codex argv seam: effort is not a model name" "$SCRIPT_DIR/test-codex-argv-model.sh"
 run_test "ShellCheck Linting" "$SCRIPT_DIR/run-shellcheck.sh"
 
 # Summary

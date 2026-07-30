@@ -1,41 +1,48 @@
 {
-  "generated": "2026-07-30T22:53:50Z",
-  "status": "INCONCLUSIVE -- not published as a comparison",
-  "why": "A cross-CLI speed comparison needs a STABLE per-cell measurement. It is not stable yet: the same codex invocation that completed in 72s through the Loki provider layer later timed out at both 200s and 300s on the identical task and machine, while a trivial prompt answered in 9s. The CLI is healthy; the task-level result varies run to run.",
-  "measured_attempts": [
-    {
-      "cli": "codex",
-      "cmd": "codex exec --sandbox workspace-write --skip-git-repo-check",
-      "cap_s": 200,
-      "elapsed_s": 201,
-      "artifact_correct": false,
-      "rc": 124
-    },
-    {
-      "cli": "codex",
-      "cmd": "same",
-      "cap_s": 300,
-      "elapsed_s": 300,
-      "artifact_correct": false,
-      "rc": 124
-    },
-    {
-      "cli": "codex",
-      "cmd": "trivial prompt (reply OK)",
-      "cap_s": 90,
-      "elapsed_s": 9,
-      "rc": 0,
-      "note": "proves the CLI and auth are healthy; the variance is task-level"
-    },
-    {
-      "cli": "codex",
-      "via": "providers/codex.sh provider_invoke",
-      "elapsed_s": 72,
-      "artifact_correct": true,
-      "rc": 0,
-      "note": "earlier same-day run, recorded in free-onramp.json"
-    }
-  ],
-  "what_would_make_it_publishable": "N trials per cell with median and spread, not a single sample. A one-sample-per-cell table would have reported 'codex: timeout' as a fact about codex when the same command had already succeeded in 72s, which would be a fabricated competitive claim.",
-  "not_claimed": "No speed or quality ranking between CLIs is asserted. Nothing here compares tools."
+  "generated": "2026-07-30T23:24:01Z",
+  "status": "MEASURED for codex only; not yet a cross-CLI comparison",
+  "method": "Identical task ('create hello.txt containing exactly: hi'), same machine, artifact-verified (file must exist AND contain exactly 'hi'), invoked through providers/codex.sh provider_invoke_argv -- the Loki provider layer, not a raw CLI call. 5 trials, 300s cap.",
+  "codex": {
+    "cli_version": "codex-cli 0.146.0",
+    "auth": "ChatGPT free tier, no API key",
+    "api_cost_usd": 0.0,
+    "trials": [
+      {
+        "n": 1,
+        "elapsed_s": 300,
+        "artifact": false,
+        "note": "hit the 300s cap"
+      },
+      {
+        "n": 2,
+        "elapsed_s": 48,
+        "artifact": true
+      },
+      {
+        "n": 3,
+        "elapsed_s": 80,
+        "artifact": true
+      },
+      {
+        "n": 4,
+        "elapsed_s": 71,
+        "artifact": true
+      },
+      {
+        "n": 5,
+        "elapsed_s": 67,
+        "artifact": true
+      }
+    ],
+    "success_rate": "4/5",
+    "median_s_of_successes": 69.0,
+    "range_s_of_successes": [
+      48,
+      80
+    ],
+    "note": "The single timeout is reported, not discarded. Dropping it would turn a 4/5 success rate into an implied 5/5 and overstate reliability."
+  },
+  "why_5_trials": "A single sample is not a measurement here. An earlier one-shot run timed out and would have been published as 'codex: timeout' -- a fabricated competitive claim, since the same command completed in 51s minutes later. The spread (48s to a 300s timeout) is the actual finding.",
+  "bug_found_by_measuring": "provider_invoke_argv passed provider_get_tier_param to --model, but for Codex that returns an EFFORT level (high/xhigh/low), not a model name. Every argv invocation sent '--model high' and got a 400. Fixed; effort now travels in CODEX_MODEL_REASONING_EFFORT. Guarded by tests/test-codex-argv-model.sh.",
+  "not_claimed": "No ranking between CLIs is asserted. Only codex has been measured to 5 trials; opencode, aider, Claude Code and cursor-agent have NOT been run on this task, so no comparison exists yet."
 }

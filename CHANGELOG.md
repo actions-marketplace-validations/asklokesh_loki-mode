@@ -5,6 +5,52 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v8.5.2
+
+Patch. **The timeout-safe provider seam was the broken one.**
+
+For Codex, `provider_get_tier_param` returns an EFFORT level (xhigh, high, low),
+not a model name. The code says so in its own BUG-PROV-012 note.
+`provider_invoke_argv` passed it to `--model` anyway, so every argv-based
+invocation sent `--model high` and the API rejected it:
+
+```
+400 invalid_request_error: The 'high' model is not supported
+    when using Codex with a ChatGPT account.
+```
+
+This mattered more than an ordinary bug because `provider_invoke` was fine, so
+the broken path was the argv seam, which exists precisely so a call can be
+wrapped in `timeout` (a shell function cannot be exec'd by timeout). A hung
+provider could not be bounded without also breaking the invocation. And it
+failed silently: five trials produced no artifact while looking like slow runs.
+
+Effort now travels in `CODEX_MODEL_REASONING_EFFORT`, exported so it survives
+the `timeout` wrapper, and an empty model name omits the flag rather than
+sending `--model ""`. Verified end to end: 51 seconds, artifact correct.
+
+### Measuring codex properly, and what it showed
+
+Five trials of an identical artifact-verified task through the provider layer,
+free tier, no API spend:
+
+```
+300s (timeout)  48s  80s  71s  67s
+4 of 5 succeeded, median 69s, range 48 to 80s
+```
+
+The timeout is reported rather than discarded. Dropping it would turn a 4-of-5
+success rate into an implied 5-of-5 and overstate reliability.
+
+The spread is the actual finding, and it is why a single sample was refused
+earlier: one shot had timed out and would have been published as "codex:
+timeout" when the same command completed in 51 seconds minutes later. That
+would have been a fabricated competitive claim.
+
+This is still not a cross-CLI comparison, and the artifact says so. Only codex
+has been measured to five trials; opencode, aider, Claude Code and cursor-agent
+have not been run on this task, so no ranking is asserted.
+
 ## v8.5.1
 
 Patch. **The free on-ramp is proven by a build, not by a tier label.**
