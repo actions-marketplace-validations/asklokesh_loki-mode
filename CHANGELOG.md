@@ -5,6 +5,45 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v8.3.1
+
+Patch. **The gate stops lying about why it failed.**
+
+### CI is 2.33x faster, measured
+
+Shell tests was 13m01s of a ~15m pipeline, six times the next slowest job,
+because 289 suites ran serially on one runner. A 4-way shard cut it to 5m35s.
+
+Both figures are observed, not projected. An earlier projection in this repo
+said ~3m15s and was wrong: it assumed the suites cost roughly the same, so four
+shards would be a clean quarter. They do not. Shard timings were 5m35s, 2m33s,
+3m50s and 2m26s, and the wall clock follows the slowest shard rather than the
+mean. The projection has been replaced with the measurement rather than quietly
+removed.
+
+### Two latent bugs the sharding exposed
+
+Both passed serially and failed sharded, which is what made them worth finding.
+
+`test-embeddings.sh` called `skip()` and then `exit 1`, so an unavailable
+optional dependency was reported to the runner as a failing suite. It hid
+behind suite ORDER: run serially, an earlier suite left the module importable
+and the branch never executed. It now exits 0 while still printing the reason
+and a visible SKIP line, so the missing dependency stays reported rather than
+swallowed.
+
+`test-memory-speed-privacy.sh` piped the benchmark through `2>&1`, folding any
+stderr line the interpreter emits into the same stream as the JSON document.
+The parse then died with "Expecting value: line 1 column 1" and named the
+parser instead of the warning that caused it. Stderr now stays on stderr, and
+an empty document is reported as "bench produced NO output" rather than as a
+malformed one, because those are different failures and conflating them costs
+an investigation.
+
+A gate that cannot tell "optional thing not installed" from "the code is
+broken" is one people learn to ignore, and that is how three red releases
+shipped over a real bug earlier the same day.
+
 ## v8.3.0
 
 Minor release. **The first minute, the shop window, and the enterprise promise.**
