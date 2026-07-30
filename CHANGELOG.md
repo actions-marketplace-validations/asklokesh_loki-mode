@@ -5,6 +5,64 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v8.5.0
+
+Minor release. **Know what you paid for, and what the wait was.**
+
+### The receipt now separates progress from rework
+
+Iterations multiply both wall clock and cost, and the Evidence Receipt reported
+only a count. A user seeing "6 iterations" could not tell real work from a gate
+false positive forcing five redos, and neither could we, which is worse: it hid
+whether an expensive run was a slow model or our own harness being wrong.
+
+That is not hypothetical. A measured run here had the agent claim done on every
+iteration while a mock-integrity false positive blocked all six, and a start-sha
+bug made the council see a permanently empty diff so it could never vote done.
+Both were harness defects billed to the user as model cost.
+
+The receipt now carries the split, with the share and the basis:
+
+```
+progress 2 ($0.24) | rework 1 ($0.12) | 33% of the run
+```
+
+"Paying for your own errors" is a named churn driver in this category and no
+competitor surfaces it. It composes with the receipt rather than bolting on:
+rework cost is a deterministic fact derived from records already written, so it
+sits with the facts, not the AI assessments.
+
+Two limits are stated in the artifact itself. Rework counts failed iterations
+only, so an iteration that completed but was forced to repeat by a gate counts
+as progress, which makes the number a floor rather than a ceiling. And with no
+efficiency records the attribution is omitted entirely rather than reporting
+zero rework, because claiming 0% for a run nobody measured would be fabricated
+reassurance.
+
+### The longest silence, not the total time
+
+A ten-minute build reporting something every twenty seconds feels fast. A
+four-minute build silent for three of them feels broken. The loudest complaints
+about agents in this category are not that they were wrong, but that they went
+quiet: "always stuck at Preparing write" (76 comments), "not making changes to
+code", "agent does not execute functions".
+
+`autonomy/lib/silence_report.py` reports the worst gaps and names the step each
+one followed, because a duration alone cannot be fixed:
+
+```
+214.0s  after 'code_review_start' before 'code_review_complete'
+```
+
+Idle time between sessions is excluded and said so explicitly. Measured against
+a real 4,240 event stream, 4,234 gaps were correctly ignored as a human being
+away from the keyboard, leaving three genuine in-build gaps. Without that
+filter, lunch breaks swamp the signal.
+
+Both tools refuse to invent data: malformed records are skipped rather than
+defaulted, and an absent file reports "nothing to measure" instead of a
+zero-silence claim.
+
 ## v8.4.0
 
 Minor release. **Time to first preview is no longer invisible.**

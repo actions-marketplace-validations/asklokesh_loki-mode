@@ -1081,6 +1081,37 @@ def _build_proof(args, loki_dir, target_dir, repo_root):
 
     files_changed, diffs, diff_base_sha = _git_diffstat(target_dir, args.include_diffs)
     iterations = _collect_iterations(loki_dir)
+    # Attribute iterations to PROGRESS vs REWORK. The receipt previously reported
+    # only {count, succeeded, failed}, so a user seeing "6 iterations" could not
+    # tell real work from a gate false-positive that forced five redos -- and
+    # neither could we, which is worse, because it hides whether an expensive run
+    # was a slow model or our own harness being wrong. Measured here: an agent
+    # once claimed done on EVERY iteration while a mock-integrity false positive
+    # blocked all six.
+    #
+    # Deterministic and derived only from records the engine already writes, so
+    # this belongs with the FACTS, not the AI assessments. Failure to import or
+    # attribute leaves iterations untouched rather than guessing: a fabricated
+    # attribution would send someone optimising the wrong thing.
+    try:
+        from iteration_attribution import attribute as _attribute_iterations
+        _attr = _attribute_iterations(loki_dir)
+        if _attr.get("iterations"):
+            iterations["attribution"] = {
+                "progress": _attr["progress"],
+                "rework": _attr["rework"],
+                "rework_cost_share": _attr.get("rework_cost_share"),
+                # Stated in the artifact, not just the tool: rework is a FLOOR.
+                # An iteration that completed but was forced to repeat by a gate
+                # counts as progress, because the blocking gate is not recorded
+                # per iteration. Overstating certainty here would be worse than
+                # omitting the split.
+                "basis": "rework counts FAILED iterations only; a completed "
+                         "iteration forced to repeat by a gate is counted as "
+                         "progress, so rework is a floor",
+            }
+    except Exception:
+        pass
     spec = _collect_spec(loki_dir, target_dir)
     council = _collect_council(loki_dir)
     quality_gates = _collect_quality_gates(loki_dir)
