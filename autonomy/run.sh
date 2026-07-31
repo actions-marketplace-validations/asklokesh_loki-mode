@@ -557,11 +557,20 @@ fi
 # tier names pass through untouched, so an unset LOKI_SESSION_MODEL still
 # defaults to sonnet and "medium" resolves to the same development-tier model
 # today's builds already use. This changes no existing run's model.
-case "$(printf '%s' "${LOKI_SESSION_MODEL:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
+# NORMALIZATION IS TRIM-ONLY + LOWERCASE, matching the estimator and dashboard
+# mirrors exactly. Interior whitespace is deliberately PRESERVED, so " med ium "
+# stays junk here just as it does there. Stripping interior spaces would make
+# this reader accept a value the other two reject, which is the precise kind of
+# divergence the session-pin parity tests exist to catch.
+_loki_generic_tier="${LOKI_SESSION_MODEL:-}"
+_loki_generic_tier="${_loki_generic_tier#"${_loki_generic_tier%%[![:space:]]*}"}"
+_loki_generic_tier="${_loki_generic_tier%"${_loki_generic_tier##*[![:space:]]}"}"
+case "$(printf '%s' "$_loki_generic_tier" | tr '[:upper:]' '[:lower:]')" in
     small)  LOKI_SESSION_MODEL="fast"        ; export LOKI_SESSION_MODEL ;;
     medium) LOKI_SESSION_MODEL="development" ; export LOKI_SESSION_MODEL ;;
     high)   LOKI_SESSION_MODEL="planning"    ; export LOKI_SESSION_MODEL ;;
 esac
+unset _loki_generic_tier
 
 # Process Supervision (opt-in)
 WATCHDOG_ENABLED=${LOKI_WATCHDOG:-"false"}          # Enable process health monitoring

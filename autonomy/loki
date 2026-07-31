@@ -5471,7 +5471,17 @@ cmd_provider_models() {
                 *)           generic="$tier" ;;
             esac
 
-            printf "    %-8s %-14s %-30s (source: %s)\n" \
+            # An EMPTY resolved model is a real, supported state, not a lookup
+            # failure: providers/codex.sh sets CODEX_DEFAULT_MODEL="" on purpose
+            # so no --model flag is passed and Codex resolves an
+            # account-appropriate default (a hardcoded name broke ChatGPT-account
+            # users outright). Say that plainly instead of printing a blank
+            # column. Deliberately NOT filled in from the catalog: this table
+            # reports what will be DISPATCHED, and the catalog id would be a
+            # guess this file is documented as unable to make.
+            [ -n "$value" ] || value="(provider default -- no --model sent)"
+
+            printf "    %-8s %-14s %-38s (source: %s)\n" \
                 "$generic" "(${tier})" "$value" "$source"
         done
 
