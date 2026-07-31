@@ -987,6 +987,12 @@ show_help() {
     echo ""
     echo "Phase A-J features (v7.5.18 - v7.5.28) are default-on. See CHANGELOG."
     echo ""
+    echo "Environment variables an operator would set: docs/environment-variables.md"
+    echo ""
+    echo "Scripting Loki? Exit codes for every command are documented in"
+    echo "docs/exit-codes.md. Severity rises with the code, and 'loki start'"
+    echo "has a richer contract under LOKI_DURABLE_STATE=1 for k8s and ECS."
+    echo ""
     echo "Environment Variables:"
     echo "  Opt-outs: LOKI_HOOK_EVENTS=off, LOKI_DYNAMIC_PROMPT_SECTIONS=keep,"
     echo "  LOKI_MEMORY_BASE_PATH (shared memory dir for app graph)"
@@ -1400,8 +1406,6 @@ cmd_start() {
     local positional_arg=""           # raw positional arg for mode detection
     local issue_ref_explicit=""       # --issue value (when explicit_mode=issue)
     local issue_mode_args=()          # captured issue-mode flags (--dry-run, --pr, etc.)
-    local issue_dry_run=false
-    local issue_no_start=false
     local issue_output_file=""
     local issue_use_worktree=false
     local issue_create_pr=false
@@ -1462,6 +1466,9 @@ cmd_start() {
                 echo "  --no-plan             Skip auto-shown PRD analysis at startup"
                 echo "  --brief \"TEXT\"        Zero-config fast first run from a one-line brief"
                 echo "  --yes, -y             Skip confirmation prompts (auto-confirm)"
+                echo "  --quiet               Suppress [INFO]/[STEP]; warnings and errors still print"
+                echo "  --log-level LEVEL     debug | info | warn | error (default: info)"
+                echo "  --max-duration DUR    Wall-clock cap: seconds, or 90m / 2h (default: none)"
                 echo ""
                 echo "Issue-mode options (only used when input is an ISSUE-REF):"
                 echo "  --dry-run             Preview generated PRD without starting"
@@ -1471,6 +1478,16 @@ cmd_start() {
                 echo "  --pr                  Worktree + auto-create PR"
                 echo "  --ship                Worktree + PR + auto-merge"
                 echo "  --detach, -d          Run in background"
+                echo ""
+                echo "Preview without spending (any input mode):"
+                echo "  loki plan <PRD>       Analyze a spec WITHOUT executing: complexity,"
+                echo "                        estimated iterations, tokens, and cost. Add --json"
+                echo "                        for machine-readable output. This is the dry run"
+                echo "                        for PRD and brief mode; --dry-run above is"
+                echo "                        issue-mode only."
+                echo "  LOKI_CONFIG_DUMP=1 loki start"
+                echo "                        Print the resolved LOKI_* configuration and exit"
+                echo "                        without starting a run or spending anything."
                 echo ""
                 echo "Environment Variables:"
                 echo "  LOKI_PRD_FILE         Path to PRD file (alternative to positional arg)"
@@ -1661,6 +1678,52 @@ cmd_start() {
                 export LOKI_AUTO_CONFIRM=true
                 shift
                 ;;
+            # Wall-clock cap. Accepts plain seconds or a suffix (30m, 2h) --
+            # an operator setting a build timeout thinks in minutes and hours,
+            # and forcing them to compute 7200 invites the off-by-3600 error.
+            --max-duration)
+                if [[ -n "${2:-}" ]]; then
+                    local _md="$2" _mdn _mdmul=1
+                    case "$_md" in
+                        *s) _mdn="${_md%s}" ;;
+                        *m) _mdn="${_md%m}"; _mdmul=60 ;;
+                        *h) _mdn="${_md%h}"; _mdmul=3600 ;;
+                        *)  _mdn="$_md" ;;
+                    esac
+                    if ! [[ "$_mdn" =~ ^[0-9]+$ ]] || [ "$_mdn" -eq 0 ]; then
+                        echo "Error: --max-duration must be a positive duration (e.g. 5400, 90m, 2h); got '$2'" >&2
+                        return 1
+                    fi
+                    export LOKI_MAX_DURATION=$(( _mdn * _mdmul ))
+                    shift 2
+                else
+                    echo "Error: --max-duration requires a value (e.g. 90m)" >&2
+                    return 1
+                fi
+                ;;
+            # Verbosity. --quiet suppresses [INFO]/[STEP]; warnings and errors
+            # always print, so a quiet run can still say why it failed.
+            --quiet)
+                export LOKI_LOG_LEVEL=warn
+                shift
+                ;;
+            --log-level)
+                if [[ -n "${2:-}" ]]; then
+                    case "$2" in
+                        debug|info|warn|error)
+                            export LOKI_LOG_LEVEL="$2"
+                            ;;
+                        *)
+                            echo "Error: --log-level must be debug, info, warn, or error (got '$2')" >&2
+                            return 1
+                            ;;
+                    esac
+                    shift 2
+                else
+                    echo "Error: --log-level requires a value (debug|info|warn|error)" >&2
+                    return 1
+                fi
+                ;;
             --bmad-project)
                 if [[ -n "${2:-}" ]]; then
                     bmad_project_path="$2"
@@ -1836,12 +1899,10 @@ cmd_start() {
                 ;;
             # v6.84.0: issue-mode flags (only meaningful when input is an issue)
             --dry-run)
-                issue_dry_run=true
                 issue_mode_args+=("--dry-run")
                 shift
                 ;;
             --no-start)
-                issue_no_start=true
                 issue_mode_args+=("--no-start")
                 shift
                 ;;
@@ -9879,6 +9940,7 @@ cmd_config() {
             echo "  issue.provider       Default issue provider: github, gitlab, jira, azure_devops"
             echo "  blind_validation     Blind validation mode: true, false (default: true)"
             echo "  adversarial_testing  Adversarial testing: true, false (default: true)"
+            echo "  log_level            Output verbosity: debug, info, warn, error (default: info)"
             echo "  spawn_timeout        [DEPRECATED] No effect since WAVE9 (no consumer); accepted for back-compat"
             echo "  spawn_retries        [DEPRECATED] No effect since WAVE9 (no consumer); accepted for back-compat"
             echo "  notify.slack         Slack webhook URL"
@@ -9954,6 +10016,12 @@ cmd_config_set() {
                 *) echo -e "${RED}Invalid $key: $value (expected: true, false)${NC}"; return 1 ;;
             esac
             ;;
+        log_level)
+            case "$value" in
+                debug|info|warn|error) ;;
+                *) echo -e "${RED}Invalid log_level: $value (expected: debug, info, warn, error)${NC}"; return 1 ;;
+            esac
+            ;;
         spawn_timeout|spawn_retries)
             if ! echo "$value" | grep -qE '^[0-9]+$'; then
                 echo -e "${RED}Invalid $key: $value (expected: integer)${NC}"; return 1
@@ -9985,7 +10053,7 @@ cmd_config_set() {
             echo -e "${RED}Unknown configuration key: '$key'${NC}"
             echo ""
             echo "Valid keys: maxTier, provider, issue.provider, blind_validation,"
-            echo "  adversarial_testing, spawn_timeout, spawn_retries, budget,"
+            echo "  adversarial_testing, log_level, spawn_timeout, spawn_retries, budget,"
             echo "  model.planning, model.development, model.fast,"
             echo "  notify.slack, notify.discord"
             echo ""
@@ -29711,6 +29779,7 @@ cmd_ci() {
                 echo "  --github-comment     Post review results as PR comment (needs GITHUB_TOKEN)"
                 echo "  --fail-on <levels>   Set exit code 1 on severity: critical,high,medium,low"
                 echo "  --format <fmt>       Output format: json, markdown, github (default: markdown)"
+                echo "  --json               Alias for --format json"
                 echo "  --help, -h           Show this help"
                 echo ""
                 echo "Exit codes:"
@@ -29751,6 +29820,15 @@ cmd_ci() {
                     return 2
                 fi
                 ci_fail_on="$(echo "$ci_fail_on" | tr '[:upper:]' '[:lower:]')"
+                shift
+                ;;
+            # --json is an alias for --format json. `loki ci` could already
+            # emit JSON, but only under a flag name no other command uses, so a
+            # script author reaching for the repo-wide --json convention found
+            # nothing and concluded the capability was missing. Same output,
+            # one spelling everywhere.
+            --json)
+                ci_format="json"
                 shift
                 ;;
             --format)
