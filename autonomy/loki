@@ -11376,6 +11376,25 @@ except Exception:
         echo ""
         echo "Then re-run: loki doctor"
         echo "Meanwhile 'loki tour' works right now -- no provider, no key, no spend."
+        # Adoption signal: which CLASS of dependency stopped this first run.
+        # Mapped to an enum here rather than forwarding the blocker TEXT, so
+        # the payload can never carry a path or a version. Best-effort and
+        # backgrounded: telemetry must never delay or fail a doctor run, and
+        # every existing opt-out still gates it downstream.
+        if declare -f loki_emit_first_run_blocked >/dev/null 2>&1; then
+            local _blk_key="other"
+            case "$_doctor_blockers" in
+                *"No AI provider CLI"*) _blk_key="no_provider" ;;
+                *"Node.js is not installed"*|*"Node.js must be"*) _blk_key="node" ;;
+                *"Python 3 is not installed"*|*"Python 3 must be"*) _blk_key="python3" ;;
+                *"jq is not installed"*) _blk_key="jq" ;;
+                *"git is not installed"*) _blk_key="git" ;;
+                *"curl is not installed"*) _blk_key="curl" ;;
+                *"Free up disk"*) _blk_key="disk" ;;
+                *"broken symlink"*) _blk_key="skill_symlink" ;;
+            esac
+            ( loki_emit_first_run_blocked "$_blk_key" >/dev/null 2>&1 </dev/null & ) 2>/dev/null || true
+        fi
         return 1
     elif [ "$warn_count" -gt 0 ]; then
         echo -e "${YELLOW}All required checks passed with some warnings.${NC}"
