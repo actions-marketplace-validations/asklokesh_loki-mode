@@ -780,7 +780,12 @@ run_check "tests/test-stop-scoping.sh (stop scoping + per-project stop)" "bash t
 # CI). Running the whole harness closes that class for good. The per-name entries
 # below are kept as a FAST fail-early subset for the most-edited suites.
 if [ "${LOKI_LOCALCI_FULL_SHELL:-1}" = "1" ]; then
-  run_check "tests/run-all-tests.sh (FULL CI shell suite -- authoritative)" "bash tests/run-all-tests.sh 2>&1 | tail -6"
+  # `tail -6` kept ONLY the totals, so a failing run reported "Failed: 1" and
+  # discarded the line naming WHICH suite failed. That turned a one-line
+  # diagnosis into a full re-run of a ~25-minute suite to find out. Keep the
+  # FAILED lines (there are few, by definition) ahead of the totals.
+  run_check "tests/run-all-tests.sh (FULL CI shell suite -- authoritative)" \
+    "bash tests/run-all-tests.sh 2>&1 | grep -E '(FAILED|Passed:|Failed:)' | tail -20"
 fi
 
 # Fast fail-early subset (also covered by the full suite above):
