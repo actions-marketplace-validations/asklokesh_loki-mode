@@ -61,6 +61,16 @@ if [ -f "$_LOKI_SCRIPT_DIR/tui.sh" ]; then
     source "$_LOKI_SCRIPT_DIR/tui.sh"
 fi
 
+# Portable lock helper -- provides safe_acquire_lock / safe_release_lock.
+# Needed here (not just in run.sh) because ensure_dashboard_venv tears down and
+# rebuilds the HOST-GLOBAL ~/.loki/dashboard-venv, so two concurrent CLI
+# invocations can otherwise delete the venv the other is importing from.
+# Self-guarded against double-source.
+if [ -f "$_LOKI_SCRIPT_DIR/lib/lock.sh" ]; then
+    # shellcheck source=lib/lock.sh
+    source "$_LOKI_SCRIPT_DIR/lib/lock.sh"
+fi
+
 # Crash-reporting helpers (provides loki_collection_enabled, used by
 # cmd_telemetry status and cmd_crash). Self-guarded against double-source.
 if [ -f "$_LOKI_SCRIPT_DIR/crash.sh" ]; then
@@ -446,6 +456,33 @@ ensure_dashboard_venv() {
         return 0
     fi
 
+    # The venv is HOST-GLOBAL, so concurrent runs must not rebuild it at once:
+    # one run's `rm -rf` would delete the tree another is importing from. Lock
+    # the venv path itself -- safe_acquire_lock appends ".lockdir", giving a
+    # SIBLING mutex that the teardown below cannot destroy. Timeout must outlast
+    # a real cold `python3 -m venv` + `pip install` (not the 5s used by the
+    # JSON read-modify-write call sites).
+    local _venv_locked=false
+    if type safe_acquire_lock >/dev/null 2>&1; then
+        if safe_acquire_lock "$dashboard_venv" "${LOKI_VENV_LOCK_TIMEOUT:-300}"; then
+            _venv_locked=true
+            # The winner may have finished the build while we waited -- re-probe
+            # before tearing anything down.
+            DASHBOARD_PYTHON="python3"
+            [ -x "${dashboard_venv}/bin/python3" ] && DASHBOARD_PYTHON="${dashboard_venv}/bin/python3"
+            if "$DASHBOARD_PYTHON" -c "import fastapi; import sqlalchemy; import aiosqlite" 2>/dev/null; then
+                safe_release_lock "$dashboard_venv"
+                return 0
+            fi
+        else
+            # Do NOT fall through into the rm -rf unlocked -- that is the exact
+            # race this lock exists to prevent.
+            echo -e "${RED}Timed out waiting for another run to finish building the dashboard venv${NC}"
+            echo "  Retry, or remove a stale lock: rm -rf ${dashboard_venv}.lockdir"
+            return 1
+        fi
+    fi
+
     echo -e "${YELLOW}Setting up dashboard virtualenv...${NC}"
 
     # Create venv if missing or broken
@@ -461,6 +498,7 @@ ensure_dashboard_venv() {
             echo "You may need to install python3-venv:"
             echo "  sudo apt install python3-venv    (Debian/Ubuntu)"
             echo "  brew install python3              (macOS)"
+            [ "$_venv_locked" = true ] && safe_release_lock "$dashboard_venv"
             return 1
         }
     fi
@@ -485,6 +523,7 @@ ensure_dashboard_venv() {
         if ! "${dashboard_venv}/bin/pip" install fastapi uvicorn pydantic websockets sqlalchemy aiosqlite httpx pexpect watchdog 2>&1 | tail -1; then
             echo -e "${RED}Failed to install dashboard dependencies${NC}"
             echo "Try manually: ${dashboard_venv}/bin/pip install fastapi uvicorn sqlalchemy aiosqlite"
+            [ "$_venv_locked" = true ] && safe_release_lock "$dashboard_venv"
             return 1
         fi
         # Try greenlet separately (optional, needs C compiler on some platforms)
@@ -497,9 +536,11 @@ ensure_dashboard_venv() {
         echo "Try removing the venv and retrying:"
         echo "  rm -rf ${dashboard_venv}"
         echo "  loki dashboard start"
+        [ "$_venv_locked" = true ] && safe_release_lock "$dashboard_venv"
         return 1
     fi
 
+    [ "$_venv_locked" = true ] && safe_release_lock "$dashboard_venv"
     return 0
 }
 
