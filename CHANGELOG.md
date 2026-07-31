@@ -5,6 +5,65 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v8.6.0
+
+Enterprise deployment, CLI operability, and the first adoption instrumentation.
+Twenty-five items. Fourteen were real defects, and the ones that mattered
+shared a property: every one was invisible to a green CI.
+
+### Fixed -- things that reported success while failing
+
+- **Nothing we published had ever been signed.** `provenance.yml` claimed it
+  signed image digests. It triggers on `release: published`, our releases are
+  created with the default `GITHUB_TOKEN`, and GitHub suppresses trigger events
+  for that token -- so it fired twice ever, both manual, in April. The registry
+  confirmed zero `sha256-*.sig` tags. Signing now runs inside the job that
+  pushes the image, where no trigger can skip it. A workflow that never fires
+  leaves an EMPTY run list, never a red one.
+- **A build killed by the cost breaker reported success.** `budget_exceeded`
+  exited 0 on the reasoning that a human would resume -- true at a terminal,
+  false inside a k8s Job, where the pipeline went green over incomplete work.
+  Now exit 20 (deterministic: the same cap exhausts the same way).
+- **The Bun route never returned 20 at all**, silently losing the k8s no-retry
+  signal on the route we are migrating toward. A parity test now derives its
+  expectations from run.sh rather than restating them.
+- **`doctor --json` reported `ok: true` on a host that cannot run a build**,
+  contradicting the same command's exit code. Each provider CLI is individually
+  optional, so none can be marked required; the aggregate "none at all is a
+  blocker" check existed only on the text path.
+- **A first-run dead end.** On a host with no provider CLI, one route named the
+  blockers and pointed at `loki tour` (no provider, no key, no spend) while the
+  other said "some required prerequisites are missing" and stopped.
+- `helm uninstall` deleted the audit-log PVC; `worker.mode=Deployment`
+  installed clean and rendered no worker; NetworkPolicy declared
+  `policyTypes: [Ingress, Egress]` with `egress: - {}`, restricting nothing;
+  k8s SIGKILLed builds 30s into a rolling upgrade.
+
+### Added
+
+- `LOKI_MAX_DURATION` / `--max-duration` (accepts `90m`, `2h`): spend and
+  iterations were capped, but a STALLED run was bounded by neither.
+- `loki verify --json` on stdout, and `--json` as an alias on `loki ci`.
+- `--quiet` / `LOKI_LOG_LEVEL`, with errors as a hard floor -- a verbosity
+  control that can hide why a build failed is a footgun.
+- `first_run_blocked` telemetry: names the CLASS of dependency that stops a
+  first run. One enum-clamped field, once per install, strict opt-in, every
+  existing opt-out still wins, documented in `docs/PRIVACY.md`.
+- ECS/Fargate Terraform module (we shipped Helm and nothing for ECS),
+  `values.schema.json`, a `helm test` hook, and `scripts/enterprise-smoke.sh`.
+- `docs/exit-codes.md` and `docs/environment-variables.md`, both linked from
+  `loki --help` and both guarded by tests asserting doc-matches-source.
+
+### Changed
+
+- **43 of 112 commands were unreachable from `loki help`** -- including
+  `loki proof`, the Evidence Receipt, the command the trust argument rests on.
+  A complete index now backs the curated sections, gated so a new command
+  cannot ship invisible.
+- `loki start --help` points at `loki plan` for a no-spend preview.
+- Resolved the `loki verify` 1-vs-2 exit-code contradiction in favour of the
+  implementation; severity now rises with the code everywhere.
+
 ## v8.5.2
 
 Patch. **The timeout-safe provider seam was the broken one.**
