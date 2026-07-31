@@ -11446,7 +11446,7 @@ except Exception:
     print('warn|Catalog unreadable or missing an ISO \"updated\" date -- cannot determine age')
 else:
     if age > STALE_DAYS:
-        print(f'warn|Last updated {updated} ({age} days ago) -- may be missing newer models')
+        print(f'warn|Last updated {updated} ({age} days ago) -- may be missing newer models. Refresh: python3 tools/probe-model-catalog.py (reports new model IDs from provider docs; you verify and edit the catalog by hand -- never auto-applied)')
     else:
         print(f'pass|Last updated {updated} ({age} days ago)')
 " 2>/dev/null)
@@ -11754,7 +11754,12 @@ try:
     _cat_updated = json.load(open(_cat_path))['updated']
     _cat_age = (_dt.date.today() - _dt.date.fromisoformat(_cat_updated)).days
     if _cat_age > CATALOG_STALE_DAYS:
-        warn_count += 1
+        # Deliberately NOT counted. The block comment above states catalog age is
+        # excluded from pass/fail/warn and from 'ok' so a stale catalog can never
+        # fail a build -- this increment contradicted that contract, and it also
+        # broke route parity: the Bun route (doctor.ts) never counted it, so the
+        # same host reported warnings: 2 on bash and 1 on Bun. bun-parity
+        # compares these byte for byte, so it would have gone red on day 91.
         model_catalog = {'status': 'warn', 'updated': _cat_updated, 'age_days': _cat_age,
                          'detail': f'Last updated {_cat_updated} ({_cat_age} days ago) -- may be missing newer models'}
     else:
