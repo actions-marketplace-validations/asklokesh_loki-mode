@@ -34,7 +34,7 @@ this again produce a different result**.
 | Code | Meaning | Should the platform retry? |
 |---|---|---|
 | 0 | Completed, or a human stopped it (council approved, completion promise, force-stop, paused, interrupted, stopped) | No. It is done, or a person is driving. |
-| 20 | Deterministic terminal failure (failed a gate, max iterations, max retries, **budget exceeded**, policy blocked, contradictory spec) | **No.** The same inputs fail the same way; a retry only spends money to arrive here again. |
+| 20 | Deterministic terminal failure (failed a gate, max iterations, max retries, **budget exceeded**, **wall-clock cap reached**, policy blocked, contradictory spec) | **No.** The same inputs fail the same way; a retry only spends money to arrive here again. |
 | any other nonzero | Crash (SIGKILL, eviction, node loss) | Yes. The restarted run resumes from the durable volume. |
 
 `budget_exceeded` sits with the failures deliberately. It used to exit 0 on the

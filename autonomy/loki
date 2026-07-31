@@ -1468,6 +1468,7 @@ cmd_start() {
                 echo "  --yes, -y             Skip confirmation prompts (auto-confirm)"
                 echo "  --quiet               Suppress [INFO]/[STEP]; warnings and errors still print"
                 echo "  --log-level LEVEL     debug | info | warn | error (default: info)"
+                echo "  --max-duration DUR    Wall-clock cap: seconds, or 90m / 2h (default: none)"
                 echo ""
                 echo "Issue-mode options (only used when input is an ISSUE-REF):"
                 echo "  --dry-run             Preview generated PRD without starting"
@@ -1676,6 +1677,29 @@ cmd_start() {
             --yes|-y)
                 export LOKI_AUTO_CONFIRM=true
                 shift
+                ;;
+            # Wall-clock cap. Accepts plain seconds or a suffix (30m, 2h) --
+            # an operator setting a build timeout thinks in minutes and hours,
+            # and forcing them to compute 7200 invites the off-by-3600 error.
+            --max-duration)
+                if [[ -n "${2:-}" ]]; then
+                    local _md="$2" _mdn _mdmul=1
+                    case "$_md" in
+                        *s) _mdn="${_md%s}" ;;
+                        *m) _mdn="${_md%m}"; _mdmul=60 ;;
+                        *h) _mdn="${_md%h}"; _mdmul=3600 ;;
+                        *)  _mdn="$_md" ;;
+                    esac
+                    if ! [[ "$_mdn" =~ ^[0-9]+$ ]] || [ "$_mdn" -eq 0 ]; then
+                        echo "Error: --max-duration must be a positive duration (e.g. 5400, 90m, 2h); got '$2'" >&2
+                        return 1
+                    fi
+                    export LOKI_MAX_DURATION=$(( _mdn * _mdmul ))
+                    shift 2
+                else
+                    echo "Error: --max-duration requires a value (e.g. 90m)" >&2
+                    return 1
+                fi
                 ;;
             # Verbosity. --quiet suppresses [INFO]/[STEP]; warnings and errors
             # always print, so a quiet run can still say why it failed.

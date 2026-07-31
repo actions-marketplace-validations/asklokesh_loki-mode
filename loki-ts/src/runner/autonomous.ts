@@ -1132,6 +1132,7 @@ const ENT3_TERMINAL_FAILURE = new Set([
   "max_iterations_reached",
   "max_retries_exceeded",
   "budget_exceeded",
+  "max_duration_reached",
   "policy_blocked",
   "inconclusive_spec_contradiction",
 ]);

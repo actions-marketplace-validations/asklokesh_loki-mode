@@ -16498,6 +16498,46 @@ check_max_iterations() {
     return 1
 }
 
+# WALL-CLOCK CAP. Returns 0 (stop) when the run has exceeded LOKI_MAX_DURATION
+# seconds. Unset or 0 = no cap, which is the default and exactly today's
+# behavior.
+#
+# WHY A THIRD BOUND. Spend was already capped (LOKI_BUDGET_LIMIT) and so were
+# iterations (LOKI_MAX_ITERATIONS), but a run that STALLS is bounded by neither:
+# a hung provider call or a wedged subprocess burns hours while spending almost
+# nothing and completing no iteration, so neither existing breaker ever trips.
+# It runs until something external kills it -- and an external kill leaves no
+# terminal status, so the receipt cannot say what happened.
+#
+# Kubernetes operators already have activeDeadlineSeconds in the Job spec, but
+# that SIGKILLs the pod: no status is written, no receipt, and the platform
+# sees a crash rather than a deliberate stop. This cap stops the loop cleanly
+# at the next iteration boundary so the run still explains itself.
+#
+# It is checked at the boundary, not mid-iteration: interrupting an agent
+# mid-write is how you get a half-applied change. So the effective stop time is
+# the cap plus the remainder of the current iteration, which the log states
+# rather than pretending to be exact.
+check_max_duration() {
+    local cap="${LOKI_MAX_DURATION:-0}"
+    case "$cap" in
+        ''|*[!0-9]*) return 1 ;;   # unset or non-numeric: no cap, never stop
+    esac
+    [ "$cap" -eq 0 ] && return 1
+
+    local start="${_LOKI_RUN_START_EPOCH:-0}"
+    [ "$start" -eq 0 ] 2>/dev/null && return 1
+
+    local now elapsed
+    now=$(date +%s)
+    elapsed=$((now - start))
+    if [ "$elapsed" -ge "$cap" ]; then
+        log_warn "Wall-clock cap reached (${elapsed}s elapsed, LOKI_MAX_DURATION=${cap}s). Stopping at the iteration boundary."
+        return 0
+    fi
+    return 1
+}
+
 # Load latest ledger content for context injection
 load_ledger_context() {
     local ledger_content=""
@@ -20605,6 +20645,18 @@ except Exception as exc:
             return 20
         fi
 
+        # Wall-clock cap. Checked alongside the iteration cap and treated the
+        # same way: a distinct terminal status so the receipt and `loki why`
+        # can say the run ran out of TIME rather than iterations or money, and
+        # exit 20 because re-running the same spec under the same cap will hit
+        # the same wall. The operator raises LOKI_MAX_DURATION (or narrows the
+        # spec) and submits again.
+        if check_max_duration; then
+            save_state "$retry" "max_duration_reached" 20
+            emit_completion_summary max_duration
+            return 20
+        fi
+
         # Increment after all pre-attempt stop checks pass.
         ((ITERATION_COUNT++))
 
@@ -24297,7 +24349,8 @@ except Exception:
     #        promise, force-stop, or paused/interrupted/stopped where a HUMAN
     #        chose to stop and will resume). Job -> Complete, no retry.
     #   20 = deterministic terminal failure (failed, max_iterations_reached,
-    #        max_retries_exceeded, budget_exceeded, policy_blocked). Re-running on
+    #        max_retries_exceeded, budget_exceeded, max_duration_reached,
+    #        policy_blocked). Re-running on
     #        the same inputs fails the same way -> Job must NOT retry. The Helm Job pairs
     #        this with restartPolicy: Never + a podFailurePolicy rule that maps
     #        exit 20 to FailJob (no retry), so a deterministic failure does not
@@ -24329,7 +24382,7 @@ except Exception:
             # The operator raises the cap (or narrows the spec) and submits a
             # NEW Job -- the same remedy as max_iterations_reached, which is why
             # it shares that code.
-            failed|max_iterations_reached|max_retries_exceeded|budget_exceeded|policy_blocked|inconclusive_spec_contradiction)
+            failed|max_iterations_reached|max_retries_exceeded|budget_exceeded|max_duration_reached|policy_blocked|inconclusive_spec_contradiction)
                 result=20 ;;
             *)
                 # Unknown/running/exited terminal: leave $result as-is (nonzero on a
