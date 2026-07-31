@@ -44,7 +44,14 @@ export type DiskCheck = {
 // v7.5.15: sentrux architectural-drift gate state exposed in --json output.
 // Sibling of checks/disk -- intentionally not counted in the summary tally
 // to keep summary numbers backwards-compatible with v7.5.14 consumers.
-export type SentruxCheck = {
+export type AiProviderCheck = {
+  found: boolean;
+  status: Status;
+  required: string;
+  detail: string | null;
+};
+
+type SentruxCheck = {
   found: boolean;
   version: string | null;
   status: Status;
@@ -82,6 +89,7 @@ export type DoctorJson = {
   loki_mode_version: string;
   checks: ToolCheck[];
   disk: DiskCheck;
+  ai_provider: AiProviderCheck;
   sentrux: SentruxCheck;
   receipt_signing: ReceiptSigningCheck;
   memory: MemoryHealth;
@@ -437,10 +445,32 @@ export async function buildDoctorJson(): Promise<DoctorJson> {
   else if (disk.status === "fail") failed++;
   else warnings++;
 
+  // AGGREGATE PROVIDER CHECK, mirroring autonomy/loki:cmd_doctor_json. Each
+  // provider CLI is individually optional -- Claude OR Codex OR Cline OR Aider
+  // -- so none can be marked required on its own. Having NONE is a blocker,
+  // and the text path on both routes reports it as one.
+  //
+  // Without this, --json reported zero failures and ok true on a host that
+  // cannot run a build, disagreeing with the same command's own exit code.
+  const anyProviderFound = ["claude", "codex", "cline", "aider"].some(
+    (p) => checks.find((c) => c.command === p)?.found === true,
+  );
+  const aiProvider: AiProviderCheck = {
+    found: anyProviderFound,
+    status: anyProviderFound ? "pass" : "fail",
+    required: "required",
+    detail: anyProviderFound
+      ? null
+      : "No AI provider CLI. Fix: npm install -g @anthropic-ai/claude-code",
+  };
+  if (anyProviderFound) passed++;
+  else failed++;
+
   return {
     loki_mode_version: getVersion(),
     checks,
     disk,
+    ai_provider: aiProvider,
     sentrux,
     receipt_signing: receiptSigning,
     memory,

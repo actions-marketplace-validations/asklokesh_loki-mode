@@ -40,9 +40,12 @@ trap 'rm -rf "$SHIM"' EXIT
 for b in bash sh python3 python sed awk grep cat tr head tail sort uniq wc \
          date mkdir rm ls printf env dirname basename cut find xargs stat \
          node jq git curl df uname bun; do
-    for d in /bin /usr/bin /opt/homebrew/bin /usr/local/bin; do
-        [ -e "$d/$b" ] && ln -sf "$d/$b" "$SHIM/$b" 2>/dev/null && break
-    done
+    # Resolve via command -v rather than guessing directories: hardcoding
+    # /opt/homebrew/bin is one developer's layout (and is rejected by
+    # tests/test-no-hardcoded-paths.sh for exactly that reason). This finds
+    # each tool wherever THIS machine keeps it.
+    _src="$(command -v "$b" 2>/dev/null)"
+    [ -n "$_src" ] && ln -sf "$_src" "$SHIM/$b" 2>/dev/null
 done
 
 # stdout only, matching what the bun-parity gate captures. The provider install
