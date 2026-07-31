@@ -49,12 +49,17 @@ function bashArms(): { clean: string[]; terminal: string[] } {
 
   const clean = /^\s*(council_approved\|[^)]*)\)\s*$/m.exec(block);
   const terminal = /^\s*(failed\|max_iterations_reached\|[^)]*)\)\s*$/m.exec(block);
-  if (!clean || !terminal) {
+  // Check the capture GROUP, not just the match object: a match with an
+  // unpopulated group would otherwise split(undefined) at runtime, and strict
+  // TS is right to reject it.
+  const cleanArm = clean?.[1];
+  const terminalArm = terminal?.[1];
+  if (!cleanArm || !terminalArm) {
     throw new Error("could not locate the ENT-3 case arms inside the durable-state block");
   }
   return {
-    clean: clean[1].split("|"),
-    terminal: terminal[1].split("|"),
+    clean: cleanArm.split("|"),
+    terminal: terminalArm.split("|"),
   };
 }
 
