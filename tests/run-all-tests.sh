@@ -694,6 +694,14 @@ run_test "receipt attributes cost to progress vs rework" "$SCRIPT_DIR/test-recei
 run_test "silence report (longest in-build gap, idle excluded)" "$SCRIPT_DIR/test-silence-report.sh"
 run_test "free on-ramp stays wired (codex, zero API spend)" "$SCRIPT_DIR/test-free-onramp.sh"
 run_test "codex argv seam: effort is not a model name" "$SCRIPT_DIR/test-codex-argv-model.sh"
+run_test "helm values schema rejects bad values by name" "$SCRIPT_DIR/test-helm-values-schema.sh"
+run_test "helm test hook proves the release serves" "$SCRIPT_DIR/test-helm-test-hook.sh"
+run_test "ECS/Fargate module structure + Helm parity" "$SCRIPT_DIR/test-ecs-fargate-module.sh"
+run_test "audit PVC can outlive the release (compliance)" "$SCRIPT_DIR/test-audit-pvc-retention.sh"
+run_test "worker grace period honours mid-build shutdown" "$SCRIPT_DIR/test-worker-grace-period.sh"
+run_test "k8s sizing says what was measured and what was not" "$SCRIPT_DIR/test-k8s-sizing-honesty.sh"
+run_test "air-gapped k8s install is honest about scope" "$SCRIPT_DIR/test-airgap-k8s-install.sh"
+run_test "enterprise smoke script contract (offline)" "$SCRIPT_DIR/test-enterprise-smoke-script.sh"
 run_test "ShellCheck Linting" "$SCRIPT_DIR/run-shellcheck.sh"
 
 # Summary

@@ -133,6 +133,41 @@ jobs:
       - name: Lint Helm chart
         run: helm lint deploy/helm/autonomi
 
+      # LINT IS NOT ENOUGH ON ITS OWN. `helm lint` renders with the DEFAULT
+      # values, where ingress and keda are off and worker.mode is "job". Every
+      # template guarded by `{{- if .Values.ingress.enabled }}` or the
+      # deployment/serverless worker branches is therefore never exercised, so a
+      # broken conditional ships green and only fails for the operator who turns
+      # that feature on.
+      #
+      # Rendering each optional path costs seconds and is the difference between
+      # "the chart parses" and "the chart works in the configurations we
+      # document".
+      - name: Render optional paths
+        run: |
+          set -euo pipefail
+          for combo in \
+            "ingress.enabled=true" \
+            "keda.enabled=true" \
+            "worker.mode=deployment" \
+            "worker.mode=serverless" \
+            "security.networkPolicy.enabled=true"
+          do
+            echo "== helm template --set ${combo}"
+            helm template ci deploy/helm/autonomi --set "${combo}" > /dev/null
+          done
+
+      # The schema must REJECT bad values, not merely exist. A schema that
+      # accepts everything looks like validation and is not.
+      - name: values.schema.json rejects bad values
+        run: |
+          set -uo pipefail
+          if helm template ci deploy/helm/autonomi --set worker.mode=Deployment >/dev/null 2>&1; then
+            echo "FAIL: worker.mode=Deployment was accepted; the schema is not enforcing"
+            exit 1
+          fi
+          echo "OK: invalid worker.mode rejected by values.schema.json"
+
   dashboard-build:
     name: Dashboard build verification
     runs-on: ubuntu-latest
