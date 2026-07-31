@@ -87,6 +87,26 @@ records what was proven and what was not, bound to the specific diff.
 "We prove behavior is unchanged" is a stronger claim than "we preserve business
 logic," and it is the one you can check.
 
+The full procedure -- what each phase does, what the friction taxonomy
+distinguishes, and where the safety gates sit -- is in
+[skills/healing.md](../skills/healing.md), with the research it draws on in
+[references/legacy-healing-patterns.md](../references/legacy-healing-patterns.md).
+
+### The friction question, concretely
+
+The hardest part of a legacy migration is not translating syntax. It is telling
+the difference between:
+
+- a `sleep 30` that is genuinely dead weight, and
+- a `sleep 30` that is the only thing preventing a race condition nobody wrote
+  down, whose author left in 2019
+
+Delete the second and the system breaks in production, weeks later, in a way
+nobody connects to the migration. This is why the auditor blocks removal of
+*unclassified* friction: not because the friction is sacred, but because
+"we do not know what this does yet" is a real state that deserves a name
+instead of a guess.
+
 ## Honest scope
 
 - **Measured and working:** `--assess` on real repositories, verified by
