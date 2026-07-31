@@ -373,6 +373,11 @@ checks, and costs about a minute.
 forces serial for diagnosis, since overlapping provider-backed suites starve
 each other.
 
+**Measured 2026-07-31:** the 323-suite shell run went from ~1440s serial to
+**352s sharded 4 ways -- 4.1x, 0 failures, identical coverage** (the partition
+is index-based, so the union of shards is provably the whole suite). That step
+was the bulk of the old 26m50s gate.
+
 After a release ships, run the post-release distribution validation:
 - npm: `npm pack loki-mode@<VERSION>`, untar, run `bash package/bin/loki version`
 - Docker: `docker pull asklokesh/loki-mode:<VERSION>`, `docker run --rm <img> version`,
