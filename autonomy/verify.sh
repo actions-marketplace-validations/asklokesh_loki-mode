@@ -39,12 +39,23 @@
 #   2  BLOCKED
 #   3  verifier error (could not complete; never silently passes)
 #
-# NOTE on exit-code divergence from the spec: spec Section 1.1 lists
-# 0=VERIFIED, 1=BLOCKED, 2=CONCERNS, 3=error (BLOCKED and CONCERNS swapped
-# vs this implementation). This module follows the explicit BUILD TASK
-# ordering (0/1/2 = VERIFIED/CONCERNS/BLOCKED). A human must reconcile the
-# two before the GitHub App (Phase 2) consumes exit codes. The divergence is
-# surfaced in `loki verify --help`.
+# EXIT-CODE ORDERING, RECONCILED. An early draft spec listed
+# 0=VERIFIED, 1=BLOCKED, 2=CONCERNS, and this header used to say a human must
+# reconcile the two before the GitHub App consumed exit codes. That is now
+# done, in favor of THIS implementation: 0/1/2/3 =
+# VERIFIED/CONCERNS/BLOCKED/error.
+#
+# Why this ordering wins. The code is authoritative and always has been
+# (VERIFY_EXIT_* below), `loki verify --help` documents it, and
+# wiki/CLI-Reference.md documents it. The draft spec that said otherwise is not
+# in this repository and has no consumers. Renumbering working code to match an
+# absent document would break every existing caller to satisfy nothing.
+#
+# It is also the ordering an integrator expects: severity rises with the code,
+# so `[ $rc -ge 2 ]` means "at least blocked". The reverse would make 1 more
+# severe than 2, which no one guesses correctly.
+#
+# See docs/exit-codes.md for the exit codes of every command.
 
 set -uo pipefail
 
@@ -2093,16 +2104,16 @@ VERDICT MODEL:
     Uncommitted working-tree changes are not verified; commit them first. An
     empty diff yields CONCERNS (nothing to verify), never VERIFIED.
 
-EXIT CODES (this implementation):
+EXIT CODES:
     0  VERIFIED
     1  CONCERNS
     2  BLOCKED
     3  verifier error (could not complete; never silently passes)
 
-    NOTE: the verification spec (Section 1.1) lists 1=BLOCKED, 2=CONCERNS.
-    This implementation follows the build-task ordering (1=CONCERNS,
-    2=BLOCKED). A human must reconcile the two before the GitHub App consumes
-    these codes.
+    Severity rises with the code, so `[ $rc -ge 2 ]` means "at least blocked".
+    An early draft spec listed 1=BLOCKED, 2=CONCERNS; that ordering was
+    rejected and is not used anywhere. See docs/exit-codes.md for every
+    command's codes.
 
 OUTPUT:
     <out>/evidence.json   consolidated machine-readable evidence (schema 1.0)
