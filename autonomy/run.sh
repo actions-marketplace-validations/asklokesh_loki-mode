@@ -24266,11 +24266,11 @@ except Exception:
     #
     # Contract (LOKI_DURABLE_STATE=1 only; local/CI exit codes are unchanged):
     #   0  = success / human-controlled clean stop (council approved, completion
-    #        promise, force-stop, or paused/interrupted/budget/stopped where a
-    #        human will resume). Job -> Complete, no retry.
+    #        promise, force-stop, or paused/interrupted/stopped where a HUMAN
+    #        chose to stop and will resume). Job -> Complete, no retry.
     #   20 = deterministic terminal failure (failed, max_iterations_reached,
-    #        max_retries_exceeded, exited, policy_blocked). Re-running on the same
-    #        inputs fails the same way -> Job must NOT retry. The Helm Job pairs
+    #        max_retries_exceeded, budget_exceeded, policy_blocked). Re-running on
+    #        the same inputs fails the same way -> Job must NOT retry. The Helm Job pairs
     #        this with restartPolicy: Never + a podFailurePolicy rule that maps
     #        exit 20 to FailJob (no retry), so a deterministic failure does not
     #        burn the backoffLimit (the Job records the failure; an operator
@@ -24283,9 +24283,25 @@ except Exception:
         _final_state_file="$(_loki_state_file)"
         _final_status=$(LOKI_STATE_FILE="$_final_state_file" python3 -c "import json, os; print(json.load(open(os.environ['LOKI_STATE_FILE'])).get('status','unknown'))" 2>/dev/null || echo "unknown")
         case "$_final_status" in
-            council_approved|council_force_approved|deterministic_gates_passed|completion_promise_fulfilled|force_stopped|paused|interrupted|budget_exceeded|stopped)
+            council_approved|council_force_approved|deterministic_gates_passed|completion_promise_fulfilled|force_stopped|paused|interrupted|stopped)
                 result=0 ;;
-            failed|max_iterations_reached|max_retries_exceeded|policy_blocked|inconclusive_spec_contradiction)
+            # budget_exceeded belongs HERE, not with the human-controlled stops.
+            # It sat in the result=0 arm on the rationale that "a human will
+            # resume", which is true of `paused` (a human pressed pause) and
+            # false of a cost breaker firing inside a k8s Job or a CI pipeline,
+            # where there is no human. A build killed mid-work then reported
+            # SUCCESS: the Job went Complete, the pipeline went green, and an
+            # incomplete build looked finished. That is a false green produced
+            # by our own gate, which is precisely what the Evidence Receipt
+            # exists to prevent.
+            #
+            # It is deterministic rather than retryable: re-running the same
+            # inputs against the same cap exhausts the same budget and fails
+            # identically, so retrying only burns money to reach the same place.
+            # The operator raises the cap (or narrows the spec) and submits a
+            # NEW Job -- the same remedy as max_iterations_reached, which is why
+            # it shares that code.
+            failed|max_iterations_reached|max_retries_exceeded|budget_exceeded|policy_blocked|inconclusive_spec_contradiction)
                 result=20 ;;
             *)
                 # Unknown/running/exited terminal: leave $result as-is (nonzero on a
