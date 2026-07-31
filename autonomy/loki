@@ -1400,8 +1400,6 @@ cmd_start() {
     local positional_arg=""           # raw positional arg for mode detection
     local issue_ref_explicit=""       # --issue value (when explicit_mode=issue)
     local issue_mode_args=()          # captured issue-mode flags (--dry-run, --pr, etc.)
-    local issue_dry_run=false
-    local issue_no_start=false
     local issue_output_file=""
     local issue_use_worktree=false
     local issue_create_pr=false
@@ -1471,6 +1469,16 @@ cmd_start() {
                 echo "  --pr                  Worktree + auto-create PR"
                 echo "  --ship                Worktree + PR + auto-merge"
                 echo "  --detach, -d          Run in background"
+                echo ""
+                echo "Preview without spending (any input mode):"
+                echo "  loki plan <PRD>       Analyze a spec WITHOUT executing: complexity,"
+                echo "                        estimated iterations, tokens, and cost. Add --json"
+                echo "                        for machine-readable output. This is the dry run"
+                echo "                        for PRD and brief mode; --dry-run above is"
+                echo "                        issue-mode only."
+                echo "  LOKI_CONFIG_DUMP=1 loki start"
+                echo "                        Print the resolved LOKI_* configuration and exit"
+                echo "                        without starting a run or spending anything."
                 echo ""
                 echo "Environment Variables:"
                 echo "  LOKI_PRD_FILE         Path to PRD file (alternative to positional arg)"
@@ -1836,12 +1844,10 @@ cmd_start() {
                 ;;
             # v6.84.0: issue-mode flags (only meaningful when input is an issue)
             --dry-run)
-                issue_dry_run=true
                 issue_mode_args+=("--dry-run")
                 shift
                 ;;
             --no-start)
-                issue_no_start=true
                 issue_mode_args+=("--no-start")
                 shift
                 ;;

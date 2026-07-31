@@ -705,6 +705,7 @@ run_test "enterprise smoke script contract (offline)" "$SCRIPT_DIR/test-enterpri
 run_test "image provenance: signing and SBOM in the publish job" "$SCRIPT_DIR/test-image-provenance.sh"
 run_test "doctor is CI-gateable (nonzero on missing required dep)" "$SCRIPT_DIR/test-doctor-ci-gateable.sh"
 run_test "completion coverage (every real command in both shells)" "$SCRIPT_DIR/test-completion-coverage.sh"
+run_test "dry-run paths work and are discoverable from start --help" "$SCRIPT_DIR/test-dry-run-discoverable.sh"
 run_test "ShellCheck Linting" "$SCRIPT_DIR/run-shellcheck.sh"
 
 # Summary
