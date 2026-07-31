@@ -59,6 +59,23 @@ failures are on a *simple* task is measuring something other than difficulty.
 Before scaling the matrix, the suite needs tasks where a bare model reliably
 fails -- otherwise more trials just buy a tighter interval around a ceiling.
 
+## Update: the suite now has a discriminating task
+
+`hard-2-ledger` was authored and measured the same day. First result:
+
+| cell | success | acceptance_exit | cost | duration |
+|---|---|---|---|---|
+| haiku-baseline | **False** | 1 | $0.307 | 383s |
+
+This is the first task in the corpus where a bare model fails on something
+other than `simple-2-fizzbuzz`. The suite can now separate arms, which is the
+precondition for every trial purchased after this point.
+
+Before spending on volume, the paired `haiku-full` cell has to run. If the
+harness rescues the same model on the same task, that is the thesis in one
+line. If it does not, that is worth knowing far more than a tighter interval
+would have been.
+
 ## Reproduce
 
 ```sh
