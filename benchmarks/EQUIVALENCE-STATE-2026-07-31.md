@@ -59,6 +59,43 @@ failures are on a *simple* task is measuring something other than difficulty.
 Before scaling the matrix, the suite needs tasks where a bare model reliably
 fails -- otherwise more trials just buy a tighter interval around a ceiling.
 
+## Update: the suite now has a discriminating task
+
+`hard-2-ledger` was authored and measured the same day. First result:
+
+| cell | success | acceptance_exit | cost | duration |
+|---|---|---|---|---|
+| haiku-baseline | **False** | 1 | $0.307 | 383s |
+
+This is the first task in the corpus where a bare model fails on something
+other than `simple-2-fizzbuzz`. The suite can now separate arms, which is the
+precondition for every trial purchased after this point.
+
+The paired cell then ran on the same task, same model:
+
+| cell | success | exit | cost | duration |
+|---|---|---|---|---|
+| haiku-baseline | **False** | 1 | $0.307 | 383s |
+| haiku-full | **True** | 0 | $0.541 | 1200s |
+
+**Same model. Same prompt. The harness is the only variable, and it is the
+difference between a failing implementation and a passing one.** That is the
+thesis, on a task built specifically so a bare model would fail it.
+
+Two caveats stated up front, because n=1 each:
+
+1. This is a single trial per arm. It demonstrates the mechanism; it does not
+   establish a rate. The value of further trials is now real, which was not
+   true before this task existed.
+2. `haiku-full` ran 1199.98s against the task's own `agent_timeout_s` of 1200
+   -- it used essentially its entire budget and passed at the wire. The CELL
+   cap was 2400s, so this was not a kill, but a task tuned slightly harder
+   could plausibly have exhausted it. Worth watching as trials accumulate.
+
+The cost ratio is the other half of the story: $0.54 for a correct
+implementation versus $0.31 for an incorrect one. A cheap failure is not
+cheaper.
+
 ## Reproduce
 
 ```sh
