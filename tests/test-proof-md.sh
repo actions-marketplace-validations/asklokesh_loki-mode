@@ -31,6 +31,15 @@ FAIL=0
 ok()  { printf 'PASS: %s\n' "$1"; PASS=$((PASS + 1)); }
 bad() { printf 'FAIL: %s\n' "$1"; FAIL=$((FAIL + 1)); }
 
+# BOTH ROUTES, and this is the assertion that was missing. The first version of
+# this test drove autonomy/loki directly and passed, while `loki proof md` --
+# what a real user types -- answered "Unknown subcommand" on the DEFAULT (Bun)
+# route. The feature shipped in v8.6.0 unreachable for most users.
+#
+# bin/loki is the Bun route; LOKI_LEGACY_BASH=1 selects bash. Same invocation
+# the bun-parity workflow uses.
+SHIM="$REPO_ROOT/bin/loki"
+
 # 1. Reuse, not reimplementation. Asserted on the source: if a second renderer
 #    appears, this is where it should be noticed.
 if grep -q "render_evidence_receipt_md" "$LOKI"; then
@@ -98,6 +107,40 @@ else
     else
         bad "the pasted form hides what was not proven"
     fi
+fi
+
+# 5. THE ASSERTION THAT WAS MISSING. A user types `loki proof md`, which is the
+#    shim, which defaults to the Bun route. Testing autonomy/loki alone passed
+#    while the default route answered "Unknown subcommand" -- the feature
+#    shipped unreachable. Drive the shim exactly as a user would.
+if [ -x "$SHIM" ]; then
+    "$SHIM" proof md </dev/null >/dev/null 2>&1
+    shim_noarg=$?
+    if [ "$shim_noarg" -eq 2 ]; then
+        ok "default route: missing id exits 2 (subcommand is wired)"
+    else
+        bad "default route: 'proof md' exited ${shim_noarg} -- likely Unknown subcommand"
+    fi
+
+    if [ -n "$id" ] && [ -f "$proofs_dir/$id/proof.json" ]; then
+        bun_out="$("$SHIM" proof md "$id" </dev/null 2>/dev/null || true)"
+        bash_out="$(LOKI_LEGACY_BASH=1 "$SHIM" proof md "$id" </dev/null 2>/dev/null || true)"
+
+        case "$bun_out" in
+            "### Evidence Receipt"*) ok "default route emits the receipt Markdown" ;;
+            *) bad "default route produced no usable Markdown" ;;
+        esac
+
+        # ONE RENDERER means the routes cannot disagree. If they ever do, a
+        # second implementation has appeared somewhere.
+        if [ "$bun_out" = "$bash_out" ]; then
+            ok "both routes emit byte-identical Markdown"
+        else
+            bad "routes DIVERGE -- a second renderer has appeared"
+        fi
+    fi
+else
+    printf 'SKIP: bin/loki shim not executable here\n'
 fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
