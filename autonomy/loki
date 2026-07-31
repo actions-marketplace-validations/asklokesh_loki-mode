@@ -1464,6 +1464,8 @@ cmd_start() {
                 echo "  --no-plan             Skip auto-shown PRD analysis at startup"
                 echo "  --brief \"TEXT\"        Zero-config fast first run from a one-line brief"
                 echo "  --yes, -y             Skip confirmation prompts (auto-confirm)"
+                echo "  --quiet               Suppress [INFO]/[STEP]; warnings and errors still print"
+                echo "  --log-level LEVEL     debug | info | warn | error (default: info)"
                 echo ""
                 echo "Issue-mode options (only used when input is an ISSUE-REF):"
                 echo "  --dry-run             Preview generated PRD without starting"
@@ -1672,6 +1674,29 @@ cmd_start() {
             --yes|-y)
                 export LOKI_AUTO_CONFIRM=true
                 shift
+                ;;
+            # Verbosity. --quiet suppresses [INFO]/[STEP]; warnings and errors
+            # always print, so a quiet run can still say why it failed.
+            --quiet)
+                export LOKI_LOG_LEVEL=warn
+                shift
+                ;;
+            --log-level)
+                if [[ -n "${2:-}" ]]; then
+                    case "$2" in
+                        debug|info|warn|error)
+                            export LOKI_LOG_LEVEL="$2"
+                            ;;
+                        *)
+                            echo "Error: --log-level must be debug, info, warn, or error (got '$2')" >&2
+                            return 1
+                            ;;
+                    esac
+                    shift 2
+                else
+                    echo "Error: --log-level requires a value (debug|info|warn|error)" >&2
+                    return 1
+                fi
                 ;;
             --bmad-project)
                 if [[ -n "${2:-}" ]]; then

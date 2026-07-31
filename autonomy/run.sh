@@ -1508,11 +1508,39 @@ log_header() {
     echo -e "${BLUE}╚════════════════════════════════════════════════════════════════╝${NC}"
 }
 
-log_info() { echo -e "${GREEN}[INFO]${NC} $*"; }
-log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
+# VERBOSITY. LOKI_LOG_LEVEL is one of debug|info|warn|error (default info);
+# LOKI_QUIET=1 is shorthand for warn.
+#
+# Implemented at these five functions rather than at 527 call sites, which is
+# both the smaller diff and the only version that cannot drift -- a new
+# log_info added next year is covered without anyone remembering to gate it.
+#
+# WHY THIS IS NEEDED DESPITE GOOD TTY DETECTION. The heavy decoration (HUD,
+# completion card, start headline) is already `[ -t 1 ]`-guarded and vanishes
+# off a TTY, so CI output was never the wall of banners it might have been.
+# But 527 log_info/log_step calls are unguarded and print regardless, and a
+# pipeline that wants only warnings had no way to ask. log_debug already
+# honored LOKI_DEBUG; the other levels honored nothing.
+#
+# ERRORS ARE NEVER SUPPRESSED. `error` is the floor: the quietest setting still
+# prints failures. A verbosity flag that can hide the reason a build failed is
+# a footgun, not a feature.
+_loki_log_threshold() {
+    case "${LOKI_LOG_LEVEL:-$([ "${LOKI_QUIET:-0}" = "1" ] && echo warn || echo info)}" in
+        debug) echo 0 ;;
+        info)  echo 1 ;;
+        warn)  echo 2 ;;
+        error) echo 3 ;;
+        *)     echo 1 ;;   # unrecognized value behaves as the default, never silences
+    esac
+}
+_loki_log_enabled() { [ "$1" -ge "$(_loki_log_threshold)" ]; }
+
+log_info() { _loki_log_enabled 1 && echo -e "${GREEN}[INFO]${NC} $*" || true; }
+log_warn() { _loki_log_enabled 2 && echo -e "${YELLOW}[WARN]${NC} $*" || true; }
 log_warning() { log_warn "$@"; }  # Alias for backwards compatibility
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
-log_step() { echo -e "${CYAN}[STEP]${NC} $*"; }
+log_step() { _loki_log_enabled 1 && echo -e "${CYAN}[STEP]${NC} $*" || true; }
 log_debug() { [[ "${LOKI_DEBUG:-}" == "true" ]] && echo -e "${CYAN}[DEBUG]${NC} $*" >&2 || true; }
 
 #===============================================================================
