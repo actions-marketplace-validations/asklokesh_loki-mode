@@ -246,7 +246,7 @@ aider --message "$prompt" --yes-always --no-auto-commits --model model_name
 **Environment Variables:**
 | Variable | Description |
 |----------|-------------|
-| `LOKI_AIDER_MODEL` | Model to use (default: claude-3.7-sonnet) |
+| `LOKI_AIDER_MODEL` | Model to use. Default comes from `providers/model_catalog.json` (`aider.latest_development`), not a hardcoded string. The global `LOKI_MODEL_*` tier vars do NOT apply to aider. |
 | `LOKI_AIDER_FLAGS` | Extra aider flags (e.g., --architect) |
 
 ---
