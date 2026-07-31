@@ -5,6 +5,47 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v8.6.1
+
+Post-release fixes found by validating the PUBLISHED v8.6.0 artifact rather
+than the source tree, plus the first measured evidence that the harness carries
+output quality independently of the model.
+
+### Fixed
+
+- **`loki proof md` was unreachable on the default route.** It shipped in
+  v8.6.0 on the bash route only; the Bun route -- what `bin/loki` runs by
+  default -- answered "Unknown subcommand". The feature was invisible to every
+  user who had not set `LOKI_LEGACY_BASH=1`. The test passed because it drove
+  `autonomy/loki` directly, while a real user types `loki proof`, which is the
+  shim. Both routes now emit byte-identical output.
+- **An oversize diff escalated to PAUSE as if it were a code finding.**
+  `run_code_review` assigns its failure discriminator after the size guard
+  returns, so a file-size condition was reported as "Critical/High findings".
+  Now classified as infrastructure, still fail-closed.
+- **The compose test leaked a docker network per run**, eventually exhausting
+  the host's address pools and surfacing as "docker compose up failed" -- which
+  reads as a product defect and was not one.
+
+### Measured
+
+- **The harness rescues the same model on a task the bare model fails.** On
+  `hard-2-ledger`, authored so a one-shot draft fails it: haiku without the
+  harness passed 1 of 4; with the harness on, it passed -- at lower cost per
+  correct result. Same model, same prompt.
+- The task suite previously could not separate arms: the baseline passed the
+  "hard" task and every recorded failure was on fizzbuzz, so additional trials
+  bought precision around a ceiling. `hard-2-ledger` fixes that, verified in
+  both directions before adoption.
+- **Adoption baseline recorded for the first time**: ~94 downloads/day floor
+  against a 1,263 peak driven by our own release activity. `docs/STRATEGY-2026-2028.md`
+  sets the floor -- not the peak -- as the two-year metric.
+
+### Added
+
+- `docs/STRATEGY-2026-2028.md`, `docs/adoption-baseline-2026-07-31.md`,
+  `benchmarks/EQUIVALENCE-STATE-2026-07-31.md`.
+
 ## v8.6.0
 
 Enterprise deployment, CLI operability, and the first adoption instrumentation.
