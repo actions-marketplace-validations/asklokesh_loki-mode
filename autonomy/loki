@@ -29746,6 +29746,7 @@ cmd_ci() {
                 echo "  --github-comment     Post review results as PR comment (needs GITHUB_TOKEN)"
                 echo "  --fail-on <levels>   Set exit code 1 on severity: critical,high,medium,low"
                 echo "  --format <fmt>       Output format: json, markdown, github (default: markdown)"
+                echo "  --json               Alias for --format json"
                 echo "  --help, -h           Show this help"
                 echo ""
                 echo "Exit codes:"
@@ -29786,6 +29787,15 @@ cmd_ci() {
                     return 2
                 fi
                 ci_fail_on="$(echo "$ci_fail_on" | tr '[:upper:]' '[:lower:]')"
+                shift
+                ;;
+            # --json is an alias for --format json. `loki ci` could already
+            # emit JSON, but only under a flag name no other command uses, so a
+            # script author reaching for the repo-wide --json convention found
+            # nothing and concluded the capability was missing. Same output,
+            # one spelling everywhere.
+            --json)
+                ci_format="json"
                 shift
                 ;;
             --format)
