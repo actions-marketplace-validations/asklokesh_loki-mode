@@ -12951,6 +12951,67 @@ with open(os.environ["LOKI_DA_PROMPT_OUT"], "w", encoding="utf-8") as handle:
 BUILD_DA_PROMPT
 }
 
+# Derive a review size cap (in bytes) from the active provider's context window.
+#
+# Args: $1 = env override (wins outright when set), $2 = historical default.
+# Echoes the effective cap.
+#
+# Why this exists: the caps were fixed byte counts sized for a ~200k-token model.
+# A local 12b/14b with an 8k-32k window would be handed a 425000-byte prompt and
+# fail in a way that reads as "the model is bad" rather than "we mis-sized it".
+#
+# Two stated assumptions, kept separate so they stay auditable:
+#   1. ~3 bytes per token. Real tokenizers land around 3-4 for code-heavy text;
+#      3 is the conservative end, and under-estimating capacity errs toward a
+#      smaller cap, which is the safe direction for a fail-closed gate.
+#   2. ~75% of the window is available for review INPUT. The remainder is the
+#      reviewer's own output and reasoning, which share the same window.
+# Neither is precise, and neither needs to be: the result is only ever used to
+# LOWER a cap below the shipped default.
+#
+# The min() is load-bearing. PROVIDER_CONTEXT_WINDOW is set on every current run
+# (LOKI_PROVIDER defaults to claude, whose window is 1000000), so deriving
+# upward would raise the cap 4-8x for every existing user. Taking the smaller of
+# derived-vs-default means a cap can only ever move DOWN. Concretely, a window
+# clamps to the shipped default whenever it is >= ~188889 tokens; every provider
+# that declares a window today (1M/400k/200k/200k) clears that, and a provider
+# declaring none takes the unset path, so no shipped provider changes behavior.
+# Only a genuinely small window (a local 12b/14b) shrinks anything.
+#
+# The shipped defaults are 425000 (prompt) and 400000 (diff). That 25000-byte gap
+# is the reviewer scaffolding wrapped around the diff, and the ordering is
+# load-bearing: if both caps derived to the SAME number, a diff sized just under
+# the diff gate would build a prompt exceeding the prompt gate, so every review
+# would block fail-closed with no operator-visible cause, on exactly the
+# small-window providers this derivation exists to support. Scaling by
+# _default/425000 preserves that gap at every window size. The 425000 denominator
+# must track the prompt-cap default passed by the caller below; if that default
+# changes, change the denominator with it or the diff-cap proportion breaks.
+review_effective_cap() {
+    local _override="$1" _default="$2"
+    # Operator wins outright, at any value, over both the default and the window.
+    if [ -n "$_override" ]; then
+        printf '%s' "$_override"
+        return 0
+    fi
+    # Fail safe to the historical default unless the window is a clean positive
+    # integer. A non-numeric result here would make the caller's `[ ... -gt ... ]`
+    # exit 2, which reads as false and would dispatch an oversized review.
+    case "${PROVIDER_CONTEXT_WINDOW:-}" in
+        ''|*[!0-9]*) printf '%s' "$_default"; return 0 ;;
+    esac
+    [ "$PROVIDER_CONTEXT_WINDOW" -gt 0 ] 2>/dev/null || { printf '%s' "$_default"; return 0; }
+    # Derive the INPUT budget, then scale it to this caller's cap so the
+    # prompt/diff proportion (and thus the scaffolding gap) is preserved.
+    local _budget=$(( PROVIDER_CONTEXT_WINDOW * 3 / 4 * 3 ))
+    local _derived=$(( _budget * _default / 425000 ))
+    if [ "$_derived" -lt "$_default" ]; then
+        printf '%s' "$_derived"
+    else
+        printf '%s' "$_default"
+    fi
+}
+
 run_code_review() {
     local loki_dir="${TARGET_DIR:-.}/.loki"
     local review_dir="$loki_dir/quality/reviews"
@@ -13311,11 +13372,12 @@ ${dependency_context}"
     # produces an opaque block. This remains fail-closed and never truncates.
     local _review_diff_bytes=0
     _review_diff_bytes=$(printf '%s' "$diff_content" | wc -c | tr -d ' ')
-    local _review_max_bytes="${LOKI_REVIEW_MAX_DIFF_BYTES:-400000}"
+    local _review_max_bytes
+    _review_max_bytes=$(review_effective_cap "${LOKI_REVIEW_MAX_DIFF_BYTES:-}" 400000)
     if [ "${_review_diff_bytes:-0}" -gt "$_review_max_bytes" ] 2>/dev/null; then
         local _big_dirs
         _big_dirs=$(printf '%s\n' "$changed_files" | sed 's#/.*##' | grep -v '^$' | sort | uniq -c | sort -rn | head -3 | awk '{print $2" ("$1" files)"}' | tr '\n' ' ')
-        log_error "Code review: context is ${_review_diff_bytes} bytes (limit ${_review_max_bytes}); refusing to truncate or dispatch a partial review. Biggest dirs: ${_big_dirs:-unknown}. Split the change or raise LOKI_REVIEW_MAX_DIFF_BYTES."
+        log_error "Code review: context is ${_review_diff_bytes} bytes (limit ${_review_max_bytes}, derived from PROVIDER_CONTEXT_WINDOW=${PROVIDER_CONTEXT_WINDOW:-unset}); refusing to truncate or dispatch a partial review. Biggest dirs: ${_big_dirs:-unknown}. Split the change or raise LOKI_REVIEW_MAX_DIFF_BYTES."
         emit_event_json "code_review_diff_oversized" \
             "review_id=$review_id" \
             "diff_bytes=$_review_diff_bytes" \
@@ -13847,7 +13909,8 @@ REVIEW_SELECTION_RECORD
     reviewer_count=$(echo "$selected_specialists" | python3 -c "import sys,json; print(len(json.load(sys.stdin)['reviewers']))")
     local dispatch_count
     dispatch_count=$(echo "$dispatch_specialists" | python3 -c "import sys,json; print(len(json.load(sys.stdin)['reviewers']))")
-    local _review_max_prompt_bytes="${LOKI_REVIEW_MAX_PROMPT_BYTES:-425000}"
+    local _review_max_prompt_bytes
+    _review_max_prompt_bytes=$(review_effective_cap "${LOKI_REVIEW_MAX_PROMPT_BYTES:-}" 425000)
     local _review_max_output_bytes="${LOKI_REVIEW_MAX_OUTPUT_BYTES:-1048576}"
     local review_pending_dir="$review_dir/$review_id/.pending"
     if ! mkdir -m 700 "$review_pending_dir" 2>/dev/null; then
@@ -15433,40 +15496,71 @@ start_dashboard() {
 
     # Check all required imports
     if ! "$python_cmd" -c "import fastapi; import sqlalchemy; import aiosqlite" 2>/dev/null; then
-        log_step "Setting up dashboard virtualenv..."
-        if ! [ -x "${dashboard_venv}/bin/python3" ]; then
-            # Remove broken venv if exists
-            [ -d "$dashboard_venv" ] && rm -rf "$dashboard_venv"
-            mkdir -p "$HOME/.loki"
-            python3 -m venv "$dashboard_venv" 2>/dev/null || python3.13 -m venv "$dashboard_venv" 2>/dev/null || {
-                log_warn "Failed to create virtualenv"
-                log_warn "You may need: sudo apt install python3-venv"
-            }
+        # The venv is HOST-GLOBAL, so concurrent runs must not rebuild it at
+        # once: one run's `rm -rf` would delete the tree another is importing
+        # from. Lock the venv path itself -- safe_acquire_lock appends
+        # ".lockdir", giving a SIBLING mutex the teardown below cannot destroy.
+        # Timeout must outlast a real cold venv create + pip install (not the 5s
+        # used by the JSON read-modify-write call sites). Mirrors the same guard
+        # in ensure_dashboard_venv (autonomy/loki) -- edit BOTH.
+        local _venv_locked=false
+        if type safe_acquire_lock >/dev/null 2>&1 \
+            && safe_acquire_lock "$dashboard_venv" "${LOKI_VENV_LOCK_TIMEOUT:-300}"; then
+            _venv_locked=true
         fi
-        if [ -x "${dashboard_venv}/bin/python3" ]; then
-            python_cmd="${dashboard_venv}/bin/python3"
-            log_step "Installing dashboard dependencies..."
-            if [ -f "$req_file" ]; then
-                "${dashboard_venv}/bin/pip" install -r "$req_file" 2>&1 | tail -1 || {
-                    log_warn "Pinned deps failed, trying unpinned..."
+        # Re-probe: the run we queued behind may have just built it for us.
+        [ -x "${dashboard_venv}/bin/python3" ] && python_cmd="${dashboard_venv}/bin/python3"
+        if "$python_cmd" -c "import fastapi; import sqlalchemy; import aiosqlite" 2>/dev/null; then
+            [ "$_venv_locked" = true ] && safe_release_lock "$dashboard_venv"
+            _venv_locked=false
+        elif [ "$_venv_locked" = false ] && type safe_acquire_lock >/dev/null 2>&1; then
+            # Lock timed out and the venv is still unusable. Do NOT rm -rf
+            # unlocked -- that is the exact race this lock exists to prevent.
+            #
+            # The re-probe above may have pointed python_cmd at the OTHER run's
+            # half-built venv (bin/python3 exists, pip install not finished).
+            # Reset to the system interpreter so the server launch below does not
+            # exec a knowingly-broken one.
+            python_cmd="python3"
+            log_warn "Timed out waiting for another run to build the dashboard venv"
+            log_warn "Dashboard will not be available (stale lock? rm -rf ${dashboard_venv}.lockdir)"
+        else
+            log_step "Setting up dashboard virtualenv..."
+            if ! [ -x "${dashboard_venv}/bin/python3" ]; then
+                # Remove broken venv if exists
+                [ -d "$dashboard_venv" ] && rm -rf "$dashboard_venv"
+                mkdir -p "$HOME/.loki"
+                python3 -m venv "$dashboard_venv" 2>/dev/null || python3.13 -m venv "$dashboard_venv" 2>/dev/null || {
+                    log_warn "Failed to create virtualenv"
+                    log_warn "You may need: sudo apt install python3-venv"
+                }
+            fi
+            if [ -x "${dashboard_venv}/bin/python3" ]; then
+                python_cmd="${dashboard_venv}/bin/python3"
+                log_step "Installing dashboard dependencies..."
+                if [ -f "$req_file" ]; then
+                    "${dashboard_venv}/bin/pip" install -r "$req_file" 2>&1 | tail -1 || {
+                        log_warn "Pinned deps failed, trying unpinned..."
+                        "${dashboard_venv}/bin/pip" install fastapi uvicorn pydantic websockets sqlalchemy aiosqlite 2>&1 | tail -1 || {
+                            log_warn "Failed to install dashboard dependencies"
+                            log_warn "Dashboard will not be available"
+                        }
+                        # greenlet is optional (needs C compiler on some platforms)
+                        "${dashboard_venv}/bin/pip" install greenlet 2>/dev/null || true
+                    }
+                else
                     "${dashboard_venv}/bin/pip" install fastapi uvicorn pydantic websockets sqlalchemy aiosqlite 2>&1 | tail -1 || {
                         log_warn "Failed to install dashboard dependencies"
                         log_warn "Dashboard will not be available"
                     }
-                    # greenlet is optional (needs C compiler on some platforms)
                     "${dashboard_venv}/bin/pip" install greenlet 2>/dev/null || true
-                }
+                fi
             else
-                "${dashboard_venv}/bin/pip" install fastapi uvicorn pydantic websockets sqlalchemy aiosqlite 2>&1 | tail -1 || {
-                    log_warn "Failed to install dashboard dependencies"
-                    log_warn "Dashboard will not be available"
-                }
-                "${dashboard_venv}/bin/pip" install greenlet 2>/dev/null || true
+                log_warn "Failed to install dashboard dependencies"
+                log_warn "Run manually: python3 -m venv ${dashboard_venv} && ${dashboard_venv}/bin/pip install fastapi uvicorn sqlalchemy aiosqlite"
             fi
-        else
-            log_warn "Failed to install dashboard dependencies"
-            log_warn "Run manually: python3 -m venv ${dashboard_venv} && ${dashboard_venv}/bin/pip install fastapi uvicorn sqlalchemy aiosqlite"
         fi
+        [ "$_venv_locked" = true ] && safe_release_lock "$dashboard_venv"
     fi
 
     # Start the FastAPI dashboard server
