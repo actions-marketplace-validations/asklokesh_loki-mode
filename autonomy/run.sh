@@ -13321,6 +13321,17 @@ ${dependency_context}"
             "diff_bytes=$_review_diff_bytes" \
             "limit_bytes=$_review_max_bytes" \
             "iteration=${ITERATION_COUNT:-0}" 2>/dev/null || true
+        # Classify this as INFRASTRUCTURE, not a finding. The discriminator is
+        # otherwise set at :14912, which this early return never reaches, so the
+        # variable stayed "" from the reset at :12959 and the consumer at :22126
+        # read a file-size condition as "Critical/High findings" -- escalating to
+        # PAUSE over a diff that was merely too large to send.
+        #
+        # Still fail-closed: the review did NOT pass, and nothing here converts a
+        # skipped review into a green one. It only records WHY it could not run,
+        # which is the difference between "your code is bad" and "we could not
+        # look at it".
+        _LOKI_REVIEW_FAILURE_KIND="infrastructure_inconclusive"
         return 1
     fi
 
