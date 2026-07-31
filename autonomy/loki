@@ -987,6 +987,8 @@ show_help() {
     echo ""
     echo "Phase A-J features (v7.5.18 - v7.5.28) are default-on. See CHANGELOG."
     echo ""
+    echo "Environment variables an operator would set: docs/environment-variables.md"
+    echo ""
     echo "Scripting Loki? Exit codes for every command are documented in"
     echo "docs/exit-codes.md. Severity rises with the code, and 'loki start'"
     echo "has a richer contract under LOKI_DURABLE_STATE=1 for k8s and ECS."
@@ -9914,6 +9916,7 @@ cmd_config() {
             echo "  issue.provider       Default issue provider: github, gitlab, jira, azure_devops"
             echo "  blind_validation     Blind validation mode: true, false (default: true)"
             echo "  adversarial_testing  Adversarial testing: true, false (default: true)"
+            echo "  log_level            Output verbosity: debug, info, warn, error (default: info)"
             echo "  spawn_timeout        [DEPRECATED] No effect since WAVE9 (no consumer); accepted for back-compat"
             echo "  spawn_retries        [DEPRECATED] No effect since WAVE9 (no consumer); accepted for back-compat"
             echo "  notify.slack         Slack webhook URL"
@@ -9989,6 +9992,12 @@ cmd_config_set() {
                 *) echo -e "${RED}Invalid $key: $value (expected: true, false)${NC}"; return 1 ;;
             esac
             ;;
+        log_level)
+            case "$value" in
+                debug|info|warn|error) ;;
+                *) echo -e "${RED}Invalid log_level: $value (expected: debug, info, warn, error)${NC}"; return 1 ;;
+            esac
+            ;;
         spawn_timeout|spawn_retries)
             if ! echo "$value" | grep -qE '^[0-9]+$'; then
                 echo -e "${RED}Invalid $key: $value (expected: integer)${NC}"; return 1
@@ -10020,7 +10029,7 @@ cmd_config_set() {
             echo -e "${RED}Unknown configuration key: '$key'${NC}"
             echo ""
             echo "Valid keys: maxTier, provider, issue.provider, blind_validation,"
-            echo "  adversarial_testing, spawn_timeout, spawn_retries, budget,"
+            echo "  adversarial_testing, log_level, spawn_timeout, spawn_retries, budget,"
             echo "  model.planning, model.development, model.fast,"
             echo "  notify.slack, notify.discord"
             echo ""

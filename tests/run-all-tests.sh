@@ -709,6 +709,7 @@ run_test "dry-run paths work and are discoverable from start --help" "$SCRIPT_DI
 run_test "exit codes documented and matching the source" "$SCRIPT_DIR/test-exit-codes-documented.sh"
 run_test "log verbosity (--quiet / LOKI_LOG_LEVEL, errors never hidden)" "$SCRIPT_DIR/test-log-verbosity.sh"
 run_test "verify --json emits pipeable evidence on stdout" "$SCRIPT_DIR/test-verify-json-stdout.sh"
+run_test "documented env vars exist in the source" "$SCRIPT_DIR/test-env-vars-documented.sh"
 run_test "ShellCheck Linting" "$SCRIPT_DIR/run-shellcheck.sh"
 
 # Summary
