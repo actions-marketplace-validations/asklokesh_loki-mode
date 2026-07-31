@@ -27,21 +27,54 @@ FAIL=0
 ok()  { printf 'PASS: %s\n' "$1"; PASS=$((PASS + 1)); }
 bad() { printf 'FAIL: %s\n' "$1"; FAIL=$((FAIL + 1)); }
 
-# Direction 1: a healthy host exits 0, even with optional warnings present.
+# Direction 1: the exit code must AGREE with the host's actual state -- 0 when
+# no required check failed, nonzero when one did.
+#
+# The earlier version asserted "a healthy host exits 0" while merely ASSUMING
+# this host was healthy. That holds on a developer machine with a provider CLI
+# installed and is false on a bare CI runner, which has none: doctor correctly
+# exited 1 and the test called it a defect. The host's health is a fact to be
+# READ, not assumed -- so it is read from --json, the same structured verdict
+# an operator would gate on.
+#
 # Read the code directly. This suite runs under several shells and $? after a
 # PIPELINE reports the last stage, not the command under test -- a mistake that
 # has produced false readings in this repo more than once.
 "$LOKI" doctor >/dev/null 2>&1
 healthy_rc=$?
-if [ "$healthy_rc" -eq 0 ]; then
-    ok "healthy host exits 0"
-else
-    # Not necessarily a defect in doctor: this machine may genuinely be missing
-    # a required tool. Say which, rather than reporting a bare mismatch.
-    printf 'NOTE: doctor exited %s on this host; required checks reporting FAIL:\n' "$healthy_rc"
-    "$LOKI" doctor 2>&1 | grep -aiE "FAIL" | head -5
-    bad "healthy host did not exit 0 (see note above -- may be this machine, not the code)"
-fi
+
+host_failed="$("$LOKI" doctor --json 2>/dev/null | python3 -c '
+import json, sys
+raw = sys.stdin.read()
+try:
+    d = json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
+except Exception:
+    print("UNKNOWN"); raise SystemExit
+print(d.get("summary", {}).get("failed", "UNKNOWN"))
+' 2>/dev/null)"
+
+case "$host_failed" in
+    0)
+        if [ "$healthy_rc" -eq 0 ]; then
+            ok "no required check failed and doctor exited 0"
+        else
+            bad "no required check failed yet doctor exited ${healthy_rc}"
+        fi
+        ;;
+    UNKNOWN|'')
+        bad "could not read summary.failed from doctor --json"
+        ;;
+    *)
+        # A bare runner (no provider CLI) legitimately lands here. That is the
+        # gateable case, and exiting nonzero is the CORRECT behavior -- not a
+        # defect to be excused.
+        if [ "$healthy_rc" -ne 0 ]; then
+            ok "${host_failed} required check(s) failed and doctor exited ${healthy_rc} (correctly gateable)"
+        else
+            bad "${host_failed} required check(s) failed but doctor exited 0 -- a broken host would pass a CI gate"
+        fi
+        ;;
+esac
 
 # Optional-only warnings must NOT be escalated to a blocking exit. Asserted via
 # --json so it reads the structured verdict rather than scraping colored text.
@@ -71,12 +104,31 @@ fi
 # Stripping PATH entirely is NOT a valid test: the shell then cannot find its
 # own interpreter and exits 127 before doctor renders any verdict at all, which
 # proves nothing about the gate.
-SHIM="$(mktemp -d)"
+# mktemp by ABSOLUTE path, and verify it produced something. When this test is
+# itself run under a stripped PATH (as a CI-condition simulation does), a bare
+# `mktemp` is not found, SHIM becomes empty, and every "$SHIM/..." path
+# collapses to "/..." -- which then fails with "Read-only file system" and
+# reads as a doctor defect rather than a broken harness.
+SHIM="$(/usr/bin/mktemp -d 2>/dev/null || mktemp -d 2>/dev/null)"
+if [ -z "$SHIM" ] || [ ! -d "$SHIM" ]; then
+    bad "harness: could not create a temp dir; assertion inconclusive"
+    printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
+    exit 1
+fi
+# The tool list must be broad enough for the CLI to START (it shells out to
+# several coreutils), while still omitting every provider CLI -- that absence
+# is the condition under test. Too thin and the CLI dies at 127 before
+# rendering a verdict, which proves nothing.
 for b in bash sh python3 python sed awk grep cat tr head tail sort uniq wc \
-         date mkdir rm ls printf env dirname basename cut find xargs stat; do
-    for d in /bin /usr/bin; do
-        [ -e "$d/$b" ] && ln -sf "$d/$b" "$SHIM/$b" 2>/dev/null && break
-    done
+         date mkdir rm ls printf env dirname basename cut find xargs stat \
+         mktemp node jq git curl df uname bun touch chmod expr id whoami \
+         readlink sleep ln test true false; do
+    # Resolve via command -v rather than guessing directories: hardcoding
+    # /opt/homebrew/bin is one developer's layout (and is rejected by
+    # tests/test-no-hardcoded-paths.sh for exactly that reason). This finds
+    # each tool wherever THIS machine keeps it.
+    _src="$(command -v "$b" 2>/dev/null)"
+    [ -n "$_src" ] && ln -sf "$_src" "$SHIM/$b" 2>/dev/null
 done
 
 env PATH="$SHIM" bash "$LOKI" doctor >"$SHIM/out.txt" 2>&1

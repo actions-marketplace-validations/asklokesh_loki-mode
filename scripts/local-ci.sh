@@ -784,8 +784,13 @@ if [ "${LOKI_LOCALCI_FULL_SHELL:-1}" = "1" ]; then
   # discarded the line naming WHICH suite failed. That turned a one-line
   # diagnosis into a full re-run of a ~25-minute suite to find out. Keep the
   # FAILED lines (there are few, by definition) ahead of the totals.
+  # Keep the ✗ FAILED lines (one per failing suite, few by definition) and the
+  # final totals. Two earlier attempts lost the name: `tail -6` cut everything
+  # above the totals, and grepping for 'FAILED|Passed:|Failed:' then tailing
+  # still lost it, because member suites print their own per-suite "Passed: N"
+  # lines that flood the tail. Anchoring on the ✗ marker is what survives.
   run_check "tests/run-all-tests.sh (FULL CI shell suite -- authoritative)" \
-    "bash tests/run-all-tests.sh 2>&1 | grep -E '(FAILED|Passed:|Failed:)' | tail -20"
+    "bash tests/run-all-tests.sh 2>&1 | grep -aE '(✗.*FAILED|Passed: {5,}[0-9]|Failed: {5,}[0-9])' | tail -20"
 fi
 
 # Fast fail-early subset (also covered by the full suite above):

@@ -11545,6 +11545,35 @@ if disk_status == 'pass': pass_count += 1
 elif disk_status == 'fail': fail_count += 1
 elif disk_status == 'warn': warn_count += 1
 
+# AGGREGATE PROVIDER CHECK. Each provider CLI is individually optional --
+# you need Claude OR Codex OR Cline OR Aider, not all four -- so no single
+# one can be marked required. But having NONE is a blocker, and the text
+# path reports it as one (the No-AI-provider branch near autonomy/loki:11000).
+#
+# --json omitted this entirely, so on a host with no provider the two
+# outputs gave OPPOSITE verdicts: the text path exited 1 while --json
+# reported zero failures and ok true. An operator gating a pipeline on the
+# JSON got a pass on a machine that cannot run a build -- the fake-green
+# this project exists to refuse.
+#
+# CAUTION: this block lives inside python3 -c with a DOUBLE-QUOTED program,
+# so an apostrophe or a double quote in a comment terminates the shell
+# string and mangles the program. First attempt did exactly that: doctor
+# --json printed nothing and exited 0. Keep this comment quote-free.
+_provider_cmds = ('claude', 'codex', 'cline', 'aider')
+_any_provider = any(shutil.which(_p) is not None for _p in _provider_cmds)
+ai_provider = {
+    'found': _any_provider,
+    'status': 'pass' if _any_provider else 'fail',
+    'required': 'required',
+    'detail': None if _any_provider
+              else 'No AI provider CLI. Fix: npm install -g @anthropic-ai/claude-code',
+}
+if _any_provider:
+    pass_count += 1
+else:
+    fail_count += 1
+
 result = {
     'loki_mode_version': os.environ.get('LOKI_VERSION', 'unknown'),
     'checks': checks,
@@ -11552,6 +11581,7 @@ result = {
         'available_gb': disk_gb,
         'status': disk_status
     },
+    'ai_provider': ai_provider,
     'sentrux': sentrux,
     'receipt_signing': receipt_signing,
     'memory': memory,

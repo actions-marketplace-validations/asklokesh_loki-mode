@@ -711,6 +711,7 @@ run_test "log verbosity (--quiet / LOKI_LOG_LEVEL, errors never hidden)" "$SCRIP
 run_test "verify --json emits pipeable evidence on stdout" "$SCRIPT_DIR/test-verify-json-stdout.sh"
 run_test "documented env vars exist in the source" "$SCRIPT_DIR/test-env-vars-documented.sh"
 run_test "wall-clock cap (LOKI_MAX_DURATION) fires and is terminal" "$SCRIPT_DIR/test-max-duration.sh"
+run_test "doctor blocker parity (both routes name blockers + offer loki tour)" "$SCRIPT_DIR/test-doctor-blocker-parity.sh"
 run_test "ShellCheck Linting" "$SCRIPT_DIR/run-shellcheck.sh"
 
 # Summary
