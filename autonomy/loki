@@ -32707,7 +32707,8 @@ cmd_proof() {
             echo "  show <id>            Pretty-print .loki/proofs/<id>/proof.json"
             echo "  verify <id>          Re-check a receipt against the repo (tamper + drift);"
             echo "                       exit 0 clean, 1 tamper/drift. Verify it yourself."
-            echo "  open <id>            Open .loki/proofs/<id>/index.html in a browser"
+            echo "  md <id>              Paste-able Markdown for a PR comment or Slack
+  open <id>            Open .loki/proofs/<id>/index.html in a browser"
             echo "  share <id>           Publish the proof page as a GitHub Gist (opt-in)"
             echo ""
             echo "Options for 'share':"
@@ -32790,6 +32791,38 @@ PYEOF
             else
                 LOKI_PROOF_JSON="$pj" python3 -c "import json,os; print(json.dumps(json.load(open(os.environ['LOKI_PROOF_JSON'])), indent=2))"
             fi
+            exit 0
+            ;;
+        md)
+            # Paste-able Markdown for a PR comment, a Slack message, or a
+            # ticket. The renderer already existed -- render_evidence_receipt_md
+            # in lib/proof-pr.sh -- but was reachable ONLY when Loki opened a PR
+            # itself. So the one form of the receipt built for humans to forward
+            # could not be produced on demand, which is the built-and-unreachable
+            # pattern this project keeps finding.
+            #
+            # Reuses that renderer rather than adding a second one: two writers
+            # of one artifact drift, and the drift surfaces as a PR body and a
+            # pasted summary disagreeing about the same run.
+            local id="${1:-}"
+            if [ -z "$id" ]; then
+                echo -e "${RED}Missing proof id.${NC} Use 'loki proof list'." >&2
+                exit 2
+            fi
+            local pj="${proofs_dir}/${id}/proof.json"
+            if [ ! -f "$pj" ]; then
+                echo -e "${RED}Proof not found: ${id}${NC}" >&2
+                echo "Use 'loki proof list' to see available proofs." >&2
+                exit 1
+            fi
+            local _pr_lib="$_LOKI_SCRIPT_DIR/lib/proof-pr.sh"
+            if [ ! -f "$_pr_lib" ]; then
+                echo -e "${RED}Renderer not found: ${_pr_lib}${NC}" >&2
+                exit 3
+            fi
+            # shellcheck source=/dev/null
+            source "$_pr_lib"
+            render_evidence_receipt_md "$pj"
             exit 0
             ;;
         verify)
