@@ -702,6 +702,7 @@ run_test "worker grace period honours mid-build shutdown" "$SCRIPT_DIR/test-work
 run_test "k8s sizing says what was measured and what was not" "$SCRIPT_DIR/test-k8s-sizing-honesty.sh"
 run_test "air-gapped k8s install is honest about scope" "$SCRIPT_DIR/test-airgap-k8s-install.sh"
 run_test "enterprise smoke script contract (offline)" "$SCRIPT_DIR/test-enterprise-smoke-script.sh"
+run_test "image provenance: signing and SBOM in the publish job" "$SCRIPT_DIR/test-image-provenance.sh"
 run_test "ShellCheck Linting" "$SCRIPT_DIR/run-shellcheck.sh"
 
 # Summary
