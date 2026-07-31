@@ -9,8 +9,9 @@ Production Kubernetes deployment for the Autonomi Loki Mode multi-agent autonomo
 - Container image `asklokesh/loki-mode` available (Docker Hub or private registry)
 
 To verify the image signature and SBOM before deploying, see
-[docs/image-provenance.md](../../docs/image-provenance.md). Images from v8.6.0
-onward are signed and carry a CycloneDX SBOM; earlier images are not signed.
+[docs/image-provenance.md](../../docs/image-provenance.md). Images from the first
+release after v8.5.2 are signed and carry a CycloneDX SBOM; v8.5.2 and
+earlier are not signed.
 
 ## Quickstart
 

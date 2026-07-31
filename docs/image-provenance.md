@@ -13,10 +13,10 @@ delivers is worse than none, because it is exactly what an auditor will test.
 
 | Artifact | Signature | SBOM |
 |---|---|---|
-| Container image (`asklokesh/loki-mode`) | v8.6.0 and later | v8.6.0 and later |
+| Container image (`asklokesh/loki-mode`) | first release after v8.5.2 | first release after v8.5.2 |
 | npm tarball (`loki-mode`) | v7.4.10 and later | v7.4.10 and later |
 
-**Images published before v8.6.0 are not signed and have no SBOM.** A signing
+**Images published up to and including v8.5.2 are not signed and have no SBOM.** A signing
 workflow existed from v7.4.10 but was triggered on `release: published`, and
 because our releases are created by a workflow using the default
 `GITHUB_TOKEN`, GitHub never emitted that event. The workflow therefore never
@@ -38,7 +38,7 @@ Signatures are bound to the image **digest**, not to a tag. Tags are mutable --
 resolve the digest first and verify that.
 
 ```sh
-VERSION=8.6.0
+VERSION=8.6.0   # or whichever release first carried signing; see the table above
 DIGEST=$(docker buildx imagetools inspect "asklokesh/loki-mode:${VERSION}" \
   --format '{{json .Manifest.Digest}}' | tr -d '"')
 echo "$DIGEST"
@@ -82,6 +82,17 @@ jq '.components | length' image-sbom.cdx.json
 which is the point: an SBOM you downloaded unverified tells you what someone
 wanted you to believe is in the image.
 
+**Scope limit worth knowing.** We publish a multi-arch image (linux/amd64 and
+linux/arm64). The signature covers the manifest list, so it covers both
+architectures. The SBOM does not: it is generated from a single resolved
+platform, so package versions specific to the other architecture may differ
+from what it lists. If you deploy on arm64 and need an exact bill of materials
+for that architecture, generate it against the arch-specific digest yourself:
+
+```sh
+syft "asklokesh/loki-mode:${VERSION}" --platform linux/arm64 -o cyclonedx-json
+```
+
 Feed `image-sbom.cdx.json` to Grype, Trivy, Dependency-Track or any other
 CycloneDX consumer for CVE scanning.
 
@@ -107,7 +118,7 @@ Do not deploy the image. In order of likelihood:
 1. **You verified a tag instead of a digest.** Re-resolve the digest.
 2. **You omitted the `--certificate-*` flags**, verified a digest that was
    never ours, and got a pass or a confusing mismatch. Both flags are required.
-3. **The version predates v8.6.0.** See the coverage table above; those images
+3. **The version is v8.5.2 or earlier.** See the coverage table above; those images
    are genuinely unsigned and no command will make them verify.
 4. **The image is not what we published.** Report it at
    https://github.com/asklokesh/loki-mode/issues and do not run it.

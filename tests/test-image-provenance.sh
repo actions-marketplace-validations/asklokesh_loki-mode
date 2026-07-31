@@ -118,9 +118,20 @@ if [ -f "$DOC" ]; then
     # unsigned; a doc implying otherwise sends an auditor chasing a command
     # that cannot succeed.
     if grep -q 'not signed' "$DOC"; then
-        ok "doc states plainly that pre-v8.6.0 images are unsigned"
+        ok "doc states plainly that earlier images are unsigned"
     else
         bad "doc does not disclose that earlier images are unsigned"
+    fi
+
+    # The signature covers the multi-arch manifest list; the SBOM is generated
+    # from one resolved platform. Implying the SBOM covers both architectures
+    # would be the same overclaim this whole item exists to correct.
+    # Matched against the whitespace-collapsed file: the phrase wraps across a
+    # line break in the prose, and a line-oriented grep silently missed it.
+    if tr '\n' ' ' < "$DOC" | tr -s ' ' | grep -q 'single resolved platform'; then
+        ok "doc discloses that the SBOM covers one architecture, not both"
+    else
+        bad "doc implies the SBOM covers every architecture in the manifest list"
     fi
 else
     bad "docs/image-provenance.md missing -- verification nobody can find is not verification"
