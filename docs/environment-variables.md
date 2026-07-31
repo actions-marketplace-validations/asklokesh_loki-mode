@@ -30,7 +30,8 @@ with nowhere to look them up.
 
 For a cost estimate before committing to a run, `loki plan <spec> --json` is
 the better tool: it reports complexity, iterations, tokens and cost without
-executing.
+executing. See [cost controls](./cost-controls.md) for how the three caps
+interact and why hitting one is a failure rather than a success.
 
 ## Choosing a model and provider
 

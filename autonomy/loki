@@ -1014,6 +1014,7 @@ show_help() {
     echo "Phase A-J features (v7.5.18 - v7.5.28) are default-on. See CHANGELOG."
     echo ""
     echo "Environment variables an operator would set: docs/environment-variables.md"
+    echo "Cost controls (budget, iteration and wall-clock caps): docs/cost-controls.md"
     echo ""
     echo "Scripting Loki? Exit codes for every command are documented in"
     echo "docs/exit-codes.md. Severity rises with the code, and 'loki start'"
