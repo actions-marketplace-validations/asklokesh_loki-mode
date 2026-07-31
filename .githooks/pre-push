@@ -114,7 +114,20 @@ if command -v python3 >/dev/null 2>&1 && [[ -f pytest.ini ]]; then
     fi
 
     if [[ $_run_pytest -eq 1 ]]; then
-        _pytest_out="$(python3 -m pytest -q "${_pytest_args[@]+"${_pytest_args[@]}"}" 2>&1)" \
+        # Run pytest with git's own environment stripped. Git exports GIT_DIR,
+        # GIT_INDEX_FILE and friends into every hook; they are inherited by
+        # each `git` subprocess a test spawns, which silently redirects tests
+        # that build a throwaway fixture repo at this repository instead. That
+        # is 22 real failures (test_wiki_index, test_wiki_generator and
+        # others) that reproduce with nothing else running, and pass the
+        # instant GIT_DIR is unset.
+        #
+        # This was latent before: the old `pytest | tail` masked pytest's exit
+        # code, so the hook never noticed it was failing them.
+        _pytest_out="$(env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE \
+                           -u GIT_PREFIX -u GIT_OBJECT_DIRECTORY \
+                           -u GIT_COMMON_DIR -u GIT_QUARANTINE_PATH \
+                           python3 -m pytest -q "${_pytest_args[@]+"${_pytest_args[@]}"}" 2>&1)" \
             && _pytest_rc=0 || _pytest_rc=$?
         if [[ $_pytest_rc -ne 0 ]]; then
             tail -25 <<<"$_pytest_out" >&2

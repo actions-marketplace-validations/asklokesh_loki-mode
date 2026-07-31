@@ -51,9 +51,9 @@ setup_clone() {
     cd "$dir" || return 1
 
     git init -q .
-    git config user.name asklokesh
-    git config user.email lokeshmure@live.com
-    git config commit.gpgsign false
+    git -C "$dir" config user.name asklokesh
+    git -C "$dir" config user.email lokeshmure@live.com
+    git -C "$dir" config commit.gpgsign false
 
     cp "$HOOK" .githooks_pre_push 2>/dev/null || true
     mkdir -p .githooks && cp "$HOOK" .githooks/pre-push
@@ -77,11 +77,11 @@ exec /usr/bin/env python3 "$@"
 STUB
     chmod +x bin/python3
 
-    git add -A >/dev/null 2>&1
-    git commit -q -m base --no-verify >/dev/null 2>&1
-    git branch -f main HEAD >/dev/null 2>&1
-    git remote add origin . >/dev/null 2>&1
-    git update-ref refs/remotes/origin/main HEAD
+    git -C "$dir" add -A >/dev/null 2>&1
+    git -C "$dir" commit -q -m base --no-verify >/dev/null 2>&1
+    git -C "$dir" branch -f main HEAD >/dev/null 2>&1
+    git -C "$dir" remote add origin . >/dev/null 2>&1
+    git -C "$dir" update-ref refs/remotes/origin/main HEAD
 }
 
 # Runs the hook after committing whatever the caller staged. Echoes "RC=<n>".
@@ -98,11 +98,24 @@ run_hook() {
 
 argv_of() { cat "$1/pytest_argv.txt" 2>/dev/null || echo "__PYTEST_NEVER_RAN__"; }
 
+# Every git in this test must act on a scratch clone. A bare `git commit` run
+# from the wrong cwd commits into the REAL repository -- that happened once
+# during development and rewrote this branch's history. This wrapper makes it
+# structurally impossible rather than a matter of remembering to cd.
+g() {
+    local d="$1"; shift
+    case "$d" in
+        "$SCRATCH"/*) : ;;
+        *) echo "  FATAL: refusing git outside scratch: $d" >&2; exit 1 ;;
+    esac
+    git -C "$d" "$@"
+}
+
 # --- case 1: docs-only push must not run pytest ------------------------------
 D="$SCRATCH/c1"; setup_clone "$D"
 echo '# more docs' >> docs/guide.md
-git add docs/guide.md >/dev/null 2>&1
-git commit -q -m docs --no-verify >/dev/null 2>&1
+g "$D" add docs/guide.md >/dev/null 2>&1
+g "$D" commit -q -m docs --no-verify >/dev/null 2>&1
 rc="$(run_hook "$D")"
 if [[ "$(argv_of "$D")" == "__PYTEST_NEVER_RAN__" ]]; then
     ok "docs-only push skips pytest"
@@ -113,8 +126,8 @@ fi
 # --- case 2: only test modules -> scoped to exactly those --------------------
 D="$SCRATCH/c2"; setup_clone "$D"
 printf 'def test_added():\n    assert True\n' >> tests/test_alpha.py
-git add tests/test_alpha.py >/dev/null 2>&1
-git commit -q -m "one test file" --no-verify >/dev/null 2>&1
+g "$D" add tests/test_alpha.py >/dev/null 2>&1
+g "$D" commit -q -m "one test file" --no-verify >/dev/null 2>&1
 rc="$(run_hook "$D")"
 argv="$(argv_of "$D")"
 if [[ "$argv" == *"tests/test_alpha.py"* && "$argv" != *"tests/test_beta.py"* ]]; then
@@ -126,8 +139,8 @@ fi
 # --- case 3: non-test source -> full suite (no file args) --------------------
 D="$SCRATCH/c3"; setup_clone "$D"
 mkdir -p dashboard && printf '__version__ = "1"\n' > dashboard/__init__.py
-git add dashboard/__init__.py >/dev/null 2>&1
-git commit -q -m "source" --no-verify >/dev/null 2>&1
+g "$D" add dashboard/__init__.py >/dev/null 2>&1
+g "$D" commit -q -m "source" --no-verify >/dev/null 2>&1
 rc="$(run_hook "$D")"
 argv="$(argv_of "$D")"
 if [[ "$argv" != "__PYTEST_NEVER_RAN__" && "$argv" != *".py"* ]]; then
@@ -141,8 +154,8 @@ fi
 # pytest whenever no .py changed fails open on exactly those.
 D="$SCRATCH/c4"; setup_clone "$D"
 echo '# changed' >> autonomy/run.sh
-git add autonomy/run.sh >/dev/null 2>&1
-git commit -q -m "shell only" --no-verify >/dev/null 2>&1
+g "$D" add autonomy/run.sh >/dev/null 2>&1
+g "$D" commit -q -m "shell only" --no-verify >/dev/null 2>&1
 rc="$(run_hook "$D")"
 argv="$(argv_of "$D")"
 if [[ "$argv" == "__PYTEST_NEVER_RAN__" ]]; then
@@ -157,8 +170,8 @@ fi
 # --- case 5: conftest.py must escalate, never be passed as a target ----------
 D="$SCRATCH/c5"; setup_clone "$D"
 echo '# changed' >> tests/conftest.py
-git add tests/conftest.py >/dev/null 2>&1
-git commit -q -m conftest --no-verify >/dev/null 2>&1
+g "$D" add tests/conftest.py >/dev/null 2>&1
+g "$D" commit -q -m conftest --no-verify >/dev/null 2>&1
 rc="$(run_hook "$D")"
 argv="$(argv_of "$D")"
 if [[ "$argv" == *"conftest.py"* ]]; then
@@ -173,8 +186,8 @@ fi
 # --- case 6: a failing test still blocks the push ---------------------------
 D="$SCRATCH/c6"; setup_clone "$D"
 printf 'def test_boom():\n    assert False\n' >> tests/test_alpha.py
-git add tests/test_alpha.py >/dev/null 2>&1
-git commit -q -m failing --no-verify >/dev/null 2>&1
+g "$D" add tests/test_alpha.py >/dev/null 2>&1
+g "$D" commit -q -m failing --no-verify >/dev/null 2>&1
 export STUB_PYTEST_RC=1
 rc="$(run_hook "$D")"
 unset STUB_PYTEST_RC
@@ -185,7 +198,38 @@ else
     ok "a failing test still blocks the push"
 fi
 
-# --- case 7: pytest rc is not masked by a pipe ------------------------------
+# --- case 7: git's exported env must not leak into pytest -------------------
+# Git exports GIT_DIR / GIT_INDEX_FILE into every hook. Those are inherited by
+# each `git` a test spawns, redirecting tests that build a throwaway fixture
+# repo at the real repository instead. Measured: 22 failures under `git push`
+# that pass the instant GIT_DIR is unset. The stub records whether the leak
+# reached it.
+D="$SCRATCH/c7"; setup_clone "$D"
+cd "$D" || exit 1   # setup_clone already cd's here; be explicit -- a git
+                    # command run from the wrong cwd commits into the REAL
+                    # repository. That happened once during development.
+cat > bin/python3 <<'STUB'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-m" && "${2:-}" == "pytest" ]]; then
+    printf 'GIT_DIR=[%s] GIT_INDEX_FILE=[%s]\n' \
+        "${GIT_DIR:-}" "${GIT_INDEX_FILE:-}" > "$PYTEST_ARGV_FILE"
+    exit 0
+fi
+exec /usr/bin/env python3 "$@"
+STUB
+chmod +x bin/python3
+printf 'def test_added():\n    assert True\n' >> tests/test_alpha.py
+g "$D" add tests/test_alpha.py bin/python3 >/dev/null 2>&1
+g "$D" commit -q -m "env leak probe" --no-verify >/dev/null 2>&1
+rc="$(run_hook "$D")"
+leak="$(argv_of "$D")"
+if [[ "$leak" == *"GIT_DIR=[]"* && "$leak" == *"GIT_INDEX_FILE=[]"* ]]; then
+    ok "git's exported env does not leak into pytest"
+else
+    ko "git's exported env does not leak into pytest" "saw: $leak"
+fi
+
+# --- case 8: pytest rc is not masked by a pipe ------------------------------
 # The trap this replaced: `pytest -q 2>&1 | tail -25` reports TAIL's status.
 if grep -qE 'pytest -q[^|]*\| *tail' "$HOOK"; then
     ko "pytest rc is not masked by a pipe to tail"
