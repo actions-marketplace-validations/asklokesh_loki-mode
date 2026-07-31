@@ -5,6 +5,52 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v8.7.0
+
+Five items aimed at one goal: making the harness work with a model that is not
+Claude. Two were bugs that would have made a cheap or local model look worse
+than it is.
+
+### Fixed
+
+- **Every argv-path Claude invocation shipped with no `--model` flag.**
+  `providers/claude.sh` called `loki_tier_route_model "$tier"` with one argument
+  to a two-argument function; it returned empty at rc=0, so the `||` fallback
+  never fired. Verified live in v8.6.0/v8.6.1. The benchmark data is
+  unaffected -- `autonomy/run.sh` never uses the argv seam, so trials went
+  through `provider_invoke` with the model correctly pinned.
+- **A global tier variable silently picked three providers' models.**
+  `LOKI_MODEL_DEVELOPMENT` sat ahead of the catalog in aider, cline and
+  opencode, so setting a development model for one provider changed the others.
+  Provider-scoped variables now win. `claude.sh` deliberately keeps its global
+  chain (it genuinely reads `LOKI_MODEL_PLANNING` for max-tier pinning) and a
+  test locks that asymmetry so the fix cannot be over-applied.
+- A test required every provider to fall back to `claude-opus-4-8`, while
+  `model_catalog.json` declares aider, cline and opencode with **open-weights**
+  defaults. It asserted that our provider-agnostic CLIs default to Claude --
+  encoding the bug rather than catching it. Now derives from the catalog.
+
+### Added
+
+- **Review and prompt caps derive from `PROVIDER_CONTEXT_WINDOW`.** That value
+  was declared by all four providers and read by nothing but a display line,
+  while the caps were hardcoded at 400000/425000 bytes. A 12b-14b model with a
+  32k window would have received prompts sized for 200k and failed in a way
+  that looks like the model being bad. Measured: unset window preserves
+  400000/425000 byte-for-byte; a 32k window derives 67764/72000. The clamp only
+  ever lowers the cap.
+- `provider_invoke_argv` for aider and cline (previously in three of five
+  providers).
+- A harness signature on every benchmark row, so editing the harness
+  mid-experiment cannot silently pool incompatible arms. Rows without one are an
+  explicit "unknown" stratum rather than quietly averaged in.
+
+### Fixed (scale)
+
+- Two concurrent builds could have one delete the virtualenv the other was
+  importing from. The locking primitive already shipped; this path never called
+  it, in **both** `run.sh` and `autonomy/loki`.
+
 ## v8.6.1
 
 Post-release fixes found by validating the PUBLISHED v8.6.0 artifact rather
