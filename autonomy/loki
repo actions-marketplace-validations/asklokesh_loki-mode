@@ -985,6 +985,32 @@ show_help() {
     echo "  loki cockpit                  # Live multi-repo cockpit (terminal image)"
     echo "  loki remote                   # Remote session (phone/browser)"
     echo ""
+    # COMPLETE COMMAND INDEX. The curated sections above stay curated -- they
+    # are the onboarding path and stuffing 112 commands into them would make
+    # the first screen useless. But a command that appears NOWHERE in help does
+    # not exist to a user: measured, 43 of 112 were unreachable from here,
+    # including `loki proof` -- the Evidence Receipt, which is the whole trust
+    # argument. Discoverability is an adoption lever, not tidiness.
+    #
+    # tests/test-help-discoverability.sh fails the build when a real command is
+    # missing from this list, so a new command cannot ship invisible.
+    echo ""
+    echo "All commands:"
+    echo "  agent analyze api assets audit bench checkpoint (cp) ci cleanup"
+    echo "  cluster cockpit code compliance completions compound config context (ctx)"
+    echo "  cost council crash dashboard demo deploy docker docs doctor dogfood"
+    echo "  enterprise explain export failover github grill heal help import init"
+    echo "  issue kpis logs magic mcp memory metrics migrate modernize monitor"
+    echo "  next notify onboard open optimize otel own (handoff) pause plan preview"
+    echo "  projects proof (receipt) provider quick quickstart rc remote report reset"
+    echo "  resume review rollback run sandbox secrets secure self-update sentrux"
+    echo "  serve setup-skill share ship spec start state stats status steer stop"
+    echo "  syslog telemetry template test tour trigger trust trust-metrics"
+    echo "  ultracode update verify version voice watch watchdog web welcome why"
+    echo "  wiki worktree (wt)"
+    echo ""
+    echo "Any command: loki <command> --help"
+    echo ""
     echo "Phase A-J features (v7.5.18 - v7.5.28) are default-on. See CHANGELOG."
     echo ""
     echo "Environment variables an operator would set: docs/environment-variables.md"
