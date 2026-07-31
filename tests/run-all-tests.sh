@@ -718,6 +718,7 @@ run_test "first_run_blocked signal (opt-out silent, enum-clamped)" "$SCRIPT_DIR/
 run_test "help discoverability (every command reachable)" "$SCRIPT_DIR/test-help-discoverability.sh"
 run_test "assess runtime detection (declared, never guessed)" "$SCRIPT_DIR/test-assess-runtime-detection.sh"
 run_test "provider model scoping (global tier var must not leak)" "$SCRIPT_DIR/test-provider-model-scoping.sh"
+run_test "model catalog is a single source of truth" "$SCRIPT_DIR/test-model-catalog-single-source.sh"
 run_test "proof md (paste-able receipt, one renderer)" "$SCRIPT_DIR/test-proof-md.sh"
 run_test "air-gapped read-only path (egress severed)" "$SCRIPT_DIR/test-airgap-commands.sh"
 run_test "ShellCheck Linting" "$SCRIPT_DIR/run-shellcheck.sh"

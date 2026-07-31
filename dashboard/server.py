@@ -2890,17 +2890,28 @@ def _normalize_session_model(raw: str | None) -> str:
 # tier names ARE valid pins.
 _SESSION_PIN_ALLOWLIST = _SESSION_MODEL_ALLOWLIST + ("planning", "development", "fast")
 
+# Generic capability vocabulary. A user picks a CLASS of model (small/medium/
+# high) and each provider supplies its own latest model in that class, so nobody
+# has to know a vendor's model names. These are translated onto the canonical
+# tier names rather than added to the allowlist, keeping this mirror in step
+# with run.sh's entry-point case and the `loki plan` estimator without widening
+# what any of the three actually route on. Mirrors loki_tier_alias() in
+# providers/models.sh.
+_GENERIC_TIERS = {"small": "fast", "medium": "development", "high": "planning"}
+
 
 def _normalize_session_pin(raw: str | None) -> str:
     """Normalize a LOKI_SESSION_MODEL pin value (aliases + raw tier names).
 
     Mirrors run.sh's session-pin case: trim + lowercase, accept the four model
-    aliases and the three tier names. Interior whitespace is preserved (so
+    aliases and the three tier names, and translate the generic small/medium/
+    high vocabulary onto those tier names. Interior whitespace is preserved (so
     "fab le" stays junk and falls through to the default tier, exactly like the
     runner's "*" arm). Use this for the session-pin (no-override) derivation;
     use _normalize_session_model for the override-file / POST path.
     """
     val = (raw or "").strip().lower()
+    val = _GENERIC_TIERS.get(val, val)
     return val if val in _SESSION_PIN_ALLOWLIST else ""
 
 

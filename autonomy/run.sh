@@ -535,6 +535,34 @@ if [ -n "${LOKI_SESSION_ID:-}" ]; then
     unset _loki_sid_raw _loki_sid_safe
 fi
 
+# GENERIC TIER VOCABULARY (small|medium|high). A user should be able to ask for
+# a capability class without naming a vendor model, and get that provider's
+# latest model in the class. LOKI_SESSION_MODEL is the knob that already does
+# this -- it accepts the raw tier names planning|development|fast alongside the
+# Claude aliases -- so the generic words are normalized ONTO it here rather than
+# becoming a fourth spelling. LOKI_MAX_TIER (a cost CEILING) and LOKI_TIER (the
+# OSS/enterprise licensing seam) mean different things and are left alone.
+#
+# WHY NORMALIZE AT THE ENTRY POINT: the session-pin case block is byte-mirrored
+# in the estimator (autonomy/loki) and the dashboard (dashboard/server.py), and
+# every one of those mirrors is locked by a parity test. Translating here means
+# they keep seeing only the three canonical tier names and none of them change.
+#
+# The mapping is loki_tier_alias() in providers/models.sh -- the single source
+# of truth, not a second copy. Inlined as a case because run.sh must not source
+# a provider file this early in startup. Kept in lockstep by
+# tests/test-generic-tiers.sh.
+#
+# ONLY the three new words are translated. sonnet/haiku/opus/fable and the raw
+# tier names pass through untouched, so an unset LOKI_SESSION_MODEL still
+# defaults to sonnet and "medium" resolves to the same development-tier model
+# today's builds already use. This changes no existing run's model.
+case "$(printf '%s' "${LOKI_SESSION_MODEL:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
+    small)  LOKI_SESSION_MODEL="fast"        ; export LOKI_SESSION_MODEL ;;
+    medium) LOKI_SESSION_MODEL="development" ; export LOKI_SESSION_MODEL ;;
+    high)   LOKI_SESSION_MODEL="planning"    ; export LOKI_SESSION_MODEL ;;
+esac
+
 # Process Supervision (opt-in)
 WATCHDOG_ENABLED=${LOKI_WATCHDOG:-"false"}          # Enable process health monitoring
 WATCHDOG_INTERVAL=${LOKI_WATCHDOG_INTERVAL:-30}     # Check interval in seconds
