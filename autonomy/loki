@@ -15732,6 +15732,35 @@ for fn in sorted(os.listdir(root)) if os.path.isdir(root) else []:
 # dependency staleness is NOT computed offline -> reported as 'unknown', never guessed.
 dep_lock_present = len(found_lockfiles) > 0 if found_manifests else None
 
+# RUNTIME + TOP DEPENDENCIES, read from the manifest itself. Offline-safe: this
+# reports what the file DECLARES, never what is current upstream (that stays
+# 'unknown' -- see dependency_staleness above).
+#
+# Why it matters: after 'how far behind am I', the next question a legacy
+# modernization buyer asks is 'what is this even built on'. Answering
+# 'package.json exists' and nothing more leaves them to open the file
+# themselves, which is the work they were trying to delegate.
+runtime_info = {'declared_runtime': None, 'declared_dependencies': None, 'framework_hints': []}
+try:
+    if 'package.json' in found_manifests:
+        with open(os.path.join(root, 'package.json')) as _f:
+            _pkg = json.load(_f)
+        _eng = (_pkg.get('engines') or {}).get('node')
+        runtime_info['declared_runtime'] = ('node ' + _eng) if _eng else 'node (engine unspecified)'
+        _deps = dict(_pkg.get('dependencies') or {})
+        runtime_info['declared_dependencies'] = len(_deps)
+        # Name only frameworks actually present. A hint is a FACT from the file,
+        # not an inference about what the project "probably" is.
+        for _fw in ('express', 'react', 'next', 'vue', 'angular', 'fastify', 'koa', 'nest'):
+            if _fw in _deps:
+                runtime_info['framework_hints'].append(_fw + ' ' + str(_deps[_fw]))
+    elif 'pyproject.toml' in found_manifests or 'requirements.txt' in found_manifests:
+        runtime_info['declared_runtime'] = 'python (version unspecified in manifest)'
+except (OSError, ValueError):
+    # A malformed manifest is not a crash and not a guess: leave the fields None
+    # so the report says nothing rather than something wrong.
+    pass
+
 todo_density = round((todo_count / total_loc) * 1000, 2) if total_loc else 0.0
 
 # --- 4-level maturity model (Ad hoc -> Planned -> Systematic -> Optimized) ---
@@ -15826,6 +15855,7 @@ report = {
         'lockfiles': found_lockfiles,
         'dependency_lock_present': dep_lock_present,
         'dependency_staleness': 'unknown',  # not computable offline; never guessed
+        'runtime': runtime_info,
     },
     'maturity': {
         'level': maturity_level,
