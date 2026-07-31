@@ -1016,6 +1016,7 @@ show_help() {
     echo "Environment variables an operator would set: docs/environment-variables.md"
     echo "Cost controls (budget, iteration and wall-clock caps): docs/cost-controls.md"
     echo "Already have a codebase? Start read-only: docs/brownfield.md"
+    echo "No egress allowed? What runs disconnected: docs/air-gapped.md"
     echo ""
     echo "Scripting Loki? Exit codes for every command are documented in"
     echo "docs/exit-codes.md. Severity rises with the code, and 'loki start'"
