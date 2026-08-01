@@ -61,6 +61,16 @@ if [ -f "$_LOKI_SCRIPT_DIR/tui.sh" ]; then
     source "$_LOKI_SCRIPT_DIR/tui.sh"
 fi
 
+# Portable lock helper -- provides safe_acquire_lock / safe_release_lock.
+# Needed here (not just in run.sh) because ensure_dashboard_venv tears down and
+# rebuilds the HOST-GLOBAL ~/.loki/dashboard-venv, so two concurrent CLI
+# invocations can otherwise delete the venv the other is importing from.
+# Self-guarded against double-source.
+if [ -f "$_LOKI_SCRIPT_DIR/lib/lock.sh" ]; then
+    # shellcheck source=lib/lock.sh
+    source "$_LOKI_SCRIPT_DIR/lib/lock.sh"
+fi
+
 # Crash-reporting helpers (provides loki_collection_enabled, used by
 # cmd_telemetry status and cmd_crash). Self-guarded against double-source.
 if [ -f "$_LOKI_SCRIPT_DIR/crash.sh" ]; then
@@ -446,6 +456,33 @@ ensure_dashboard_venv() {
         return 0
     fi
 
+    # The venv is HOST-GLOBAL, so concurrent runs must not rebuild it at once:
+    # one run's `rm -rf` would delete the tree another is importing from. Lock
+    # the venv path itself -- safe_acquire_lock appends ".lockdir", giving a
+    # SIBLING mutex that the teardown below cannot destroy. Timeout must outlast
+    # a real cold `python3 -m venv` + `pip install` (not the 5s used by the
+    # JSON read-modify-write call sites).
+    local _venv_locked=false
+    if type safe_acquire_lock >/dev/null 2>&1; then
+        if safe_acquire_lock "$dashboard_venv" "${LOKI_VENV_LOCK_TIMEOUT:-300}"; then
+            _venv_locked=true
+            # The winner may have finished the build while we waited -- re-probe
+            # before tearing anything down.
+            DASHBOARD_PYTHON="python3"
+            [ -x "${dashboard_venv}/bin/python3" ] && DASHBOARD_PYTHON="${dashboard_venv}/bin/python3"
+            if "$DASHBOARD_PYTHON" -c "import fastapi; import sqlalchemy; import aiosqlite" 2>/dev/null; then
+                safe_release_lock "$dashboard_venv"
+                return 0
+            fi
+        else
+            # Do NOT fall through into the rm -rf unlocked -- that is the exact
+            # race this lock exists to prevent.
+            echo -e "${RED}Timed out waiting for another run to finish building the dashboard venv${NC}"
+            echo "  Retry, or remove a stale lock: rm -rf ${dashboard_venv}.lockdir"
+            return 1
+        fi
+    fi
+
     echo -e "${YELLOW}Setting up dashboard virtualenv...${NC}"
 
     # Create venv if missing or broken
@@ -461,6 +498,7 @@ ensure_dashboard_venv() {
             echo "You may need to install python3-venv:"
             echo "  sudo apt install python3-venv    (Debian/Ubuntu)"
             echo "  brew install python3              (macOS)"
+            [ "$_venv_locked" = true ] && safe_release_lock "$dashboard_venv"
             return 1
         }
     fi
@@ -485,6 +523,7 @@ ensure_dashboard_venv() {
         if ! "${dashboard_venv}/bin/pip" install fastapi uvicorn pydantic websockets sqlalchemy aiosqlite httpx pexpect watchdog 2>&1 | tail -1; then
             echo -e "${RED}Failed to install dashboard dependencies${NC}"
             echo "Try manually: ${dashboard_venv}/bin/pip install fastapi uvicorn sqlalchemy aiosqlite"
+            [ "$_venv_locked" = true ] && safe_release_lock "$dashboard_venv"
             return 1
         fi
         # Try greenlet separately (optional, needs C compiler on some platforms)
@@ -497,9 +536,11 @@ ensure_dashboard_venv() {
         echo "Try removing the venv and retrying:"
         echo "  rm -rf ${dashboard_venv}"
         echo "  loki dashboard start"
+        [ "$_venv_locked" = true ] && safe_release_lock "$dashboard_venv"
         return 1
     fi
 
+    [ "$_venv_locked" = true ] && safe_release_lock "$dashboard_venv"
     return 0
 }
 
@@ -5337,7 +5378,14 @@ cmd_provider_models() {
     echo -e "${BOLD}Model Configuration (resolved):${NC}"
     echo ""
 
-    local providers=("claude" "codex" "cline" "aider")
+    echo -e "  ${CYAN}Ask for a tier by capability -- small, medium or high -- and each"
+    echo -e "  provider supplies its own latest model in that class. medium is the"
+    echo -e "  default. Set one with LOKI_SESSION_MODEL=small or --session-model small.${NC}"
+    echo ""
+
+    # opencode ships a provider file and a catalog entry, so omitting it here
+    # under-reported what this command claims to show ("all providers").
+    local providers=("claude" "codex" "cline" "aider" "opencode")
     for provider in "${providers[@]}"; do
         local provider_file="$script_dir/providers/${provider}.sh"
         [ -f "$provider_file" ] || continue
@@ -5407,7 +5455,34 @@ cmd_provider_models() {
                 fast)        value="$fast" ;;
             esac
 
-            printf "    %-12s %-30s (source: %s)\n" "${tier^}:" "$value" "$source"
+            # Label each tier with the GENERIC vocabulary users actually select
+            # (small|medium|high), so this command answers "what do I really get
+            # if I ask for medium on this provider" without anyone having to know
+            # a vendor model name. The canonical tier name stays alongside it
+            # because every env var, log line and state file still uses it -- and
+            # a user reading LOKI_CLAUDE_MODEL_DEVELOPMENT needs to see the two
+            # spellings connected. Mapping mirrors loki_tier_alias() in
+            # providers/models.sh.
+            local generic
+            case "$tier" in
+                fast)        generic="small" ;;
+                development) generic="medium" ;;
+                planning)    generic="high" ;;
+                *)           generic="$tier" ;;
+            esac
+
+            # An EMPTY resolved model is a real, supported state, not a lookup
+            # failure: providers/codex.sh sets CODEX_DEFAULT_MODEL="" on purpose
+            # so no --model flag is passed and Codex resolves an
+            # account-appropriate default (a hardcoded name broke ChatGPT-account
+            # users outright). Say that plainly instead of printing a blank
+            # column. Deliberately NOT filled in from the catalog: this table
+            # reports what will be DISPATCHED, and the catalog id would be a
+            # guess this file is documented as unable to make.
+            [ -n "$value" ] || value="(provider default -- no --model sent)"
+
+            printf "    %-8s %-14s %-38s (source: %s)\n" \
+                "$generic" "(${tier})" "$value" "$source"
         done
 
         # Show extra info per provider
@@ -11341,6 +11416,49 @@ except Exception:
     fi
     echo ""
 
+    # Model catalog freshness. Providers ship models constantly and this catalog
+    # is hand-maintained, so it rots silently -- nothing else in the system ever
+    # reports its age. Reads ONLY the local file's "updated" field: zero network
+    # I/O, so `loki doctor` stays air-gapped-safe (docs/air-gapped.md). We do not
+    # and will not auto-fetch or guess model IDs; inventing a model that does not
+    # exist is worse than being stale, so refresh stays a human-verified step.
+    #
+    # Informational only -- like Runtime route and Cockpit above, it does NOT
+    # touch pass/warn/fail counts and never calls _doctor_block, so a stale
+    # catalog can never flip doctor's exit code or block a build. Advisory by
+    # construction, not by convention.
+    #
+    # Mirrored byte-for-byte in loki-ts/src/commands/doctor.ts -- the bun-parity
+    # matrix diffs this section (it is NOT in the normalizer's strip list), so
+    # edit BOTH routes or parity fails.
+    echo -e "${CYAN}Model catalog:${NC}"
+    _catalog_path="${LOKI_MODEL_CATALOG:-${_LOKI_SCRIPT_DIR}/../providers/model_catalog.json}"
+    _catalog_line=$(LOKI_CATALOG_PATH="$_catalog_path" python3 -c "
+import json, os, datetime
+# Threshold: 90 days. The upstream probe workflow runs weekly, so a catalog
+# untouched for a quarter means the probe PRs are going unread.
+STALE_DAYS = 90
+p = os.environ['LOKI_CATALOG_PATH']
+try:
+    updated = json.load(open(p))['updated']
+    age = (datetime.date.today() - datetime.date.fromisoformat(updated)).days
+except Exception:
+    print('warn|Catalog unreadable or missing an ISO \"updated\" date -- cannot determine age')
+else:
+    if age > STALE_DAYS:
+        print(f'warn|Last updated {updated} ({age} days ago) -- may be missing newer models. Refresh: python3 tools/probe-model-catalog.py (reports new model IDs from provider docs; you verify and edit the catalog by hand -- never auto-applied)')
+    else:
+        print(f'pass|Last updated {updated} ({age} days ago)')
+" 2>/dev/null)
+    # Fail-open: if python3 is missing or the probe dies, say so and move on.
+    [ -n "$_catalog_line" ] || _catalog_line="warn|Could not probe catalog age"
+    if [ "${_catalog_line%%|*}" = "pass" ]; then
+        echo -e "  ${GREEN}PASS${NC}  ${_catalog_line#*|}"
+    else
+        echo -e "  ${YELLOW}WARN${NC}  ${_catalog_line#*|}"
+    fi
+    echo ""
+
     # Cockpit capability (E5): report what `loki cockpit` will actually do in
     # this terminal. Informational only (does NOT touch pass/warn/fail counts,
     # like Runtime route above), so the bun-parity matrix stays reconcilable.
@@ -11448,7 +11566,9 @@ except Exception:
 cmd_doctor_json() {
     local _loki_version
     _loki_version=$(get_version)
-    LOKI_VERSION="$_loki_version" python3 -c "
+    LOKI_VERSION="$_loki_version" \
+    LOKI_CATALOG_PATH="${LOKI_MODEL_CATALOG:-${_LOKI_SCRIPT_DIR}/../providers/model_catalog.json}" \
+    python3 -c "
 import json, os, subprocess, sys, shutil
 
 def get_version(cmd, args=None):
@@ -11623,6 +11743,32 @@ if _any_provider:
 else:
     fail_count += 1
 
+# Model catalog freshness. Local read only -- no network. Advisory: deliberately
+# excluded from pass/fail/warn counts and from 'ok', so a stale catalog can never
+# flip doctor's exit code. Mirrors describeCatalogFreshness() in
+# loki-ts/src/commands/doctor.ts.
+CATALOG_STALE_DAYS = 90
+_cat_path = os.environ['LOKI_CATALOG_PATH']
+try:
+    import datetime as _dt
+    _cat_updated = json.load(open(_cat_path))['updated']
+    _cat_age = (_dt.date.today() - _dt.date.fromisoformat(_cat_updated)).days
+    if _cat_age > CATALOG_STALE_DAYS:
+        # Deliberately NOT counted. The block comment above states catalog age is
+        # excluded from pass/fail/warn and from 'ok' so a stale catalog can never
+        # fail a build -- this increment contradicted that contract, and it also
+        # broke route parity: the Bun route (doctor.ts) never counted it, so the
+        # same host reported warnings: 2 on bash and 1 on Bun. bun-parity
+        # compares these byte for byte, so it would have gone red on day 91.
+        model_catalog = {'status': 'warn', 'updated': _cat_updated, 'age_days': _cat_age,
+                         'detail': f'Last updated {_cat_updated} ({_cat_age} days ago) -- may be missing newer models'}
+    else:
+        model_catalog = {'status': 'pass', 'updated': _cat_updated, 'age_days': _cat_age,
+                         'detail': f'Last updated {_cat_updated} ({_cat_age} days ago)'}
+except Exception:
+    model_catalog = {'status': 'warn', 'updated': None, 'age_days': None,
+                     'detail': 'Catalog unreadable or missing an ISO \"updated\" date -- cannot determine age'}
+
 result = {
     'loki_mode_version': os.environ.get('LOKI_VERSION', 'unknown'),
     'checks': checks,
@@ -11634,6 +11780,7 @@ result = {
     'sentrux': sentrux,
     'receipt_signing': receipt_signing,
     'memory': memory,
+    'model_catalog': model_catalog,
     'summary': {
         'passed': pass_count,
         'failed': fail_count,
@@ -17159,8 +17306,19 @@ def _loki_norm_alias(raw):
 # pin is a tier route, so tier names ARE valid pins. This normalizer mirrors
 # run.sh's trim+lowercase (interior whitespace preserved, so 'fab le' stays junk
 # and falls through to the default tier exactly like the runner's '*' arm).
+#
+# GENERIC TIER VOCABULARY (small|medium|high): translated onto the canonical
+# tier names before the allowlist check, mirroring run.sh's entry-point case.
+# The estimator runs in its own process and reads LOKI_SESSION_MODEL directly,
+# so without this a 'medium' pin would fall through to the '' default and the
+# quote would silently price a different model than the run dispatches -- the
+# exact estimator-vs-runner divergence this file keeps paying down. Only the
+# three new words are translated; every existing value passes through unchanged.
+_LOKI_GENERIC_TIERS = {'small': 'fast', 'medium': 'development', 'high': 'planning'}
+
 def _loki_norm_session_pin(raw):
     raw = (raw or '').strip().lower()
+    raw = _LOKI_GENERIC_TIERS.get(raw, raw)
     return raw if raw in (
         'haiku', 'sonnet', 'opus', 'fable',
         'planning', 'development', 'fast',

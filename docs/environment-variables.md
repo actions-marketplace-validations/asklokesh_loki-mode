@@ -37,15 +37,47 @@ interact and why hitting one is a failure rather than a success.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `LOKI_PROVIDER` | `claude` | `claude`, `cline`, `codex`, or `aider`. |
+| `LOKI_PROVIDER` | `claude` | `claude`, `cline`, `codex`, `aider`, or `opencode`. |
+| `LOKI_SESSION_MODEL` | `medium` | The capability tier for the run: `small`, `medium`, or `high`. See below. |
 | `LOKI_MAX_TIER` | unlimited | Caps model tier, so a run cannot escalate past what you are willing to pay for. |
-| `LOKI_TIER` | per-phase default | Forces a specific tier for the run. |
-| `LOKI_SESSION_MODEL` | provider default | Pins the session model explicitly. |
 | `LOKI_MODEL_OVERRIDE` | unset | Overrides the resolved model outright. |
+| `LOKI_TIER` | `oss` | **Not a model setting.** The open-core licensing seam. Leave it unset. |
+
+### Picking a model without naming one
+
+You do not need to know any vendor's model names. Ask for a capability class
+and each provider supplies its own latest model in that class:
+
+| Tier | Means | Claude | Codex | Cline / Aider / OpenCode |
+|---|---|---|---|---|
+| `small` | cheap and fast | `claude-haiku-4-5` | account default | `deepseek-chat` |
+| `medium` | the workhorse (**default**) | `claude-sonnet-5` | account default | `deepseek-v3.2` |
+| `high` | the most capable | `claude-opus-4-8` | account default | `deepseek-v3.2` |
+
+```bash
+LOKI_SESSION_MODEL=small loki start ./prd.md    # or: loki start --session-model small ./prd.md
+```
+
+`medium` is the default and resolves to the same model today's builds already
+use, so setting it explicitly changes nothing. The older spellings
+(`fast`/`development`/`planning`, and the Claude aliases `haiku`/`sonnet`/
+`opus`) still work and are unchanged.
+
+**To see what a tier actually resolves to on your machine, run `loki provider
+models`.** It prints the dispatched model per tier per provider along with
+which environment variable set it, so you can verify what you will really get
+rather than trusting the table above. Codex deliberately shows a provider
+default: it sends no `--model` flag and lets Codex pick a model appropriate to
+your account, because a hardcoded name breaks ChatGPT-account users.
+
+Override a single tier for one provider with `LOKI_<PROVIDER>_MODEL_<TIER>`
+(for example `LOKI_CLAUDE_MODEL_FAST=claude-haiku-4-5`), or every tier at once
+with `LOKI_<PROVIDER>_MODEL`.
 
 `LOKI_MAX_TIER` is the cost control worth knowing: it bounds escalation, while
 `LOKI_BUDGET_LIMIT` bounds total spend. They answer different questions and are
-usefully set together.
+usefully set together. Note that `LOKI_MAX_TIER` is a **ceiling** and
+`LOKI_SESSION_MODEL` is a **choice** -- the ceiling still clamps the choice.
 
 ## Output volume
 
