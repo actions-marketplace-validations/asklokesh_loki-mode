@@ -20,11 +20,12 @@ loki start owner/repo#123        # issue-mode (GitHub issue)
 
 ```
 SKILL.md                    # Slim core skill (~410 lines) - progressive disclosure
-providers/                  # Multi-provider support (4 providers)
+providers/                  # Multi-provider support (5 providers)
   claude.sh                 # Claude Code - full features (Tier 1)
   cline.sh                  # Cline - Tier 2
   codex.sh                  # OpenAI Codex CLI - degraded mode (Tier 3)
   aider.sh                  # Aider - degraded mode (Tier 3)
+  opencode.sh               # opencode - model-agnostic mode
   loader.sh                 # Provider loader utility
   models.sh                 # Model name registry
 memory/                     # Memory system (core v5.15.0; cross-project + RAG injector v7.1.0+; 15 modules)
@@ -95,11 +96,12 @@ Every iteration follows: **R**eason -> **A**ct -> **R**eflect -> **V**erify
 - **Sonnet**: Development and functional testing (implementation, integration tests)
 - **Haiku**: Unit tests, monitoring, and simple tasks - use extensively for parallelization
 
-### Multi-Provider Support (4 active providers, see `providers/*.sh`)
+### Multi-Provider Support (5 active providers, see `providers/*.sh`)
 - **Claude Code** (Tier 1): Full features (subagents, parallel, Task tool, MCP)
 - **Cline** (Tier 2): Reduced parallelism
 - **OpenAI Codex CLI** (Tier 3): Degraded mode (sequential only, no Task tool)
 - **Aider** (Tier 3): Degraded mode
+- **opencode** (model-agnostic): Sequential execution across 75+ providers, local models, custom endpoints, and MCP
 - **Google Gemini CLI**: DEPRECATED starting v7.5.18 (upstream deprecated; runtime removed). `LOKI_PROVIDER=gemini` exits with a migration message.
 
 ```bash
@@ -148,7 +150,6 @@ Conditional auditor (not numbered): Backward-compatibility / legacy-healing-audi
 
 ### Metrics System (ToolOrchestra-inspired)
 - **Efficiency**: Task cost tracking (`.loki/metrics/efficiency/`)
-- **Rewards**: Outcome/efficiency/preference signals (`.loki/metrics/rewards/`)
 
 ### v8 Harness Intelligence (v8.0.0)
 
@@ -204,7 +205,7 @@ Line counts approximate; re-run `wc -l` for exact.
 | `memory/storage.py` | ~2,000 | File-based memory backend |
 | `memory/engine.py` | ~1,600 | Memory orchestrator |
 | `memory/consolidation.py` | ~1,100 | Episodic-to-semantic pipeline |
-| `mcp/server.py` | ~2,700 | MCP server (34 tools: 26 in-file + 7 magic + 1 gated managed; +3 resources, 2 prompts) |
+| `mcp/server.py` | ~2,700 | MCP server (36 tools: 28 in-file + 7 magic + 1 gated managed; +3 resources, 2 prompts) |
 | `providers/loader.sh` | ~185 | Provider loader |
 
 ### Key Function Lookup
@@ -240,7 +241,11 @@ A PRD enters via `loki start` (`autonomy/loki:622`), which execs `run.sh`. The `
 **Deprecated entrypoints:**
 - `loki run <issue-ref>` is a deprecated alias for `loki start <issue-ref>` since v6.84.0. Emits a `cli_command_deprecated` telemetry event. See `autonomy/loki:4436-4456`. Prefer `loki start`.
 
-See `.claude/projects/-Users-lokesh-git-loki-mode/memory/CODEBASE-KNOWLEDGE-GRAPH.md` for complete reference.
+The fuller codebase knowledge graph lives in local Claude project memory
+(`~/.claude/projects/<sanitized-repo-path>/memory/CODEBASE-KNOWLEDGE-GRAPH.md`),
+not in this repository. It is not tracked in git and is not shipped in the npm
+package, so it resolves only on a machine where that memory exists. The tables
+above are the in-repo reference and are the authority for anyone else.
 
 ## Development Guidelines
 
@@ -294,24 +299,140 @@ Prompt: "Review the following claims for factual accuracy.
 
 **Before reporting ANY task as done, run ALL cleanup steps below. No exceptions.**
 
-1. **Kill spawned processes** (dashboard servers, test runners, etc.):
-   ```bash
-   lsof -ti:57374 | xargs kill -9 2>/dev/null || true
-   pkill -f "loki-run-" 2>/dev/null || true
-   ```
+1. **Create one run-owned temp directory before the first temp write.** Keep
+   every archive, package extraction, log, PID file, and test fixture for the
+   task below this directory. Never use fixed names or shared globs under
+   `/tmp`.
 
-2. **Remove temp files**:
-   ```bash
-   rm -rf /tmp/loki-* /tmp/test-* /tmp/package /tmp/*.tgz 2>/dev/null || true
-   ```
+2. **Stop only processes started by the current task.** Retain their exact PIDs
+   below `$LOKI_RUN_TMP` and signal those PIDs individually. Do not use
+   `pkill`, a shared-port sweep, or a name-pattern kill as cleanup.
 
-3. **Verify cleanup** (MUST run, not optional):
-   ```bash
-   ps -ef | grep -E "(loki|test)" | grep -v grep || echo "Clean"
-   ls /tmp/loki-* /tmp/test-* 2>&1 | grep -v "No such file" || echo "Clean"
-   ```
+3. **Remove only the validated run-owned directory.** Use the helpers below.
+   Cleanup fails closed unless the target is a direct child of the canonical
+   temp root, has the exact ownership marker created with it, is owned by the
+   current UID, still carries the private permissions the helper set (`700`
+   for the directory, `600` for the marker), is not a symlink, and is not a
+   Git worktree. Never replace this with a wildcard deletion under `/tmp` or
+   `$TMPDIR`.
 
-4. **Report cleanup status** to user in task completion message
+<!-- BEGIN LOKI_RUN_TMP_HELPERS -->
+```bash
+loki_run_tmp_create() {
+    local temp_root marker
+
+    if [ -n "${LOKI_RUN_TMP:-}" ]; then
+        printf '%s\n' "LOKI_RUN_TMP is already set; refusing to replace it" >&2
+        return 64
+    fi
+
+    temp_root="$(cd "${TMPDIR:-/tmp}" 2>/dev/null && pwd -P)" || {
+        printf '%s\n' "Cannot resolve the temp root" >&2
+        return 64
+    }
+    LOKI_RUN_TMP="$(mktemp -d "${temp_root}/loki-run.XXXXXXXX")" || return 1
+    marker="${LOKI_RUN_TMP}/.loki-run-owned"
+
+    chmod 700 "$LOKI_RUN_TMP" || {
+        rmdir "$LOKI_RUN_TMP" 2>/dev/null || true
+        unset LOKI_RUN_TMP
+        return 1
+    }
+    if ! printf '%s\n' "$LOKI_RUN_TMP" >"$marker" || ! chmod 600 "$marker"; then
+        rm -f -- "$marker"
+        rmdir "$LOKI_RUN_TMP" 2>/dev/null || true
+        unset LOKI_RUN_TMP
+        return 1
+    fi
+    export LOKI_RUN_TMP
+}
+
+# Read one numeric stat field portably. GNU uses -c, BSD uses -f, and each
+# MISPARSES the other's flag: GNU -f means --file-system and still prints a
+# filesystem block on stdout while exiting non-zero, so a bare `a || b`
+# fallback captures that block and concatenates the real value onto it.
+# Validate the captured value instead of trusting exit status or stream, so a
+# usage string, a filesystem block, an empty result, or a concatenation of any
+# of those is rejected on every platform.
+loki_run_tmp_stat_field() {
+    local gnu_fmt="$1" bsd_fmt="$2" path="$3" value
+
+    value="$(stat -c "$gnu_fmt" -- "$path" 2>/dev/null)" || value=''
+    case "$value" in
+        '' | *[!0-9]*) value="$(stat -f "$bsd_fmt" -- "$path" 2>/dev/null)" || value='' ;;
+    esac
+    case "$value" in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+    printf '%s\n' "$value"
+}
+
+loki_run_tmp_cleanup() {
+    local target temp_root marker marker_value target_real
+    local target_uid marker_uid target_mode marker_mode current_uid
+
+    target="${LOKI_RUN_TMP:-}"
+    [ -n "$target" ] || return 0
+    temp_root="$(cd "${TMPDIR:-/tmp}" 2>/dev/null && pwd -P)" || return 64
+
+    case "$target" in
+        "${temp_root}"/loki-run.*) ;;
+        *)
+            printf '%s\n' "Refusing cleanup outside the run-owned temp namespace: $target" >&2
+            return 64
+            ;;
+    esac
+    [ "$(dirname -- "$target")" = "$temp_root" ] || return 64
+    [ -d "$target" ] && [ ! -L "$target" ] || return 64
+
+    marker="${target}/.loki-run-owned"
+    [ -f "$marker" ] && [ ! -L "$marker" ] || return 64
+    IFS= read -r marker_value <"$marker" || return 64
+    [ "$marker_value" = "$target" ] || return 64
+
+    current_uid="$(id -u)" || return 64
+    target_uid="$(loki_run_tmp_stat_field '%u' '%u' "$target")" || return 64
+    marker_uid="$(loki_run_tmp_stat_field '%u' '%u' "$marker")" || return 64
+    [ "$target_uid" = "$current_uid" ] && [ "$marker_uid" = "$current_uid" ] || return 64
+
+    # Refuse anything readable, writable, or executable by group or other. Only
+    # the low three permission digits are compared: GNU '%a' includes the
+    # setuid/setgid/sticky digit and BSD '%Lp' does not, and `mktemp -d` under a
+    # setgid temp root inherits g+s that a three-digit `chmod 700` preserves.
+    # Comparing the raw value against "700" would therefore read 2700 on Linux,
+    # refuse, and leak the very directory this helper exists to remove.
+    target_mode="$(loki_run_tmp_stat_field '%a' '%Lp' "$target")" || return 64
+    marker_mode="$(loki_run_tmp_stat_field '%a' '%Lp' "$marker")" || return 64
+    # Keep the last three digits, zero-padded, then require exactly 700/600.
+    target_mode="00${target_mode}"
+    marker_mode="00${marker_mode}"
+    [ "${target_mode#"${target_mode%???}"}" = "700" ] || return 64
+    [ "${marker_mode#"${marker_mode%???}"}" = "600" ] || return 64
+
+    target_real="$(cd "$target" 2>/dev/null && pwd -P)" || return 64
+    [ "$target_real" = "$target" ] || return 64
+    [ "$(dirname -- "$target_real")" = "$temp_root" ] || return 64
+
+    # A linked worktree has a .git file; a primary worktree has a .git
+    # directory. Refuse both, including a broken .git symlink.
+    if [ -e "${target}/.git" ] || [ -L "${target}/.git" ]; then
+        printf '%s\n' "Refusing to remove a Git worktree: $target" >&2
+        return 64
+    fi
+
+    rm -rf -- "$target"
+    [ ! -e "$target" ] || return 1
+    unset LOKI_RUN_TMP
+}
+```
+<!-- END LOKI_RUN_TMP_HELPERS -->
+
+4. **Verify exact cleanup.** Confirm each recorded PID is gone and the saved
+   `$LOKI_RUN_TMP` path no longer exists. Do not scan or delete other users'
+   or runs' temp paths.
+
+5. **Report cleanup status** to the user in the task completion message,
+   including only the explicit run-owned path and process IDs handled.
 
 ### Git Commit Workflow (MANDATORY - FOLLOWS GLOBAL CLAUDE.md)
 
@@ -332,7 +453,7 @@ Prompt: "Review the following claims for factual accuracy.
 
 ### Version Numbering
 Follows semantic versioning: MAJOR.MINOR.PATCH
-- Current: v8.7.0 (see [CHANGELOG.md](./CHANGELOG.md) for release history)
+- Current: v9.22.13 (see [CHANGELOG.md](./CHANGELOG.md) for release history)
 - MAJOR bump for architecture changes (v6.0.0 = dual-mode architecture, loki run)
 - MINOR bump for new features (v5.23.0 = Dashboard File-Based API)
 - PATCH bump for fixes (v5.22.1 = session.json phantom state)
@@ -369,6 +490,33 @@ shipped THREE releases reporting the wrong version. At hourly cadence that
 reaches npm before anyone looks. The fast tier keeps that check and the syntax
 checks, and costs about a minute.
 
+**The packaged artifact is the blind spot (2026-08-01).** Four releases were
+spent finding that the checks guarding the SHIPPED PACKAGE were themselves
+unguarded. Everything works from a git checkout, so no in-repo test and no
+GitHub CI job can see these:
+
+- four quality-gate detectors under `tests/` were never in `files[]`, so
+  mutation-integrity fail-closed on EVERY iteration for EVERY npm user --
+  first-pass completion was impossible regardless of model output (v8.38.0)
+- the committed `loki-ts/dist/loki.js` hardcoded version 8.11.0 for 27 releases,
+  because the dist-freshness check was DEFERRED by the fast tier it justifies
+  (v8.40.0)
+- `npm pack tarball contents` was also deferred, and when promoted turned out
+  to pass on "6 or more" matches of 6 patterns that healthily produce 8 -- it
+  tolerated losing two required artifacts (v9.11.0)
+
+Three rules that fall out, and they generalise past packaging:
+
+1. **A check that guards the shipped artifact must run in the FAST tier.** It
+   is the only tier that runs before every push, and CI has no equivalent.
+2. **Assert each required thing individually, never a count.** A threshold
+   cannot say WHICH artifact vanished, and picks up slack it was never meant
+   to have.
+3. **Guard against vacuity.** A substring search over an empty listing reports
+   nothing missing. `npm pack` writes its listing to STDERR -- `2>&1 >file`
+   captures build chatter instead and makes every assertion pass. An empty
+   result is not evidence; it is an absent measurement.
+
 `LOCAL_CI_SHARDS` (default 4) controls local sharding; `LOCAL_CI_SERIAL=1`
 forces serial for diagnosis, since overlapping provider-backed suites starve
 each other.
@@ -385,11 +533,12 @@ After a release ships, run the post-release distribution validation:
 - Brew: WebFetch the live formula, verify version + sha256
 - Both routes (Bun + LOKI_LEGACY_BASH=1) on each channel
 
-Cleanup after every local-ci run AND post-release validation:
-```bash
-lsof -ti:57374 | xargs kill -9 2>/dev/null || true
-rm -rf /tmp/loki-* /tmp/test-* /tmp/package /tmp/*.tgz 2>/dev/null || true
-```
+Cleanup after every local-ci run AND post-release validation must use
+`loki_run_tmp_cleanup` from **Test and Resource Cleanup** above. The run must
+place its package extraction, tarballs, logs, and recorded child PIDs under the
+single directory created by `loki_run_tmp_create`. Stop only those recorded
+PIDs, then remove only that validated directory. Never sweep shared ports,
+process names, `/tmp`, or `$TMPDIR`.
 
 ## Release Workflow (CRITICAL - Follow Every Step)
 

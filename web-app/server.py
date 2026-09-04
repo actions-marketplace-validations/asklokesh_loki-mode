@@ -34,6 +34,8 @@ from datetime import datetime
 from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
+from starlette.formparsers import MultiPartException, MultiPartParser
+from starlette.requests import ClientDisconnect
 from starlette.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import shlex
@@ -2668,14 +2670,17 @@ async def start_session(req: StartRequest) -> JSONResponse:
             if req.provider:
                 build_env["LOKI_PROVIDER"] = req.provider
 
+            # LOKI_CLI is a trusted fixed path; request data stays in an argv
+            # vector and is never parsed as shell command text.
             proc = subprocess.Popen(
-                cmd,
+                cmd,  # lgtm[py/command-line-injection]
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
                 text=True,
                 cwd=project_dir,
                 env=build_env,
+                shell=False,
                 **({"start_new_session": True} if sys.platform != "win32"
                    else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}),
             )
@@ -4253,8 +4258,10 @@ async def chat_session(session_id: str, req: ChatRequest) -> JSONResponse:
             chat_env.update(_load_secrets())
             # Pass provider via env for quick mode (loki quick uses LOKI_PROVIDER env)
             chat_env["LOKI_PROVIDER"] = chat_provider
+            # loki is resolved from the trusted application install; message,
+            # provider, and PRD path remain argv data with no command shell.
             proc = subprocess.Popen(
-                cmd_args,
+                cmd_args,  # lgtm[py/command-line-injection]
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
@@ -4262,6 +4269,7 @@ async def chat_session(session_id: str, req: ChatRequest) -> JSONResponse:
                 cwd=str(target),
                 env=chat_env,
                 start_new_session=True,
+                shell=False,
             )
             task.process = proc
             _track_child_pid(proc.pid)
@@ -5678,6 +5686,134 @@ async def git_create_pr(session_id: str, req: dict = Body(...)) -> JSONResponse:
 # Image upload for AI chat (screenshot-to-change)
 # ---------------------------------------------------------------------------
 
+_CHAT_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+_CHAT_IMAGE_READ_BYTES = 1024 * 1024
+_CHAT_IMAGE_MULTIPART_OVERHEAD_BYTES = 64 * 1024
+_CHAT_IMAGE_MAX_REQUEST_BYTES = _CHAT_IMAGE_MAX_BYTES + _CHAT_IMAGE_MULTIPART_OVERHEAD_BYTES
+_CHAT_IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+
+
+class _ChatImageBodyTooLarge(Exception):
+    pass
+
+
+async def _parse_bounded_chat_image_form(request: Request):
+    """Parse one multipart upload while bounding bytes and owning temp cleanup."""
+    received = 0
+
+    async def bounded_stream():
+        nonlocal received
+        async for chunk in request.stream():
+            received += len(chunk)
+            if received > _CHAT_IMAGE_MAX_REQUEST_BYTES:
+                raise _ChatImageBodyTooLarge
+            yield chunk
+
+    parser = MultiPartParser(
+        headers=request.headers,
+        stream=bounded_stream(),
+        max_files=1,
+        max_fields=1000,
+    )
+    try:
+        return await parser.parse()
+    except BaseException:
+        # Starlette closes these files for MultiPartException only. Transport
+        # disconnects and receive errors must have the same deterministic
+        # cleanup rather than relying on interpreter-specific destruction.
+        for upload_temp in parser._files_to_close_on_error:
+            upload_temp.close()
+        raise
+
+
+def _chat_image_matches_type(content: bytes, content_type: str) -> bool:
+    if content_type == "image/png":
+        if not content.startswith(b"\x89PNG\r\n\x1a\n"):
+            return False
+        offset = 8
+        first_chunk = True
+        while offset + 12 <= len(content):
+            chunk_size = int.from_bytes(content[offset:offset + 4], "big")
+            chunk_type = content[offset + 4:offset + 8]
+            chunk_end = offset + 12 + chunk_size
+            if chunk_end > len(content):
+                return False
+            if first_chunk and chunk_type != b"IHDR":
+                return False
+            first_chunk = False
+            if chunk_type == b"IEND":
+                return chunk_size == 0 and chunk_end == len(content)
+            offset = chunk_end
+        return False
+    if content_type == "image/jpeg":
+        return (
+            len(content) >= 5
+            and content.startswith(b"\xff\xd8\xff")
+            and content.endswith(b"\xff\xd9")
+        )
+    if content_type == "image/gif":
+        return (
+            len(content) >= 14
+            and content.startswith((b"GIF87a", b"GIF89a"))
+            and content.endswith(b"\x3b")
+        )
+    if content_type == "image/webp":
+        return (
+            len(content) >= 20
+            and content[:4] == b"RIFF"
+            and content[8:12] == b"WEBP"
+            and int.from_bytes(content[4:8], "little") == len(content) - 8
+        )
+    return False
+
+
+async def _store_chat_image(target: Path, image_file) -> JSONResponse:
+    content_type = (getattr(image_file, "content_type", "") or "").lower()
+    if content_type not in _CHAT_IMAGE_TYPES:
+        return JSONResponse(
+            status_code=415,
+            content={"error": "Unsupported image type. Use PNG, JPEG, GIF, or WebP"},
+        )
+
+    chunks = []
+    total_bytes = 0
+    while True:
+        chunk = await image_file.read(_CHAT_IMAGE_READ_BYTES)
+        if not chunk:
+            break
+        total_bytes += len(chunk)
+        if total_bytes > _CHAT_IMAGE_MAX_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={"error": "Image too large (max 10MB)"},
+            )
+        chunks.append(chunk)
+    content = b"".join(chunks)
+    if not _chat_image_matches_type(content, content_type):
+        return JSONResponse(
+            status_code=415,
+            content={"error": "Image content is invalid, incomplete, or does not match its declared type"},
+        )
+
+    images_dir = target / ".loki" / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    image_id = str(uuid.uuid4())[:8]
+    original_name = getattr(image_file, "filename", "image.png") or "image.png"
+    safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", original_name)
+    saved_name = f"{image_id}_{safe_name}"
+    saved_path = images_dir / saved_name
+
+    with open(saved_path, "wb") as output:
+        output.write(content)
+
+    return JSONResponse(content={
+        "image_id": image_id,
+        "filename": safe_name,
+        "path": str(saved_path.relative_to(target)),
+        "size": len(content),
+    })
+
 
 @app.post("/api/sessions/{session_id}/chat/image")
 async def chat_image_upload(session_id: str, request: Request) -> JSONResponse:
@@ -5688,41 +5824,40 @@ async def chat_image_upload(session_id: str, request: Request) -> JSONResponse:
     if target is None:
         return JSONResponse(status_code=404, content={"error": "Session not found"})
 
-    # Parse multipart form data
+    raw_content_length = request.headers.get("content-length")
+    if raw_content_length is not None:
+        try:
+            declared_bytes = int(raw_content_length, 10)
+        except (TypeError, ValueError):
+            return JSONResponse(status_code=400, content={"error": "Invalid Content-Length"})
+        if declared_bytes <= 0:
+            return JSONResponse(status_code=400, content={"error": "Invalid Content-Length"})
+        if declared_bytes > _CHAT_IMAGE_MAX_REQUEST_BYTES:
+            return JSONResponse(status_code=413, content={"error": "Image too large (max 10MB)"})
+
+    form = None
     try:
-        form = await request.form()
+        form = await _parse_bounded_chat_image_form(request)
         image_file = form.get("image")
         if image_file is None:
             return JSONResponse(status_code=400, content={"error": "No image file provided"})
-
-        # Read file content
-        content = await image_file.read()
-        if len(content) > 10 * 1024 * 1024:  # 10MB limit
-            return JSONResponse(status_code=400, content={"error": "Image too large (max 10MB)"})
-
-        # Save to session's .loki/images/ directory
-        images_dir = target / ".loki" / "images"
-        images_dir.mkdir(parents=True, exist_ok=True)
-
-        image_id = str(uuid.uuid4())[:8]
-        # Sanitize filename
-        original_name = getattr(image_file, 'filename', 'image.png') or 'image.png'
-        safe_name = re.sub(r'[^a-zA-Z0-9._-]', '_', original_name)
-        saved_name = f"{image_id}_{safe_name}"
-        saved_path = images_dir / saved_name
-
-        with open(saved_path, "wb") as f:
-            f.write(content)
-
-        return JSONResponse(content={
-            "image_id": image_id,
-            "filename": safe_name,
-            "path": str(saved_path.relative_to(target)),
-            "size": len(content),
-        })
-    except Exception as exc:
-        logger.error("Image upload failed: %s", exc, exc_info=True)
-        return JSONResponse(status_code=500, content={"error": f"Upload failed: {exc}"})
+        return await _store_chat_image(target, image_file)
+    except _ChatImageBodyTooLarge:
+        return JSONResponse(status_code=413, content={"error": "Image too large (max 10MB)"})
+    except (ClientDisconnect, OSError):
+        logger.info("Image upload transport ended before completion")
+        return JSONResponse(status_code=400, content={"error": "Image upload was interrupted"})
+    except MultiPartException:
+        return JSONResponse(status_code=400, content={"error": "Invalid multipart image upload"})
+    except Exception:
+        logger.error("Image upload failed", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": "Image upload failed"})
+    finally:
+        if form is not None:
+            try:
+                await form.close()
+            except Exception:
+                logger.warning("Image upload temporary-file cleanup failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -8626,6 +8761,84 @@ async def docs_get_file(session_id: str, filename: str) -> Response:
         return JSONResponse(status_code=500, content={"error": "Cannot read doc file"})
 
     return Response(content=content, media_type="text/markdown")
+
+
+# ---------------------------------------------------------------------------
+# Evidence Receipts.
+#
+# MUST be declared ABOVE the SPA catch-all below, or these return text/html
+# instead of JSON -- the exact v7.6.0 bug documented there, which silently
+# swallowed 22 API routes.
+#
+# The EvidenceReceiptPanel calls these. Without them `loki web` (port 57375)
+# rendered "Could not load receipts" for every user while the identical panel
+# worked against the dashboard on 57374, because only the dashboard defined
+# /api/proofs. Found by driving the built bundle in a real browser -- a unit
+# test against a stubbed fetch cannot see a route that does not exist.
+#
+# Delegates to dashboard.server's readers rather than reimplementing the
+# traversal guards and the honesty bucketing. Two implementations of "which
+# receipts exist" WILL drift, and a verification surface that disagrees with
+# itself is worse than one that is merely missing.
+# ---------------------------------------------------------------------------
+def _dashboard_proofs_module():
+    """Import the dashboard's proof readers, or None if unavailable."""
+    try:
+        import sys as _sys
+        _root = str(SCRIPT_DIR.parent)
+        if _root not in _sys.path:
+            _sys.path.insert(0, _root)
+        from dashboard import server as _dash  # type: ignore
+        return _dash
+    except Exception:
+        return None
+
+
+@app.get("/api/proofs")
+async def webapp_list_proofs() -> Response:
+    """List Evidence Receipts. Mirrors the dashboard's /api/proofs exactly."""
+    dash = _dashboard_proofs_module()
+    if dash is None:
+        # An honest empty list, not a 500: a missing dashboard package means we
+        # cannot read receipts, and the panel's own empty state explains that
+        # none were found. A 500 would render as a scary error for what is a
+        # normal partial install.
+        return JSONResponse(content={"proofs": []})
+    try:
+        return JSONResponse(content=await dash.list_proofs())
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/proofs/summary")
+async def webapp_proofs_summary() -> Response:
+    """Verdict distribution across receipts. Mirrors the dashboard endpoint."""
+    dash = _dashboard_proofs_module()
+    if dash is None:
+        return JSONResponse(content={
+            "total_receipts": 0, "verified": 0, "with_gaps": 0,
+            "not_verified": 0, "unknown": 0,
+        })
+    try:
+        return JSONResponse(content=await dash.proofs_summary())
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/proofs/{run_id}")
+async def webapp_get_proof(run_id: str) -> Response:
+    """One receipt. The dashboard reader enforces the path-traversal guard."""
+    dash = _dashboard_proofs_module()
+    if dash is None:
+        return JSONResponse(status_code=404, content={"error": "proofs unavailable"})
+    try:
+        return await dash.get_proof(run_id)
+    except Exception as e:
+        # HTTPException carries its own status (404 for an unknown run id);
+        # anything else is a genuine read failure.
+        status = getattr(e, "status_code", 500)
+        detail = getattr(e, "detail", str(e))
+        return JSONResponse(status_code=status, content={"error": detail})
 
 
 # ---------------------------------------------------------------------------

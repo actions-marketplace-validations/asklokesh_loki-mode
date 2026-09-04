@@ -444,10 +444,34 @@ def _collect_quality_gates(loki_dir):
     passed = sum(1 for gate in gates if gate.get("status") == "passed")
     exo = [g for g in gates if g.get("provenance") == "exogenous"]
     adv = [g for g in gates if g.get("provenance") == "advisory"]
+    # Phases the operator switched OFF for this run.
+    #
+    # Without this a receipt reading "3 of 3 gates passed" is identical whether
+    # every gate ran or code review and security were disabled and three lesser
+    # gates ran instead. A gate that never executed simply was not in the list,
+    # so its absence was indistinguishable from it not existing.
+    #
+    # For a product whose claim is verification, a receipt must be able to say
+    # what was NOT checked. Recording only successes is how a green badge stops
+    # meaning anything.
+    #
+    # Read from the environment the run executed under. Absent means the default
+    # (enabled), so an ordinary run records an empty list rather than a
+    # misleading one.
+    _disabled = sorted(
+        name.replace("LOKI_PHASE_", "").lower()
+        for name, value in os.environ.items()
+        if name.startswith("LOKI_PHASE_")
+        and str(value).strip().lower() in ("false", "0", "no", "off")
+    )
     return {
         "passed": passed,
         "total": total,
         "gates": gates,
+        "disabled_phases": _disabled,
+        # Explicit boolean so a consumer branches on one field instead of
+        # re-deriving intent from a list length.
+        "all_phases_enabled": not _disabled,
         # Pre-split counts so the renderer never has to re-derive provenance.
         "exogenous": {
             "passed": sum(1 for g in exo if g.get("status") == "passed"),
@@ -629,6 +653,16 @@ def _collect_security(loki_dir):
     {ran, total, active, waived, high_active, status, findings:[{rule,severity}]}.
     status: not_run (no scan) | clean (ran, no active findings) | findings
     (ran, active findings present).
+
+    PARTIAL record-half. An active HIGH finding IS read by _compute_degraded and
+    becomes a gap. An UNRUN scan is not: absence of a scan is deliberately not a
+    security gap (tests/test_proof_generator.py::test_no_security_file_is_not_a_gap),
+    so a receipt can read VERIFIED with an empty gap list while no scan ever ran.
+    That matches how `functional` and `healthcheck` behave, and like them,
+    changing it is the founder-gated trust decision rather than an inference to
+    make here. Stated explicitly because those two say so in their own
+    docstrings and this one did not, leaving the behaviour to be inferred from
+    silence -- which is the exact failure the honesty ledger exists to prevent.
     """
     out = {
         "ran": False, "total": 0, "active": 0, "waived": 0,
@@ -956,6 +990,89 @@ def _collect_iterations(loki_dir):
     return {"count": count, "succeeded": n_completed, "failed": n_failed}
 
 
+def _collect_journey(loki_dir):
+    """Issue-to-PR journey facts (golden path features 4 and 10).
+
+    Descriptive record half ONLY. Like `functional` and `healthcheck`, this is
+    NOT read by _compute_headline / _compute_degraded: nothing here can turn a
+    receipt green or make a blocked run look finished.
+
+    Every field is absent-not-zero. A measurement that did not happen renders
+    nothing rather than a fabricated 0, matching run.sh:4258 ("a wrong timing
+    table is worse than silence"). Returns {} when this run was not an
+    issue-mode run, so a PRD/brief run's proof bytes are unchanged.
+    """
+    state = os.path.join(loki_dir, "state")
+    ctx = _read_json(os.path.join(state, "issue-context.json"), default=None)
+    if not isinstance(ctx, dict):
+        return {}
+
+    issue = ctx.get("issue") if isinstance(ctx.get("issue"), dict) else {}
+    stated = ctx.get("acceptance_criteria")
+    stated = [str(c) for c in stated] if isinstance(stated, list) else []
+
+    out = {
+        "issue": {
+            "ref": str(issue.get("ref") or ""),
+            "url": str(issue.get("url") or ""),
+            "title": str(issue.get("title") or ""),
+        },
+        # Coverage is a CORRESPONDENCE, not a verdict. There is no deterministic
+        # checker for free-text criteria, so we report what the issue stated and
+        # decline to claim any of it was satisfied. `addressed` is deliberately
+        # null rather than 0: 0 would read as "none met", which we do not know.
+        "acceptance": {
+            "stated": stated,
+            "stated_count": len(stated),
+            "addressed_count": None,
+            "basis": "criteria imported verbatim from the issue; no "
+                     "deterministic checker exists for free-text criteria, so "
+                     "this receipt reports what was ASKED, never what was met",
+        },
+    }
+
+    # Time to first useful result. Prefer the first verified code artifact when
+    # one exists. Before that, issue mode can truthfully report its acceptance-
+    # bound proposed plan, explicitly labelled as NOT a verified patch.
+    fa = _read_json(os.path.join(state, "first-artifact.json"), default=None)
+    if isinstance(fa, dict):
+        v = fa.get("seconds_to_first_artifact")
+        if isinstance(v, (int, float)) and v >= 0:
+            out["time_to_first_result_sec"] = int(v)
+            out["first_result_kind"] = "code_change"
+            out["first_result_verified_patch"] = True
+    else:
+        fr = _read_json(os.path.join(state, "first-useful-result.json"), default=None)
+        if isinstance(fr, dict):
+            v = fr.get("seconds_to_first_result")
+            if isinstance(v, (int, float)) and v >= 0:
+                out["time_to_first_result_sec"] = int(v)
+                out["first_result_kind"] = str(fr.get("kind") or "")
+                out["first_result_verified_patch"] = bool(fr.get("verified_patch") is True)
+
+    # Human interventions. Fills the socket trust_trajectory.py:145 already
+    # reads and documents as "no per-run counter persisted today". Absent file
+    # means unmeasured, NOT zero -- claiming a confident 0 would overstate
+    # autonomy, which is the one direction this number must never err in.
+    iv = _read_json(os.path.join(state, "interventions.json"), default=None)
+    if isinstance(iv, dict):
+        n = iv.get("count")
+        if isinstance(n, int) and n >= 0:
+            out["interventions"] = n
+
+    # PR state/URL, written by the consent-gated PR step. "prepared" means a PR
+    # body exists locally and GitHub was NOT mutated.
+    pr = _read_json(os.path.join(state, "pr.json"), default=None)
+    if isinstance(pr, dict) and pr.get("state"):
+        out["pull_request"] = {
+            "state": str(pr.get("state")),
+            "url": str(pr.get("url") or ""),
+            "branch": str(pr.get("branch") or ""),
+        }
+
+    return out
+
+
 def _collect_spec(loki_dir, target_dir):
     """Return spec dict {source, brief}. brief truncated to 600 chars."""
     prd_path = os.environ.get("PRD_PATH", "").strip()
@@ -1124,6 +1241,7 @@ def _build_proof(args, loki_dir, target_dir, repo_root):
     healthcheck = _collect_healthcheck(loki_dir)  # Evidence Receipt record-half
     evidence_gate = _collect_evidence_gate(loki_dir)
     functionality = _collect_functionality(loki_dir)  # func axes as HONEST facts
+    journey = _collect_journey(loki_dir)  # issue-to-PR record half; {} when N/A
 
     deployed_url = os.environ.get("LOKI_DEPLOYED_URL") or None
 
@@ -1204,6 +1322,12 @@ def _build_proof(args, loki_dir, target_dir, repo_root):
         },
     }
 
+    # Issue-to-PR journey facts, attached ONLY on an issue-mode run so a PRD or
+    # brief run's proof bytes stay exactly as they were. Record half: descriptive
+    # only, never read by _compute_headline / _compute_degraded.
+    if journey:
+        facts["journey"] = journey
+
     # ASSESSMENTS: LLM opinions. Explicitly labeled as judgment, NOT proof. A
     # green council verdict is an opinion that can be wrong or gamed; it never
     # contributes to the deterministic headline.
@@ -1232,6 +1356,36 @@ def _build_proof(args, loki_dir, target_dir, repo_root):
     # signed record.
     degraded = _compute_degraded(facts)
     headline = _compute_headline(facts, degraded)
+
+    # Trust gates the operator switched off are a gap in the proof of done, and
+    # the honesty ledger exists so "a reader sees exactly what was NOT verified
+    # rather than inferring it from silence". Measured through the real
+    # generator: a run with code review and security disabled listed only
+    # "build" as its gap, while two correctness checks had not run at all.
+    #
+    # Appended AFTER the headline is computed, deliberately. Feeding these into
+    # _compute_headline would change what "Verified" MEANS, and this file
+    # already records that as a trust-semantics decision for the council and
+    # founder rather than an inference (see the FV-2 note on the functional
+    # fact). This is the record half: the gap becomes visible without the
+    # verdict silently moving under anyone.
+    _dis = (quality_gates or {}).get("disabled_phases") if isinstance(quality_gates, dict) else None
+    _dis = [str(x).strip() for x in _dis] if isinstance(_dis, list) else []
+    for _name in sorted(n for n in _dis
+                        if n.lower() in ("code_review", "security",
+                                         "unit_tests", "e2e_tests")):
+        degraded.append({
+            "item": _name,
+            "status": "disabled",
+            "reason": "switched off for this run, so the check never ran",
+            # Marks an entry appended AFTER the headline was computed. The
+            # verifier filters on this flag rather than on a status string:
+            # statuses will keep being added, and a filter keyed on one of them
+            # silently breaks the next time -- which is exactly what happened
+            # when the unrun-security entry landed with status "not_run".
+            "post_headline": True,
+        })
+
     honesty = {
         "headline": headline,
         "degraded": degraded,
@@ -1287,6 +1441,15 @@ def _build_proof(args, loki_dir, target_dir, repo_root):
         "assessments": assessments,
         "honesty": honesty,
     }
+
+    # Top-level mirror for the intervention axis. trust_trajectory.py:145 already
+    # reads proof["interventions"] and documents that no writer exists yet; this
+    # is that writer. Mirrored (not moved) for the same back-compat reason the
+    # other flat keys are mirrored. Only ever set when actually measured, so the
+    # axis stays honestly "unavailable" rather than showing a fabricated zero.
+    if isinstance(journey, dict) and isinstance(journey.get("interventions"), int):
+        proof["interventions"] = journey["interventions"]
+
     return proof, run_id
 
 
@@ -1802,6 +1965,51 @@ def generate(args):
         sig = _gpg_detached_sign(canonical_bytes, gpg_key)
         if sig:
             verification["gpg_signature"] = sig
+
+    # Optional Ed25519 attestation over the SAME digest, for the case gpg
+    # cannot serve: a receipt checked by someone who does not hold the signing
+    # key. gpg proves provenance only to a verifier who already imported the
+    # public key, which a customer, auditor or CI system handed a proof.json
+    # generally has not. An attestation is checkable against a published JWKS
+    # (or a jwks.json file, offline) with no key exchange at all.
+    #
+    # Binds the DIGEST, not the body, so it attests to exactly the bytes a
+    # verifier independently recomputes. Written INSIDE `verification`, which
+    # the hash excludes -- anywhere else would change the hashed bytes and make
+    # every honest receipt read as tampered the moment it was signed.
+    #
+    # Same default-OFF discipline as gpg above: absent the key, no field, and
+    # the bytes stay identical to an unattested proof. Best-effort for the same
+    # reason -- a signing failure must not cost the user their receipt.
+    # This env check is an EARLY EXIT, not the control that enforces default-off.
+    # Mutation testing showed that removing it changes nothing observable:
+    # load_signing_key() returns (None, "") when neither variable is set, so the
+    # block below cannot attest anyway. It is kept because it skips an import
+    # and a try/except on the overwhelmingly common unconfigured path -- stated
+    # here rather than left to imply a guarantee it does not provide.
+    att_key = (os.environ.get("LOKI_RECEIPT_SIGNING_KEY_FILE", "").strip()
+               or os.environ.get("LOKI_RECEIPT_SIGNING_KEY", "").strip())
+    if att_key:
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))))
+            from receipt_jwt import load_signing_key, sign_attestation
+            _priv, _kid = load_signing_key()
+            if _priv is not None:
+                _tok = sign_attestation(
+                    _priv, _kid,
+                    job_id=str(redacted.get("run_id") or ""),
+                    run_id=str(redacted.get("run_id") or ""),
+                    receipt_hash=digest,
+                )
+                if _tok:
+                    verification["attestation"] = _tok
+                    verification["attestation_kid"] = _kid
+        except Exception:
+            # Swallowed deliberately, matching the gpg path: an unattested
+            # receipt is a valid state with an existing verdict. Losing the
+            # receipt entirely because signing failed would be strictly worse.
+            pass
 
     redacted["verification"] = verification
 

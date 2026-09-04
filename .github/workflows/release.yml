@@ -56,9 +56,107 @@ jobs:
           bun run typecheck
           bun test
 
-  release:
+  # PROPORTIONAL CI AT THE EXACT RELEASE SHA.
+  #
+  # `gate` above runs the full pytest suite, but on Python 3.12 ONLY, and it
+  # never consults the security audit. Every publish job (npm, PyPI, TS SDK,
+  # Docker, Homebrew) hangs off `needs: release` -> `needs: gate`, so before
+  # this job a VERSION push could publish to every channel while the Tests
+  # matrix was still running -- or already red on 3.10, 3.11 or 3.13.
+  #
+  # That is not hypothetical for this repo: a releases test passed on a
+  # developer clone and failed on 3.10-3.13 in Actions, and the operator mount
+  # failed open on exactly those versions. Neither was visible to a 3.12-only
+  # gate.
+  #
+  # This job waits for the OTHER required workflows AT THIS COMMIT and fails
+  # closed. It deliberately polls the check-runs API for this exact SHA rather
+  # than adding matrix jobs here: re-running the matrix inside release.yml
+  # would verify a DIFFERENT execution than the one the branch was judged on,
+  # and doubles CI cost for a weaker guarantee.
+  #
+  # FAIL-CLOSED DIRECTION IS LOAD-BEARING. A workflow that is missing, still
+  # queued, cancelled, or timed out is NOT a pass. Only an explicit success
+  # conclusion counts. An absent measurement is never evidence of health.
+  required-ci:
     runs-on: ubuntu-latest
     needs: gate
+    permissions:
+      checks: read
+      actions: read
+      contents: read
+    steps:
+      - name: Require the full test matrix and audit to be green at this SHA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Workflow names that must report success at this exact commit.
+          # One name per line, NO leading whitespace: these are matched against
+          # the API's workflow names with a literal grep, so an indented entry
+          # would never match and the loop would stall until the deadline.
+          #
+          # "Security Audit" is required here, and security-audit.yml carries a
+          # matching `push: paths: [VERSION]` trigger so it actually RUNS at a
+          # release commit. Requiring a workflow that never fires at this SHA
+          # would deadlock every release rather than gate it, so the trigger
+          # and this list must be changed together.
+          REQUIRED=$(printf '%s\n' "Tests" "Bun Parity" "Security Audit")
+          deadline=$(( $(date +%s) + 2400 ))
+          while :; do
+            runs=$(gh api "repos/$REPO/actions/runs?head_sha=$SHA&per_page=100" \
+                     --jq '.workflow_runs[] | "\(.name)\t\(.status)\t\(.conclusion)"' || true)
+            # VACUITY GUARD. An empty API result must never satisfy the loop:
+            # "no failing runs" over zero runs is not "everything passed".
+            if [ -z "$runs" ]; then
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "FAIL: no workflow runs found for $SHA before the deadline"
+                exit 1
+              fi
+              echo "no runs reported yet for $SHA; waiting"
+              sleep 30
+              continue
+            fi
+            pending=0
+            failed=0
+            while IFS= read -r want; do
+              [ -n "$want" ] || continue
+              line=$(printf '%s\n' "$runs" | grep -F "$want	" | head -1 || true)
+              if [ -z "$line" ]; then
+                echo "  $want: not reported yet"
+                pending=1
+                continue
+              fi
+              status=$(printf '%s' "$line" | cut -f2)
+              concl=$(printf '%s' "$line" | cut -f3)
+              echo "  $want: $status/$concl"
+              if [ "$status" != "completed" ]; then
+                pending=1
+              elif [ "$concl" != "success" ]; then
+                # cancelled, timed_out, failure, skipped: none is a pass.
+                failed=1
+              fi
+            done <<< "$REQUIRED"
+            if [ "$failed" -eq 1 ]; then
+              echo "FAIL: a required workflow did not succeed at $SHA"
+              exit 1
+            fi
+            if [ "$pending" -eq 0 ]; then
+              echo "All required workflows succeeded at $SHA"
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: required workflows did not complete before the deadline"
+              exit 1
+            fi
+            sleep 30
+          done
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [gate, required-ci]
     permissions:
       contents: write
 
@@ -163,6 +261,60 @@ jobs:
           tar -czvf loki-mode-claude-code-${{ steps.version.outputs.version }}.tar.gz loki-mode
           cd ..
 
+      # THE NPM-TARBALL SBOM IS GENERATED HERE, NOT IN sbom.yml, FOR THE SAME
+      # REASON THE CONTAINER SBOM IS GENERATED IN publish-docker (see :576-591).
+      #
+      # sbom.yml has a `release: published` trigger that has NEVER fired. This
+      # release is created by `gh release create` below under the default
+      # GITHUB_TOKEN, and GitHub suppresses trigger events for that token to
+      # prevent workflow recursion -- measured over sbom.yml's last 15 runs,
+      # every one was `push`, none was `release`. So every release ever cut has
+      # shipped with zero SBOM assets while a green workflow claimed otherwise.
+      # A dead trigger shows as an EMPTY run list, never a red one.
+      #
+      # It must run BEFORE `gh release create`, not after: releases here are
+      # immutable and a post-publish upload fails HTTP 422 (:293-297).
+      #
+      # This SBOM describes the npm TARBALL. publish-docker generates a
+      # SEPARATE image-sbom.cdx.json describing the CONTAINER, which carries an
+      # OS layer and Python runtime the npm tree never lists. They are NOT
+      # interchangeable, which is why the filenames differ -- a collision would
+      # silently overwrite one and ship half the evidence the release claims.
+      - name: Setup Node.js (for SBOM generation)
+        if: steps.check_release.outputs.release_exists == 'false'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Generate npm-tarball SBOM (CycloneDX)
+        if: steps.check_release.outputs.release_exists == 'false'
+        run: |
+          set -euo pipefail
+          # Describe what users actually receive from `npm install`, so pack
+          # the tarball and resolve deps inside it rather than in the source
+          # tree. --omit dev twice: the published tarball declares
+          # devDependencies but does not ship them, and cyclonedx-npm's
+          # `npm ls --all` errors ELSPROBLEMS on the missing ones.
+          npm pack
+          mkdir -p /tmp/published
+          tar xzf loki-mode-*.tgz -C /tmp/published
+          cd /tmp/published/package
+          npm install --omit=dev --no-package-lock
+          npx --yes @cyclonedx/cyclonedx-npm \
+            --omit dev \
+            --output-format JSON \
+            --output-file "$GITHUB_WORKSPACE/release/npm-sbom.cdx.json" \
+            --spec-version 1.5
+
+      - name: Verify the npm SBOM is non-empty
+        if: steps.check_release.outputs.release_exists == 'false'
+        run: |
+          set -euo pipefail
+          # Fail closed. A zero-byte SBOM asset is WORSE than no asset: it
+          # looks like compliance to anyone scanning the release.
+          test -s release/npm-sbom.cdx.json || { echo "FATAL: npm SBOM is empty"; exit 1; }
+          echo "npm SBOM size: $(wc -c < release/npm-sbom.cdx.json) bytes"
+
       - name: Create Git Tag
         if: steps.check_tag.outputs.tag_exists == 'false'
         run: |
@@ -212,6 +364,7 @@ jobs:
             release/loki-mode-${VERSION}.tar.gz \
             release/loki-mode-claude-code-${VERSION}.zip \
             release/loki-mode-claude-code-${VERSION}.tar.gz \
+            release/npm-sbom.cdx.json \
             --title "Loki Mode v${VERSION}" \
             --notes-file changelog_body.txt
 

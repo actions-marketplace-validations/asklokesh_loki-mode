@@ -135,6 +135,45 @@ declare -a _FAST_KEEP=(
   "no unescaped \$<digit>"
   "shell completions cover every dispatch command"
   "local-ci tiering"
+  "local-ci parent-check exit isolation"
+  # dist freshness. CLAUDE.md names this the SHARPEST reason the fast tier
+  # exists -- "CI never validates that the committed loki-ts/dist/loki.js
+  # matches src, and when that slipped we shipped THREE releases reporting the
+  # wrong version" -- yet the check itself was deferred, so the fast tier did
+  # not actually enforce the thing it is justified by.
+  #
+  # Measured cost: one `bun run build`, ~40ms.
+  #
+  # It slipped twice more before this was noticed: the committed bundle
+  # hardcoded 8.11.0 for 27 releases, and v8.39.0 shipped a dist still saying
+  # 8.38.0. Both are exactly the failure this check was written to stop.
+  "dist/loki.js is a fresh build of src"
+  # Repo integrity. The parent checkout is NON-BARE (it has .git/, a working
+  # tree and .git/index) yet core.bare keeps being set true by something
+  # outside this repo: fixed 05:33, found true again 06:44 on 2026-08-03.
+  # While true, git status/log there fail with "must be run in a work tree"
+  # and CI cannot be inspected -- but worktrees keep working, so it goes
+  # unnoticed until someone tries the parent. FAST tier because it is a
+  # sub-second read and the fault is recurring, not theoretical.
+  "parent checkout is not falsely marked bare"
+  # Same class as dist freshness, and deferred for the same reason nobody
+  # noticed: these validate the PACKAGED ARTIFACT, which GitHub CI never
+  # inspects and which no in-repo test can see, because everything works fine
+  # from a git checkout.
+  #
+  # This is not hypothetical. v8.38.0 found four quality-gate detectors that
+  # had NEVER shipped -- package.json's files[] had no tests/ entry -- so
+  # mutation-integrity fail-closed on every iteration for every npm user,
+  # making first-pass completion impossible no matter how good the output was.
+  # "npm pack tarball contents" is exactly the check that would have caught it,
+  # and it was being skipped at push time.
+  #
+  # The SDK check's own comment already says it "would have caught the
+  # whole-arc council's packaging finding" -- also deferred.
+  #
+  # Measured cost: npm pack 1.6s, SDK dep check 21ms, against a ~60s tier.
+  "npm pack tarball contents"
+  "Agent SDK is a resolvable root dependency"
   # 2. trust core: proof / receipt / evidence-gate / verify / council.
   #    Measured (by name, this Mac): the pytest gates run ~15s as parallel
   #    lanes; the shell suites ~60s serial. Both stay, in full, unchanged.
@@ -147,9 +186,59 @@ declare -a _FAST_KEEP=(
   "tests/test-evidence-gate"
   "tests/test-evidence-boot-axis.sh"
   "tests/test-evidence-secret-axis.sh"
+  # The receipt surface is trust-core, and the LAST INCH of it is the pixel: a
+  # receipt the user cannot reach, or one rendered with a fabricated $0.00 where
+  # the proof says UNKNOWN, defeats the guarantee no matter how honest the JSON
+  # is. Three unit tests over stubbed fetches all passed while the real page
+  # rendered three EMPTY panels, so a browser is the only non-vacuous check
+  # here. Measured 7s. The trust-core scan above cannot catch this one on its
+  # own -- it greps for tests/*.{sh,py} and this harness is a .mjs driven by a
+  # runner script -- which is exactly why it is pinned by hand.
+  "dashboard evidence panels render honestly"
+  # Same reasoning as the line above, for the React web-app's receipt panel.
+  # Pinned BY HAND for the same reason: the trust-core scan greps
+  # tests/*.{sh,py} and cannot see a .mjs driven by a runner script. This one
+  # earned its place -- it found that /api/proofs did not exist on the server
+  # `loki web` actually runs, and that the panel was only visible during a
+  # running build. Neither was reachable by a type check or a stubbed unit
+  # test. Measured 25s (boots a server and a browser).
+  "webapp receipt panel renders honestly"
   "tests/test-verify.sh"
   "tests/test-verify-scope-record.sh"
   "tests/test-verify-setup-recipe.sh"
+  "tests/test-verify-runner-selection.sh"
+  # A security boundary in the SHIPPED cli. CI has no equivalent check, and the
+  # reachable path is `docker run -p 57374:57374 <img> dashboard start`, which
+  # no in-repo test exercises. By the packaged-artifact rule it must run before
+  # every push, not only in the tier nobody blocks on. Measured 6s.
+  "tests/test-dashboard-bind-auth-guard.sh"
+  # Trust core: this is the receipt-verification path itself. A rotation bug
+  # here makes an honest historical receipt read as unverifiable, which a
+  # checker cannot distinguish from TAMPERED. Measured 2s.
+  "tests/test-receipt-jwt-attestation.sh"
+  # The client-side verdict itself: this is what decides VERIFIED vs TAMPERED
+  # vs UNCHECKED for a receipt fetched from a cluster. Measured 8s (it starts a
+  # real trigger-server and waits for readiness rather than sleeping).
+  "tests/test-remote-attestation-verdict.sh"
+  # The third-party surface: an auditor verifying a receipt offline with no
+  # token and no Loki install. This is the product claim itself. Measured 5s.
+  "tests/test-proof-verify-jwks.sh"
+  # Guards the SHIPPED compose file: an active bind to a missing key is a hard
+  # container start failure, so a careless edit here breaks every compose user.
+  # Measured 3s (schema only; no containers started).
+  "tests/test-compose-receipt-signing.sh"
+  # Guards a PUBLISHED competitive artifact. A 0/N row with no control or no
+  # explanation reads as a capability verdict we did not measure -- the one
+  # claim this repo must never make. Measured under 1s (JSON only).
+  "tests/test-headtohead-honesty.sh"
+  # Guards the statistics behind any internal performance claim. Calling an
+  # overlapping 1.51x "significant" would manufacture a multiplier; using the
+  # wrong test on separated arms would hide a real effect. Measured under 1s.
+  "tests/test-ab-analysis-honesty.sh"
+  # Trust core: the local generator writes the attestation INSIDE the subtree
+  # the integrity hash excludes. Get that wrong and every honest receipt reads
+  # TAMPERED the moment it is signed. Measured 4s.
+  "tests/test-local-receipt-attestation.sh"
   "tests/test-council-"
   "tests/test-heuristic-council-affirmative.sh"
   "tests/test-playwright-verify-as-evidence.sh"
@@ -180,9 +269,19 @@ declare -a _FAST_KEEP=(
   "tests/cli/test-provider-offer.sh"          # 869ms
   "tests/test-emit-json-escape.sh"            # 870ms
   "tests/test-bash-bun-parity.sh"             # 997ms
+  # A-004: guards the SHIPPED MCP tool surface by name. Artifact-guarding, so
+  # the fast tier must run it -- deferring it is the dist-8.11.0 failure mode.
+  # Guards a RELEASE artifact, so by the same rule it runs in the fast tier:
+  # the SBOM asset only exists at `gh release create` time, and nothing else
+  # checks that the definition still attaches it. The gap it closes went
+  # unnoticed for months because a dead workflow trigger reads as an empty run
+  # list, never a red one.
+  "tests/test-release-sbom-attached.sh"       # 0.2s
+  "tests/test-mcp-tool-surface-packaged.sh"   # 2.9s
+  "tests/test-mcp-tool-surface-guard-rejects.sh" # 8s, proves the guard rejects
   # CLAUDE.md cleanup mandate: sub-second, and the whole point is that it runs
   # on every invocation, not only the slow one.
-  "no /tmp/loki-* /tmp/test-* leftovers"
+  "no leftovers from this run"
 )
 
 # Returns 0 when the check should RUN in the fast tier.
@@ -253,7 +352,10 @@ run_check() {
   echo "${DIM}$cmd${NC}"
   local out
   if [ "$VERBOSE" = "1" ]; then
-    if eval "$cmd"; then
+    # A check body may deliberately use `exit` for an early success/failure
+    # branch. Keep that exit inside the check: evaluating in this main shell
+    # would terminate local-ci before result bookkeeping and every later gate.
+    if ( eval "$cmd" ); then
       PASSED+=("$label"); echo "${GREEN}PASS:${NC} $label"
     else
       FAILED+=("$label"); echo "${RED}FAIL:${NC} $label"
@@ -490,8 +592,25 @@ fi
 # The parallelism win is still real: the bash -n and shellcheck lanes launched
 # ABOVE run concurrently with this pytest block. The per-name array entries the
 # comments below justify are preserved.
+# CI's interpreter, not the newest one on the box. GitHub CI runs Python 3.12;
+# a dev Mac may run 3.14, and the two DISAGREE in ways that reached main twice
+# in one day:
+#
+#   v8.61.0  Release red on `NameError: name 'Any' is not defined`, green
+#            locally. 3.14 defers annotations unconditionally (PEP 649) so an
+#            exec'd source slice never evaluates them; 3.12 does.
+#   (same)   A code-index skip filter matched substrings of the ABSOLUTE path,
+#            emptying the index for any checkout under `.claude/`. Visible only
+#            on 3.12: on 3.14 chromadb fails to import and the caller silently
+#            falls back to a different file list.
+#
+# Deliberately ONE run, not both. 3.12 is the pass that predicts CI, and this
+# tier is the release gate the founder shortened for cadence -- a second
+# blanket run costs ~92s to protect a runtime CI does not use. Newer-runtime
+# coverage belongs in the FULL tier, not in front of every push.
 if command -v python3.12 >/dev/null 2>&1; then
-  run_check "python3.12 -m pytest -q" "python3.12 -m pytest -q 2>&1 | tail -10"
+  run_check "python3.12 -m pytest -q (CI interpreter)" \
+    "python3.12 -m pytest -q 2>&1 | tail -10"
 elif command -v python3 >/dev/null 2>&1; then
   run_check "python3 -m pytest -q" "python3 -m pytest -q 2>&1 | tail -10"
 else
@@ -573,6 +692,7 @@ run_check_bg 'shell completions cover every dispatch command (no drift)' 'bash t
 # suite. Static assertions, sub-second, so it runs in the fast tier too --
 # a tier guard that only ran in the slow tier would be useless.
 run_check_bg 'local-ci tiering (fast is not push authorization; trust core kept)' 'bash tests/test-local-ci-tiers.sh'
+run_check_bg 'local-ci parent-check exit isolation' 'bash tests/test-local-ci-parent-exit-isolation.sh'
 
 # ---------------------------------------------------------------------------
 # Harvest the read-only parallel pool BEFORE the serial-sensitive spine. The
@@ -590,6 +710,16 @@ harvest_lanes
 # 7. loki-ts typecheck + tests (mirrors test.yml bun-tests)
 # ---------------------------------------------------------------------------
 if command -v bun >/dev/null 2>&1; then
+  # Install loki-ts deps BEFORE any check that uses them. loki-ts/node_modules is
+  # gitignored, so a freshly-created worktree has none -- and the three checks
+  # below then fail for a reason that has nothing to do with the code. Measured
+  # on a fresh worktree 2026-08-06: 99 packages present vs 103, `typescript`
+  # absent, so `bun run typecheck` died with `Script not found "tsc"`, the dist
+  # build produced no output (reported as DIST STALE, see below), and `bun test`
+  # reported 50 failures of which 49 were the missing toolchain -- burying the
+  # ONE real regression in noise and costing a full 26-minute cycle to diagnose.
+  # --frozen-lockfile so the gate can never silently drift the lockfile.
+  run_check "loki-ts dependencies installed" "(cd loki-ts && bun install --frozen-lockfile) 2>&1 | tail -3"
   run_check "bun run typecheck" "(cd loki-ts && bun run typecheck) 2>&1 | tail -5"
   run_check "bun test" "(cd loki-ts && bun test) 2>&1 | tail -5"
   # dist freshness: the committed loki-ts/dist/loki.js is the artifact npm/Docker
@@ -598,18 +728,91 @@ if command -v bun >/dev/null 2>&1; then
   # rebuild silently ships old behavior (bit v7.68.0; nearly v7.69.0). Rebuild
   # and assert the committed bundle matches a fresh build, ignoring only the
   # per-build debugId line which legitimately varies.
+  run_check "parent checkout is not falsely marked bare" '
+    # Self-healing, and DELIBERATELY NON-BLOCKING as of 2026-08-06.
+    #
+    # The original design failed the gate so the recurrence stayed evidenced.
+    # That was right about the goal and wrong about the lever. Measured over one
+    # day: this fault fired three separate times on this host (~11x/day per the
+    # incident log), each time on a RELEASE gate whose 165 other checks passed,
+    # each time on a fault the check had ALREADY REPAIRED before returning. A
+    # check that fixes the problem and then reports red teaches the only correct
+    # response -- re-run and ignore -- which is exactly how a gate stops being
+    # read. The next real red would be waved through by reflex.
+    #
+    # Evidence is preserved in full and is not the thing being softened: the
+    # watcher still logs MUTATED with a timestamp and a config backup to
+    # ~/loki-ci-logs/core-bare-watch.log, this check still prints the mutation
+    # loudly, and the recurrence remains countable there. What changed is that a
+    # repaired EXTERNAL fault no longer blocks a release of unrelated code.
+    #
+    # It fails non-zero only if the repair itself FAILS -- that is a genuine
+    # blocker, because the parent checkout would be left broken.
+    if [ -x scripts/watch-core-bare.sh ]; then
+      if bash scripts/watch-core-bare.sh --restore; then
+        exit 0
+      fi
+      _cb_state="$(git config --get core.bare 2>/dev/null || echo unknown)"
+      if [ "$_cb_state" = "false" ]; then
+        echo "core.bare was mutated and has been REPAIRED (see the watcher log)."
+        echo "Recorded, not blocking: the fault is external to this diff and is"
+        echo "already fixed. Repeated occurrences are counted in the watcher log."
+        exit 0
+      fi
+      echo "core.bare is $_cb_state and could NOT be repaired -- this blocks."
+      exit 1
+    else
+      echo "watch-core-bare.sh missing; repo-integrity check SKIPPED (not a pass)"
+      exit 0
+    fi
+  '
+
+  # This check REBUILDS a git-tracked file (loki-ts/dist/loki.js is force-added
+  # despite loki-ts/.gitignore), so restoring it is not optional. Three defects
+  # were fixed here on 2026-08-06, all of which had produced real false verdicts:
+  #
+  #   1. FALSE REPORT. The body had no `set -e` and ran under `eval`, which only
+  #      inspects the final status. With dist/loki.js ABSENT, the initial `cp`
+  #      failed to stderr and execution continued, the build then created the
+  #      file, `diff` compared it against a stale/absent backup, and the else
+  #      branch announced "DIST STALE" -- asserting divergence for a file that
+  #      simply was not there. That message sent a 26-minute diagnosis down the
+  #      wrong path. Absence and divergence are now reported distinctly.
+  #   2. NO TRAP. Restoration was a bare `cp` on both branches; an interrupt
+  #      between build and restore left the rebuilt bundle in the worktree. The
+  #      restore now runs from a trap, so it fires on any exit path.
+  #   3. NON-IDEMPOTENT. In the absent-file case the restore `cp` also failed,
+  #      leaving the fresh build in place -- so the check failed once and passed
+  #      on retry, exactly the phantom-failure signature this script condemns.
+  #
+  # The fixed /tmp backup path was also per-machine, not per-run: two sanctioned
+  # concurrent runs (LOCAL_CI_ALLOW_CONCURRENT=1) clobbered each other'"'"'s backup
+  # and could restore foreign bytes into a tracked file. Now mktemp.
   run_check "dist/loki.js is a fresh build of src" '
+    set -e
     cd loki-ts
-    cp dist/loki.js /tmp/loki-ci-dist-committed.js
+    if [ ! -f dist/loki.js ]; then
+      echo "DIST MISSING: loki-ts/dist/loki.js does not exist, so it cannot be compared against a fresh build."
+      echo "This is NOT a staleness verdict. Run: cd loki-ts && bun run build, then git add -f loki-ts/dist/loki.js"
+      exit 1
+    fi
+    _dist_backup="$(mktemp "${TMPDIR:-/tmp}/loki-ci-dist-committed.XXXXXX")"
+    _map_backup="$(mktemp "${TMPDIR:-/tmp}/loki-ci-dist-map.XXXXXX")"
+    cp dist/loki.js "$_dist_backup"
+    # dist/loki.js.map is tracked too and the rebuild rewrites it (its debugId
+    # varies per build). Restoring only the bundle left the map modified, so a
+    # green gate still dirtied the worktree. Both are restored together.
+    cp dist/loki.js.map "$_map_backup" 2>/dev/null || true
+    trap "cp \"$_dist_backup\" dist/loki.js 2>/dev/null || true; cp \"$_map_backup\" dist/loki.js.map 2>/dev/null || true; rm -f \"$_dist_backup\" \"$_map_backup\"" EXIT
     bun run build >/dev/null 2>&1
-    if diff <(grep -v "debugId" /tmp/loki-ci-dist-committed.js) <(grep -v "debugId" dist/loki.js) >/dev/null; then
-      cp /tmp/loki-ci-dist-committed.js dist/loki.js
-      rm -f /tmp/loki-ci-dist-committed.js
+    if [ ! -f dist/loki.js ]; then
+      echo "DIST BUILD FAILED: bun run build produced no dist/loki.js. Run: cd loki-ts && bun run build"
+      exit 1
+    fi
+    if diff <(grep -v "debugId" "$_dist_backup") <(grep -v "debugId" dist/loki.js) >/dev/null; then
       echo "dist matches fresh build (committed bundle is not stale)"
     else
-      cp /tmp/loki-ci-dist-committed.js dist/loki.js
-      rm -f /tmp/loki-ci-dist-committed.js
-      echo "DIST STALE: committed loki-ts/dist/loki.js differs from a fresh build of src. Run: cd loki-ts \&\& bun run build, then git add -f loki-ts/dist/loki.js"
+      echo "DIST STALE: committed loki-ts/dist/loki.js differs from a fresh build of src. Run: cd loki-ts && bun run build, then git add -f loki-ts/dist/loki.js"
       exit 1
     fi
   '
@@ -983,6 +1186,40 @@ PYHS
   )
 '
 
+# A-004 (MCP discovery contract drift): the handshake above proves the server
+# BOOTS and lists >0 tools. It cannot detect drift, because a minimum-count
+# assertion passes at 34, at 36 and at 1 -- which is exactly how the repo came
+# to ship 36 tools while every public doc said 34. This one builds the real npm
+# tarball, handshakes against the server.py INSIDE it, and asserts BOTH the
+# source registration names and the packaged tools/list names against a frozen,
+# source-controlled 36-name contract. Not derived from source: a source-derived
+# expectation moves with a rename, so a same-count rename passes while the
+# published contract breaks. Fails closed when npm or the MCP SDK is absent --
+# an unavailable measurement is not evidence of a healthy surface.
+#
+# FAST TIER, deliberately (CLAUDE.md: "a check that guards the shipped artifact
+# must run in the FAST tier"). Its two siblings, test-detectors-are-packaged and
+# test-runtime-libs-are-packaged, live only inside the deferred run-all-tests.sh
+# -- the same deferral that let dist ship 8.11.0 for 27 releases. Measured 2.9s.
+run_check "tests/test-mcp-tool-surface-packaged.sh (packaged MCP surface, exact names)" \
+  "bash tests/test-mcp-tool-surface-packaged.sh 2>&1 | tail -4"
+
+# Same rule, a different shipped artifact: the SBOM exists ONLY as a release
+# asset, attached at `gh release create` time. Nothing else checks that the
+# workflow still attaches it, and the failure it guards against is invisible by
+# construction -- a dead `release:` trigger produces an EMPTY run list, never a
+# red one, so the release shipped zero SBOM assets for months under a green
+# badge. Static check of the workflow definition; measured 0.2s.
+run_check "tests/test-release-sbom-attached.sh (npm SBOM ships as a release asset)" \
+  "bash tests/test-release-sbom-attached.sh 2>&1 | tail -3"
+
+# The guard above is only a gate if it REJECTS. This mutates a copy of the tree
+# and proves it fails on a same-count rename, a deletion, absent npm and absent
+# MCP SDK -- the same-count rename being the mutant a count check cannot see.
+# Measured 8s, no installs, no network.
+run_check "tests/test-mcp-tool-surface-guard-rejects.sh (contract guard rejects drift)" \
+  "bash tests/test-mcp-tool-surface-guard-rejects.sh 2>&1 | tail -4"
+
 # task 566: real MCP stdio handshake for the LSP PROXY. The proxy carried the
 # same `mcp` namespace collision as server.py and silently degraded to a no-op
 # shim under MCP SDK 1.x (package-dir FastMCP), so its LSP tools never loaded
@@ -1067,6 +1304,15 @@ run_check "tests/test-evidence-gate-no-tests.sh (P1-1 no-tests not affirmative)"
 run_check "tests/test-verify.sh (loki verify deterministic gates)" "bash tests/test-verify.sh 2>&1 | tail -3"
 run_check "tests/test-verify-scope-record.sh (rank 10 locality scope record, advisory-first)" "bash tests/test-verify-scope-record.sh 2>&1 | tail -3"
 run_check "tests/test-verify-setup-recipe.sh (rank 7 setup-recipe writer, env NAMES not values)" "bash tests/test-verify-setup-recipe.sh 2>&1 | tail -3"
+run_check "tests/test-verify-runner-selection.sh (declared runner, not an installed devDep)" "bash tests/test-verify-runner-selection.sh 2>&1 | tail -3"
+run_check "tests/test-dashboard-bind-auth-guard.sh (#188 exposed bind refuses without auth)" "bash tests/test-dashboard-bind-auth-guard.sh 2>&1 | tail -3"
+run_check "tests/test-receipt-jwt-attestation.sh (signed receipt + JWKS rotation)" "bash tests/test-receipt-jwt-attestation.sh 2>&1 | tail -3"
+run_check "tests/test-remote-attestation-verdict.sh (remote receipt VERIFIED without a key import)" "bash tests/test-remote-attestation-verdict.sh 2>&1 | tail -3"
+run_check "tests/test-proof-verify-jwks.sh (third party verifies a receipt offline)" "bash tests/test-proof-verify-jwks.sh 2>&1 | tail -3"
+run_check "tests/test-compose-receipt-signing.sh (opt-in signing, default starts)" "bash tests/test-compose-receipt-signing.sh 2>&1 | tail -3"
+run_check "tests/test-headtohead-honesty.sh (corpus cannot imply an unmeasured ranking)" "bash tests/test-headtohead-honesty.sh 2>&1 | tail -3"
+run_check "tests/test-ab-analysis-honesty.sh (no manufactured multiplier, no hidden effect)" "bash tests/test-ab-analysis-honesty.sh 2>&1 | tail -3"
+run_check "tests/test-local-receipt-attestation.sh (local receipt carries provenance)" "bash tests/test-local-receipt-attestation.sh 2>&1 | tail -3"
 run_check "tests/test-node-test-detection.sh (task #79: node --test detection, run.sh + verify.sh false-negative)" "bash tests/test-node-test-detection.sh 2>&1 | tail -3"
 run_check "tests/test-loki-dir-double-path.sh (#80 double-.loki COMPLETED guard)" "bash tests/test-loki-dir-double-path.sh 2>&1 | tail -3"
 run_check "tests/test-zero-test-inconclusive.sh (#82: zero-test-file -> inconclusive, run.sh + verify.sh + council)" "bash tests/test-zero-test-inconclusive.sh 2>&1 | tail -3"
@@ -1278,7 +1524,45 @@ fi
 # ---------------------------------------------------------------------------
 # 10. Pre-publish 3a: npm pack tarball includes expected files
 # ---------------------------------------------------------------------------
-run_check "npm pack tarball contents" 'npm pack --dry-run 2>&1 | grep -E "loki-ts/dist/loki.js|bin/loki|dashboard/static/index.html|web-app/dist/index.html|autonomy/provider-offer.sh|autonomy/quickstart.sh" | wc -l | grep -qE "[6-9]|[1-9][0-9]"'
+# Asserts each required artifact INDIVIDUALLY. The previous form counted
+# matches across all six patterns and passed on `[6-9]|[1-9][0-9]` -- i.e. "6 or
+# more, or any 2-digit number". With everything present the count is 8 (some
+# patterns match more than once), so it tolerated losing TWO required artifacts:
+# deleting the whole `autonomy/` entry from files[] dropped provider-offer.sh
+# and quickstart.sh from the tarball and the check still passed at 6.
+#
+# A count threshold cannot say WHICH artifact vanished, and a substring search
+# over an empty listing reports nothing missing either -- so the listing is
+# captured once and vacuity-guarded first. npm writes it to STDERR; `2>&1 >file`
+# would capture build chatter instead and make every assertion vacuous.
+run_check "npm pack tarball contents" '
+  _pack="$(npm pack --dry-run 2>&1)"
+  _n=$(printf "%s\n" "$_pack" | grep -c "npm notice" || true)
+  if [ "${_n:-0}" -lt 50 ]; then
+    echo "PACK LISTING TOO SHORT (${_n:-0} entries) -- capture broken, assertions would be vacuous"
+    exit 1
+  fi
+  _missing=""
+  _total=0
+  # The autonomy/lib/*.py entries carry the receipt verifier and the
+  # cost-honesty rule ("unmeasured reads UNKNOWN, never $0.00"). They ship today
+  # only because files[] happens to hold a broad "autonomy/" entry; narrowing it
+  # would drop them silently, surfacing as a receipt that cannot be verified
+  # rather than as an error.
+  for _f in loki-ts/dist/loki.js bin/loki dashboard/static/index.html \
+            web-app/dist/index.html autonomy/provider-offer.sh \
+            autonomy/quickstart.sh autonomy/lib/proof-verify.py \
+            autonomy/lib/efficiency_cost.py autonomy/lib/cost-summary.py; do
+    _total=$((_total + 1))
+    case "$_pack" in *"$_f"*) ;; *) _missing="$_missing $_f" ;; esac
+  done
+  if [ -n "$_missing" ]; then
+    echo "MISSING FROM TARBALL:$_missing"
+    exit 1
+  fi
+  # Counted from the loop, not hardcoded: a literal "all 6" goes stale the
+  # moment the list grows and then understates what is being guarded.
+  echo "all $_total required artifacts present in the tarball ($_n entries)"'
 
 # 10a-v8. The Agent SDK (@anthropic-ai/claude-agent-sdk) is a DYNAMIC import in
 # dist/loki.js (the opt-in LOKI_SDK_LOOP=1 RARV loop) + a per-platform native
@@ -1332,8 +1616,14 @@ if [ -n "$_DASH_PY" ] && command -v node >/dev/null 2>&1 \
    && [ -d dashboard-ui/node_modules/playwright ] \
    && { [ -d "$HOME/Library/Caches/ms-playwright" ] || [ -d "$HOME/.cache/ms-playwright" ]; }; then
   run_check "dashboard fresh-repo integrated UX harness" 'bash scripts/run-dashboard-fresh-repo-harness.sh'
+  # Inverse fixture: the cold harness above would pass against panels that
+  # never render anything at all. This one seeds receipts + learnings and
+  # asserts they reach the pixel WITHOUT fabricating an unmeasured cost.
+  run_check "dashboard evidence panels render honestly" 'bash scripts/run-dashboard-evidence-panels-harness.sh'
+  run_check "webapp receipt panel renders honestly" 'bash scripts/run-webapp-receipt-panel.sh'
 else
   skip_check "dashboard fresh-repo integrated UX harness" "needs python3.12 + dashboard-ui playwright + chromium"
+  skip_check "dashboard evidence panels render honestly" "needs python3.12 + dashboard-ui playwright + chromium"
 fi
 
 # ---------------------------------------------------------------------------
@@ -1378,7 +1668,35 @@ run_check "npm audit (production deps, high+)" "
 # ---------------------------------------------------------------------------
 # 14. Cleanup probe (CLAUDE.md mandate)
 # ---------------------------------------------------------------------------
-run_check "no /tmp/loki-* /tmp/test-* leftovers" 'ls /tmp/loki-* /tmp/test-* 2>&1 | grep -q "No such file" || ! ls /tmp/loki-* /tmp/test-* 2>/dev/null | grep -q .'
+# Cleanup hygiene, scoped to THIS run. Rewritten 2026-08-06; the previous form
+#   ls /tmp/loki-* /tmp/test-* 2>&1 | grep -q "No such file" || ! ls ... | grep -q .
+# was wrong in three independent ways:
+#
+#   1. FALSE GREEN (the worst of the three). With 2>&1 merging stderr, an
+#      unmatched glob printed "No such file" and the FIRST clause succeeded, so
+#      `||` short-circuited. A genuine /tmp/loki-* leftover therefore PASSED
+#      whenever no /tmp/test-* happened to exist. It only enforced anything in
+#      the single state where both globs matched.
+#   2. FALSE RED. It matched every /tmp/loki-* on the machine -- other worktrees,
+#      other users, other agents' concurrent runs. A hygiene check that fails on
+#      someone else's litter is noise, and it failed a fully green 165-check run.
+#   3. WRONG DIRECTORY. This run writes to ${TMPDIR:-/tmp}; on macOS TMPDIR is a
+#      per-user private path, so the check could not see its own artifacts at all
+#      while policing a directory it never wrote to.
+#
+# Now: delete the shard logs this run created (they were never cleaned up -- the
+# harvest at the shard step only cat'd them), then assert THIS run's temp dir is
+# clean. Scoped, single-clause, and it fails only on litter we are responsible for.
+run_check "no leftovers from this run" '
+  rm -f "${TMPDIR:-/tmp}"/loki-shard-*.log 2>/dev/null || true
+  _leftovers="$(ls -d "${TMPDIR:-/tmp}"/loki-ci-dist-committed.* "${TMPDIR:-/tmp}"/loki-shard-*.log 2>/dev/null || true)"
+  if [ -n "$_leftovers" ]; then
+    echo "This run left temp artifacts behind:"
+    echo "$_leftovers"
+    exit 1
+  fi
+  echo "no leftovers from this run"
+'
 
 # ---------------------------------------------------------------------------
 # Harvest parallel lanes: wait for all background lanes launched above, then

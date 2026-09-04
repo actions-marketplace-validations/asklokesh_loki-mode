@@ -1393,6 +1393,17 @@ function generateStandaloneHTML(bundleCode) {
           <loki-spec-panel id="spec-panel"></loki-spec-panel>
         </div>
         <loki-overview id="overview"></loki-overview>
+        <!-- PIPELINE. dashboard/api_phases.py parsed real phase_change events
+             into measured segments and had NO importer in server.py and NO
+             consumer here: a user could see a build finish or not, never WHICH
+             PHASE it was in or where it was stuck. Lives on Overview because
+             this SPA has no Activity section (no data-section="activity"), and
+             Overview is the live-run home. Hidden until data arrives. -->
+        <div id="pipeline-panel" style="display:none;margin-bottom:24px;">
+          <h3 style="font-family: var(--loki-font-family, 'Inter', system-ui, -apple-system, sans-serif); font-size: 1.15rem; font-weight: 400; color: var(--loki-text-primary); margin-bottom: 12px;">Pipeline</h3>
+          <div id="pipeline-list"></div>
+          <div id="pipeline-note" style="font-size:11px;color:var(--loki-text-muted);margin-top:8px;"></div>
+        </div>
         <loki-rarv-timeline id="rarv-timeline"></loki-rarv-timeline>
         <loki-session-diff id="session-diff"></loki-session-diff>
         <div style="margin-top: 28px;">
@@ -1421,6 +1432,14 @@ function generateStandaloneHTML(bundleCode) {
           <div>
             <h3 style="font-family: 'Fraunces', Georgia, serif; font-size: 1.15rem; font-weight: 400; color: var(--loki-text-primary); margin-bottom: 12px;">Logs</h3>
             <loki-log-stream id="log-stream" auto-scroll max-lines="500"></loki-log-stream>
+          </div>
+          <!-- LEARNINGS. /api/learnings held real records with a rootCause,
+               a fix and a preventInFuture, and had no UI consumer -- the
+               system was learning from its runs and never showing anyone
+               what it learned. Hidden until data arrives. -->
+          <div id="learnings-panel" style="display:none;">
+            <h3 style="font-family: var(--loki-font-family, 'Inter', system-ui, -apple-system, sans-serif); font-size: 1.15rem; font-weight: 400; color: var(--loki-text-primary); margin-bottom: 12px;">What this build learned</h3>
+            <div id="learnings-list"></div>
           </div>
           <div>
             <h3 style="font-family: 'Fraunces', Georgia, serif; font-size: 1.15rem; font-weight: 400; color: var(--loki-text-primary); margin-bottom: 12px;">Memory</h3>
@@ -1774,6 +1793,13 @@ function generateStandaloneHTML(bundleCode) {
         <div class="section-page-header">
           <h2 class="section-page-title">Cost</h2>
         </div>
+        <!-- SPEND CAP. /api/budget reports budget_limit, and it ships NULL:
+             there is no automatic spend stop. Nothing in the UI said so, and
+             the only place that fact surfaced was a bill. Shown ALWAYS, not
+             just when a cap exists, because "no cap" is the state a user most
+             needs to know about. -->
+        <div id="budget-banner" style="display:none;margin-bottom:12px;padding:10px 12px;
+             border:1px solid var(--loki-border);border-radius:6px;font-size:12px;"></div>
         <loki-cost-dashboard id="cost-dashboard"></loki-cost-dashboard>
       </div>
 
@@ -1784,8 +1810,18 @@ function generateStandaloneHTML(bundleCode) {
         <div class="section-page-header">
           <h2 class="section-page-title">Trust Trajectory</h2>
         </div>
+        <!-- EVIDENCE RECEIPTS. /api/proofs served 9 receipts with verdict,
+             file count and an HTML view, and NOTHING in the dashboard read it
+             -- only /api/proofs/summary (the header badge) was consumed. The
+             receipt is the thing we ask users to check; it was unreachable
+             from the UI. -->
+        <div id="receipts-panel" style="margin-bottom:16px;display:none;">
+          <h3 style="font-size:13px;font-weight:600;margin:0 0 8px;">Evidence receipts</h3>
+          <div id="receipts-list"></div>
+          <div id="receipts-note" style="font-size:11px;color:var(--loki-text-muted);margin-top:8px;"></div>
+        </div>
         <iframe id="trust-frame" title="Trust trajectory" src="about:blank"
-          style="width:100%;height:calc(100vh - 160px);border:0;border-radius:8px;background:var(--loki-bg-primary);"></iframe>
+          style="width:100%;height:calc(100vh - 260px);border:0;border-radius:8px;background:var(--loki-bg-primary);"></iframe>
       </div>
 
       <!-- Checkpoints -->
@@ -2369,6 +2405,264 @@ document.addEventListener('DOMContentLoaded', function() {
       badge.classList.add('show');
     }
 
+    // SPEND CAP STATE. budget_limit is NULL by default -- LOKI_BUDGET_LIMIT
+    // ships unset, so a long run has no automatic stop. That is a defensible
+    // default (a run killed at a threshold the user never chose is worse), but
+    // it must not be INVISIBLE: today the only place it surfaced was a bill.
+    //
+    // Renders the no-cap state as prominently as a cap, and names the variable
+    // that sets one. Never invents a number: an unknown current cost reads
+    // "not measured", not $0.00.
+    window.loadBudget = function () {
+      var el = document.getElementById('budget-banner');
+      if (!el) return;
+      fetch('/api/budget', { headers: { 'Accept': 'application/json' } })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          if (!d) return;
+          var lim = d.budget_limit;
+          var cur = d.current_cost;
+          var curTxt = (cur === null || cur === undefined) ? 'not measured'
+                     : ('$' + Number(cur).toFixed(2));
+          if (lim === null || lim === undefined) {
+            el.style.borderColor = 'var(--loki-warning)';
+            el.innerHTML = '<strong>No spend cap set.</strong> This run will not stop on cost. '
+              + 'Spent so far: ' + curTxt + '. '
+              + 'Set one with <code>LOKI_BUDGET_LIMIT=&lt;usd&gt;</code>.';
+          } else if (d.exceeded) {
+            el.style.borderColor = 'var(--loki-error)';
+            el.innerHTML = '<strong>Budget exceeded.</strong> Cap $' + Number(lim).toFixed(2)
+              + ', spent ' + curTxt + '.';
+          } else {
+            var rem = (d.remaining === null || d.remaining === undefined)
+              ? 'not measured' : ('$' + Number(d.remaining).toFixed(2));
+            el.style.borderColor = 'var(--loki-border)';
+            el.innerHTML = 'Spend cap $' + Number(lim).toFixed(2)
+              + '. Spent ' + curTxt + ', remaining ' + rem + '.';
+          }
+          el.style.display = 'block';
+        })
+        .catch(function () { /* leave hidden */ });
+    };
+
+    // LEARNINGS. What the build learned from its own gate failures.
+    //
+    // /api/learnings held real records -- rootCause, fix, preventInFuture --
+    // with no UI consumer. The system was learning from its runs and showing
+    // nobody, which makes the memory unfalsifiable: a user cannot correct a
+    // learning they cannot see. Devin's "misleading knowledge" surface is the
+    // same idea and the reason it is worth showing.
+    //
+    // Renders the record's OWN words. Nothing is summarised or re-derived: a
+    // paraphrased root cause is a second claim about a claim.
+    window.loadLearnings = function () {
+      var panel = document.getElementById('learnings-panel');
+      var list = document.getElementById('learnings-list');
+      if (!panel || !list) return;
+      fetch('/api/learnings', { headers: { 'Accept': 'application/json' } })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          if (!d) return;
+          var rows = Array.isArray(d) ? d : (d.learnings || []);
+          if (!rows.length) return;      // nothing learned yet: say nothing
+          rows = rows.slice().reverse().slice(0, 8);
+          var html = '';
+          for (var i = 0; i < rows.length; i++) {
+            var x = rows[i] || {};
+            var when = x.timestamp ? String(x.timestamp).slice(0, 16).replace('T', ' ') : '-';
+            var iter = (x.iteration === null || x.iteration === undefined) ? '-' : ('iter ' + x.iteration);
+            html += '<div style="padding:8px;border-bottom:1px solid var(--loki-border);font-size:12px;">'
+                 + '<div style="display:flex;gap:10px;color:var(--loki-text-muted);margin-bottom:4px;">'
+                 + '<span>' + when + '</span><span>' + iter + '</span>'
+                 + '<span>' + String(x.trigger || 'unknown trigger') + '</span></div>'
+                 + '<div style="margin-bottom:3px;"><strong>cause:</strong> '
+                 + String(x.rootCause || 'not recorded') + '</div>'
+                 + (x.fix ? '<div style="margin-bottom:3px;"><strong>fix:</strong> ' + String(x.fix) + '</div>' : '')
+                 + (x.preventInFuture ? '<div style="color:var(--loki-text-muted);"><strong>prevent:</strong> '
+                     + String(x.preventInFuture) + '</div>' : '')
+                 + '</div>';
+          }
+          list.innerHTML = html;
+          panel.style.display = 'block';
+        })
+        .catch(function () { /* leave hidden */ });
+    };
+
+    // RECEIPT LIST. Fetched on demand when the Trust section opens, not on a
+    // timer: it is a history view, and polling it would spend a request every
+    // 30s on data that only changes when a run finishes.
+    //
+    // Every field rendered comes straight from the receipt. Nothing is derived,
+    // and an absent value renders as "-" rather than a zero or a guess -- a
+    // fabricated 0 cost or a blank verdict read as "clean" is the exact false
+    // green the receipt exists to prevent.
+    window.loadReceipts = function () {
+      var panel = document.getElementById('receipts-panel');
+      var list = document.getElementById('receipts-list');
+      var note = document.getElementById('receipts-note');
+      if (!panel || !list) return;
+      fetch('/api/proofs', { headers: { 'Accept': 'application/json' } })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          if (!d) return;                      // endpoint absent: leave hidden
+          var rows = Array.isArray(d) ? d : (d.proofs || d.receipts || []);
+          if (!rows.length) return;            // no receipts yet: say nothing
+          rows = rows.slice().reverse().slice(0, 10);
+          var html = '';
+          for (var i = 0; i < rows.length; i++) {
+            var x = rows[i] || {};
+            var verdict = x.headline || x.final_verdict || 'UNKNOWN';
+            var verified = /^VERIFIED/i.test(verdict);
+            var col = verified ? 'var(--loki-success)' : 'var(--loki-text-muted)';
+            var files = (x.files_changed === null || x.files_changed === undefined)
+              ? '-' : String(x.files_changed);
+            var cost = (x.cost_usd === null || x.cost_usd === undefined)
+              ? '-' : ('$' + Number(x.cost_usd).toFixed(2));
+            var when = x.generated_at ? String(x.generated_at).slice(0, 16).replace('T', ' ') : '-';
+            var link = x.has_html
+              ? ('<a href="/api/proofs/' + encodeURIComponent(x.run_id || '') + '/html"'
+                 + ' target="_blank" rel="noopener" style="color:var(--loki-accent);">open</a>')
+              : '<span style="color:var(--loki-text-muted);">no html</span>';
+            html += '<div style="display:flex;gap:12px;align-items:center;padding:6px 8px;'
+                 + 'border-bottom:1px solid var(--loki-border);font-size:12px;">'
+                 + '<span style="color:' + col + ';font-weight:600;min-width:130px;">'
+                 + String(verdict).slice(0, 22) + '</span>'
+                 + '<span style="color:var(--loki-text-muted);min-width:120px;">' + when + '</span>'
+                 + '<span style="min-width:90px;">' + files + ' files</span>'
+                 + '<span style="min-width:70px;">' + cost + '</span>'
+                 + link + '</div>';
+          }
+          list.innerHTML = html;
+          if (note) {
+            note.textContent = 'Newest first. "open" renders the receipt itself. '
+              + 'Re-check any of them: loki proof verify <run-id>';
+          }
+          panel.style.display = 'block';
+        })
+        .catch(function () { /* leave hidden: no receipt surface is better than a wrong one */ });
+    };
+
+    // PIPELINE. The measured phase timeline from /api/phases, which serves
+    // dashboard/api_phases.py's envelope verbatim.
+    //
+    // WHAT IS NOT HERE, DELIBERATELY: a "not started" row. The envelope only
+    // contains phases that HAVE started, and the runtime declares no canonical
+    // ordered phase list -- _advance_current_phase takes any string, and the
+    // envelope's own "sampled" flag says absence of a segment is not evidence
+    // the phase did not occur. Drawing a fixed pipeline and marking the missing
+    // rows "not started" would invent exactly the fiction api_phases.py was
+    // written to replace (the old timeline rotated a hardcoded four-phase list
+    // and gave each invented segment a Math.random() duration). The three
+    // states we CAN measure are rendered distinctly, which is what keeps a
+    // stalled build from reading as a healthy one:
+    //
+    //   ENDED    start and end both measured -- a real duration
+    //   RUNNING  ongoing, no recorded end; elapsed is anchored to the server's
+    //            checked_at, never to the client clock
+    //   FAILED   the phase the runtime itself named FAILED
+    //
+    // and a fourth the envelope reports separately: the leading phase, known to
+    // have run but with no emitted start, so its duration is "not measured".
+    //
+    // An unmeasured duration renders "not measured", NEVER 0. A measured zero
+    // (two events inside one second -- timestamps are second-granular) still
+    // renders as 0s, so the guard is on the ENDPOINTS being absent, never on
+    // the duration being falsy.
+    window.loadPhases = function () {
+      var panel = document.getElementById('pipeline-panel');
+      var list = document.getElementById('pipeline-list');
+      var note = document.getElementById('pipeline-note');
+      if (!panel || !list) return;
+      fetch('/api/phases', { headers: { 'Accept': 'application/json' } })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          if (!d) return;                      // endpoint absent: leave hidden
+          var rows = (d.segments || []).slice();
+          if (d.leading_phase) rows.unshift(d.leading_phase);
+          if (!rows.length) return;            // no phase history: say nothing
+          var html = '';
+          for (var i = 0; i < rows.length; i++) {
+            var x = rows[i] || {};
+            // ESCAPED, unlike the verdict in loadReceipts. That comes from a
+            // controlled set; a phase name does not -- api_phases.py passes
+            // names through verbatim and _advance_current_phase accepts ANY
+            // string, so the set is open and this is untrusted text going into
+            // innerHTML on a dashboard that can be bound remotely.
+            var raw = String(x.phase || 'UNKNOWN');
+            var _d = document.createElement('div');
+            _d.textContent = raw;
+            var phase = _d.innerHTML;
+            var failed = /^FAIL/i.test(raw);
+            // The end a RUNNING segment is measured against is the server's
+            // own checked_at. A client clock would drift against the log.
+            var end = x.end;
+            if (end === null || end === undefined) {
+              if (x.ongoing) end = d.checked_at;
+            }
+            // Gate on the endpoints, not on the duration: end - start === 0 is
+            // a real measurement (second-granular timestamps), and hiding it
+            // as "-" would be the same lie in the other direction.
+            var measured = (x.start !== null && x.start !== undefined
+                            && end !== null && end !== undefined);
+            var secs = measured ? Math.max(0, Math.round(end - x.start)) : null;
+            var dur = measured
+              ? (secs < 60 ? (secs + 's')
+                 : (Math.floor(secs / 60) + 'm ' + (secs % 60) + 's'))
+              : 'not measured';
+            var state, col;
+            if (failed) {
+              state = 'FAILED'; col = 'var(--loki-error)';
+            } else if (x.ongoing) {
+              state = 'RUNNING'; col = 'var(--loki-warning)';
+            } else if (x.start === null || x.start === undefined) {
+              // The leading phase: it ran, but its start was never emitted, so
+              // it has no coordinate on a time axis. Named, not drawn.
+              state = 'RAN (start not recorded)'; col = 'var(--loki-text-muted)';
+            } else {
+              state = 'ENDED'; col = 'var(--loki-text-muted)';
+            }
+            var iter = (x.iteration === null || x.iteration === undefined)
+              ? '-' : ('iter ' + x.iteration);
+            html += '<div style="display:flex;gap:12px;align-items:center;padding:6px 8px;'
+                 + 'border-bottom:1px solid var(--loki-border);font-size:12px;">'
+                 + '<span style="font-weight:600;min-width:130px;">' + phase + '</span>'
+                 + '<span style="color:' + col + ';min-width:170px;">' + state + '</span>'
+                 + '<span style="min-width:90px;">' + dur + '</span>'
+                 + '<span style="color:var(--loki-text-muted);">' + iter + '</span>'
+                 + '</div>';
+          }
+          list.innerHTML = html;
+          if (note) {
+            // The envelope's own caveats, surfaced. Sampled data presented as
+            // complete is a claim the module explicitly refuses to make.
+            var parts = [];
+            // The VIEW's own age, not just the data's. A one-shot fetch of a
+            // LIVE pipeline freezes: "TESTING RUNNING 1m 40s" would sit there
+            // unchanged an hour later, which is the stalled-build-reads-as-
+            // healthy shape arriving through the view instead of the data.
+            // Polled below, and stamped here so a frozen row is self-labelling
+            // even if the poll dies.
+            if (d.checked_at) {
+              parts.push('Measured as of '
+                + new Date(d.checked_at * 1000).toISOString().slice(11, 19) + 'Z.');
+            }
+            if (d.sampled) {
+              parts.push('Sampled: the phase recorder polls, so a phase shorter '
+                + 'than one poll interval left no event and is absent here.');
+            }
+            if (d.freshness_s === null || d.freshness_s === undefined) {
+              parts.push('Age of this data: not measured.');
+            } else if (d.freshness_s > 120) {
+              parts.push('STALE: the phase log was last written '
+                + Math.floor(d.freshness_s / 60) + 'm ago.');
+            }
+            note.textContent = parts.join(' ');
+          }
+          panel.style.display = 'block';
+        })
+        .catch(function () { /* leave hidden: no pipeline is better than a wrong one */ });
+    };
+
     function poll() {
       fetch('/api/proofs/summary', { headers: { 'Accept': 'application/json' } })
         .then(function (r) { return r.ok ? r.json() : null; })
@@ -2413,7 +2707,22 @@ document.addEventListener('DOMContentLoaded', function() {
     // document and cannot see the SPA's manual data-loki-theme toggle, so we
     // pass the resolved theme as a query param (?theme=dark|light); the
     // standalone page reads it and matches. v7.18.0.
+    // The pipeline is a LIVE view, so unlike loadReceipts (a history view where
+    // one-shot is correct) it polls. Guarded on the Overview page being the
+    // visible one so a user sitting on another section spends no requests.
+    if (sectionId === 'overview') {
+      loadPhases();
+      if (!window._lokiPhasePoll) {
+        window._lokiPhasePoll = setInterval(function () {
+          var pg = document.getElementById('page-overview');
+          if (pg && pg.classList.contains('active')) loadPhases();
+        }, 15000);
+      }
+    }
+    if (sectionId === 'insights') { loadLearnings(); }
+    if (sectionId === 'cost') { loadBudget(); }
     if (sectionId === 'trust') {
+      loadReceipts();
       var tframe = document.getElementById('trust-frame');
       if (tframe && (!tframe.src || tframe.src === 'about:blank' ||
           tframe.getAttribute('src') === 'about:blank')) {

@@ -101,9 +101,47 @@ class BuildSupervisorTests(unittest.TestCase):
             try:
                 st = supervisor.read_state(self.execution_id)
                 if isinstance(st, dict):
+                    named = False
                     for key in ("launch_error", "termination_reason", "state"):
                         if st.get(key):
                             details.append(f"{key}: {st[key]}")
+                            named = True
+                    if not named:
+                        # A state file that exists but names no reason is its
+                        # own finding: the launch failed AFTER state was
+                        # created, so the writer had a chance to record why and
+                        # did not.
+                        details.append(
+                            "state: present but records no launch_error, "
+                            f"termination_reason or state (keys: {sorted(st)})"
+                        )
+                else:
+                    # THE CASE THAT KEPT COSTING INVESTIGATIONS. read_state
+                    # returns None when the state file is missing or
+                    # unparseable, and the old block appended NOTHING for it --
+                    # so the reader saw "exited 127" with no cause and went
+                    # hunting through PATH, which is exactly the wrong place.
+                    # Absent state is evidence: it means the launch failed
+                    # before the supervisor wrote anything, so the reason is in
+                    # runner.log or in the exec itself, not in the state file.
+                    # state_path() VALIDATES the id and raises on a bad one.
+                    # Calling it unguarded here would replace the real failure
+                    # with a ValueError from the diagnostic itself, which is
+                    # the one thing this block must never do.
+                    try:
+                        sp = supervisor.state_path(self.execution_id)
+                        where = (
+                            f"{sp} "
+                            + ("exists but is unparseable" if sp.is_file()
+                               else "does not exist")
+                        )
+                    except Exception as exc:
+                        where = f"state path unresolvable ({exc})"
+                    details.append(
+                        "state: UNAVAILABLE (read_state returned None) -- "
+                        f"{where}; the launch failed before state was written, "
+                        "so the cause is in runner.log below, not on PATH"
+                    )
             except Exception as exc:  # diagnostics must never mask the failure
                 details.append(f"state: unreadable ({exc})")
             try:
@@ -126,9 +164,18 @@ class BuildSupervisorTests(unittest.TestCase):
             print("\n".join(details), file=sys.stderr)
         return rc
 
-    def _seatbelt_env(self, protected_root: Path, workspace_root: Path):
-        runtime_read = self.root / "runtime-read"
-        runtime_write = self.root / "runtime-write"
+    def _seatbelt_env(
+        self,
+        protected_root: Path,
+        workspace_root: Path,
+        base: Path | None = None,
+    ):
+        # `base` lets a caller anchor the runtime dirs somewhere other than the
+        # TMPDIR-derived self.root, which matters when the granted write paths
+        # must not contain protected_root.
+        base = self.root if base is None else base
+        runtime_read = base / "runtime-read"
+        runtime_write = base / "runtime-write"
         child_bin = runtime_read / "bin"
         child_bin.mkdir(parents=True, exist_ok=True)
         runtime_write.mkdir(parents=True, exist_ok=True)
@@ -416,7 +463,20 @@ class BuildSupervisorTests(unittest.TestCase):
         if not host_logged_in:
             self.skipTest("Claude CLI is not logged in outside Seatbelt")
 
-        protected_root = self.root / "protected"
+        # The confined readiness probe runs the real Claude CLI, which writes
+        # shell snapshots directly into /private/tmp and so needs that whole
+        # directory writable. That grant is only safe while this test's own tree
+        # sits outside it: _host_confinement_config rejects a runtime write path
+        # containing LOKI_HOST_PROTECTED_ROOT, and TMPDIR points under
+        # /private/tmp in the FULL gate (TMPDIR=/private/tmp/a004-tasktmp-...),
+        # which put self.root -- and therefore protected_root -- inside the grant.
+        # Anchor this fixture's tree under HOME instead of the ambient TMPDIR so
+        # the two never overlap regardless of how the suite is invoked.
+        probe_root = Path(
+            tempfile.mkdtemp(prefix="loki-supervisor-auth-", dir=str(Path.home()))
+        )
+        self.addCleanup(shutil.rmtree, probe_root, ignore_errors=True)
+        protected_root = probe_root / "protected"
         engine_source = protected_root / "engine"
         run_sh = engine_source / "autonomy" / "run.sh"
         workspace_root = protected_root / "workspaces"
@@ -425,7 +485,7 @@ class BuildSupervisorTests(unittest.TestCase):
         workspace.mkdir(parents=True)
         run_sh.write_text("#!/bin/sh\n", encoding="utf-8")
 
-        env = self._seatbelt_env(protected_root, workspace_root)
+        env = self._seatbelt_env(protected_root, workspace_root, base=probe_root)
         runtime_read_paths = [Path(env["LOKI_HOST_RUNTIME_READ_PATHS"])]
         runtime_write_paths = [Path(env["LOKI_HOST_RUNTIME_WRITE_PATHS"])]
         for candidate in (
@@ -531,6 +591,11 @@ class BuildSupervisorTests(unittest.TestCase):
         workspace = workspace_root / "build-a"
         sibling = workspace_root / "build-b" / "secret.txt"
         provider_session_env = self.root / "provider-session-env"
+        # Own-tree runtime tmp, not /private/tmp: see the note in the confined
+        # auth test. A shared tmp root that contains protected_root is exactly
+        # what the confinement config refuses.
+        runtime_tmp = self.root / "runtime-tmp"
+        runtime_tmp.mkdir(parents=True, exist_ok=True)
         loki_dir = workspace / ".loki"
         deadline = runner.parent / "lib" / "deadline.py"
         deadline.parent.mkdir(parents=True)
@@ -583,7 +648,7 @@ class BuildSupervisorTests(unittest.TestCase):
                     if Path(value).exists()
                 ),
                 "LOKI_HOST_RUNTIME_WRITE_PATHS": ":".join(
-                    ("/private/tmp", str(provider_session_env))
+                    (str(runtime_tmp), str(provider_session_env))
                 ),
                 "LOKI_HOST_CHILD_PATH": ":".join(
                     value

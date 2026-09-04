@@ -55,8 +55,19 @@ jobs:
       - name: Install dependencies
         run: |
           python3 -m pip install --upgrade pip
-          python3 -m pip install pytest pytest-asyncio
-          python3 -m pip install fastapi httpx pydantic sqlalchemy[asyncio] aiosqlite uvicorn
+          # Install from the canonical list, not a hand-maintained subset -- the
+          # same fix shell-tests already made after its own drift incident (see
+          # the comment on that job). Two hand-written lists for one test suite
+          # drift apart by construction; one source cannot.
+          #
+          # This list also carries the pinned `mcp`, which the hand-written one
+          # omitted. Note that installing it does NOT by itself un-skip
+          # tests/test_mcp_agent_metrics_honesty.py: the repo's own `mcp/`
+          # package shadows the installed SDK on sys.path, so `from mcp import
+          # server` reaches our module, which then cannot import the SDK and
+          # exits. That shadowing is a separate defect, tracked separately --
+          # what this change fixes is the drift, not the skip.
+          python3 -m pip install -r requirements-test.txt
 
       - name: Run tests
         run: python3 -m pytest
@@ -114,6 +125,24 @@ jobs:
 
       - name: Install Node.js dependencies
         run: npm install --no-package-lock
+
+      # REQUIRED, not optional. tests/test-trust-core-tests-detect.sh runs two
+      # mutation probes as `cd loki-ts && bun test ...`. Without bun the probe
+      # baseline exits 127, the probe reports rc=67, and the suite goes red --
+      # which is the honest outcome, but the cause is a missing toolchain here,
+      # not a defect in the trust core.
+      #
+      # These probes are deliberately NOT skipped when bun is absent: they guard
+      # the trust core, and a probe that silently does not run is an absent
+      # measurement reported as a pass.
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install loki-ts dependencies (for the TS mutation probes)
+        working-directory: loki-ts
+        run: bun install
 
       - name: Run shell tests (shard ${{ matrix.shard }} of 4)
         env:

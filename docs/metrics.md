@@ -15,12 +15,12 @@ Loki Mode exposes a `/metrics` endpoint that returns production-ready metrics in
 
 ## Quick Start
 
-```bash
-# Enable metrics endpoint
-export LOKI_METRICS_ENABLED=true
+The `/metrics` endpoint is served by the dashboard and needs no enabling flag.
+Start the dashboard and scrape it.
 
-# Start Loki Mode
-loki start ./prd.md
+```bash
+# Start the dashboard (serves /metrics)
+loki dashboard start
 
 # View metrics
 curl http://localhost:57374/metrics
@@ -73,6 +73,38 @@ Returns metrics in OpenMetrics text format. No authentication required by defaul
 | Metric | Type | Description |
 |--------|------|-------------|
 | `loki_events_total` | counter | Total number of events recorded in events.jsonl |
+
+### Evidence Receipt Metrics
+
+The verification surface, exposed so an operator can alert on it. Two failures
+make the receipt guarantee worthless in production and neither was observable
+before these existed: builds silently stopping producing receipts, and the
+`unknown` share climbing.
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `loki_receipts_total` | gauge | Evidence Receipts on disk for the active project |
+| `loki_receipts_by_verdict{verdict=...}` | gauge | Receipts bucketed on the recorded honesty headline: `verified`, `with_gaps`, `not_verified`, `unknown` |
+| `loki_receipts_with_provenance{kind=...}` | gauge | Receipts carrying a checkable provenance record: `attestation` (Ed25519 JWT) or `gpg` |
+
+`unknown` IS ITS OWN SERIES and must stay that way. The summary refuses to
+count a receipt as verified when it cannot prove it was -- schema v1.0 receipts
+carry no honesty block -- so folding that bucket into `verified` is dishonest
+and folding it into `not_verified` is alarming and also wrong.
+
+These read the same files as `GET /api/proofs/summary`, so the metric and the
+API cannot disagree; a test asserts it. An empty project reports `0`, not an
+error, so a fresh install does not look like a broken exporter.
+
+Example alerts:
+
+```
+# receipts stopped being produced
+increase(loki_receipts_total[6h]) == 0
+
+# the unverifiable share is growing
+loki_receipts_by_verdict{verdict="unknown"} / loki_receipts_total > 0.2
+```
 
 ## Data Sources
 
@@ -362,22 +394,21 @@ Configure alerts in Grafana panels:
 
 ## Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LOKI_METRICS_ENABLED` | `false` | Enable `/metrics` endpoint |
-| `LOKI_METRICS_PORT` | `57374` | Port for metrics endpoint (same as dashboard) |
-| `LOKI_METRICS_PATH` | `/metrics` | Endpoint path |
+There are none. `/metrics` is an unconditional route on the dashboard app
+(`dashboard/server.py:9637`), served at the dashboard's own port and path. An
+earlier version of this page listed `LOKI_METRICS_ENABLED`,
+`LOKI_METRICS_PORT`, and `LOKI_METRICS_PATH`; none of the three is read by any
+code, so the endpoint cannot be turned off, moved, or re-pathed by environment.
+
+To change the port, change the dashboard port. To restrict access, put the
+dashboard behind a reverse proxy: unlike the `/api/*` routes, `/metrics` has no
+auth scope dependency, so anything that can reach the port can read it.
 
 ## Best Practices
 
 ### Production Deployment
 
-1. Enable metrics in production:
-```bash
-export LOKI_METRICS_ENABLED=true
-```
-
-2. Secure endpoint with reverse proxy authentication
+1. Secure endpoint with reverse proxy authentication
 3. Set up Prometheus scraping with appropriate interval (15-30s)
 4. Create Grafana dashboards for visualization
 5. Configure alerts for budget, stagnation, and failures

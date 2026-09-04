@@ -20,10 +20,11 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 # Auth gating for the standalone control app.
@@ -56,6 +57,63 @@ except Exception:  # pragma: no cover - defensive fallback for non-package runs
 
 _CONTROL_DEP = _require_control_scope()
 
+
+def _normalized_http_origin(value: str) -> tuple[str, str, int] | None:
+    """Return a comparable browser origin, or ``None`` when malformed.
+
+    Origin is scheme + host + effective port. Paths, credentials, queries and
+    fragments are never valid in an Origin header. Normalising default ports
+    makes ``https://host`` and ``https://host:443`` equivalent without doing
+    loose prefix/suffix matching on attacker-controlled text.
+    """
+    try:
+        parsed = urlsplit(value.strip())
+        if (
+            parsed.scheme.lower() not in ("http", "https")
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in ("", "/")
+            or parsed.query
+            or parsed.fragment
+        ):
+            return None
+        port = parsed.port
+    except (TypeError, ValueError):
+        return None
+    if port is None:
+        port = 443 if parsed.scheme.lower() == "https" else 80
+    return parsed.scheme.lower(), parsed.hostname.lower(), port
+
+
+def browser_mutation_origin_allowed(
+    request: Request, allowed_origins: list[str]
+) -> bool:
+    """Allow non-browser clients, same-origin pages and explicit CORS origins.
+
+    CORS controls whether a browser may *read* a response; it does not stop a
+    simple cross-origin POST from being sent. State-changing routes therefore
+    need their own check. Browsers always attach Origin to cross-origin fetches,
+    while CLI/SDK/local health clients commonly omit it, so absence preserves
+    the existing local-first API. A present malformed or unrelated origin is
+    refused before route code can touch disk or processes.
+    """
+    supplied = request.headers.get("origin")
+    if supplied is None:
+        return True
+    if "*" in allowed_origins:
+        return True
+    supplied_origin = _normalized_http_origin(supplied)
+    if supplied_origin is None:
+        return False
+    request_origin = _normalized_http_origin(str(request.base_url))
+    if supplied_origin == request_origin:
+        return True
+    return any(
+        supplied_origin == _normalized_http_origin(candidate)
+        for candidate in allowed_origins
+    )
+
 # Configuration
 LOKI_DIR = Path(os.environ.get("LOKI_DIR", ".loki"))
 STATE_DIR = LOKI_DIR / "state"
@@ -72,22 +130,64 @@ def find_skill_dir() -> Path:
             return configured
         raise RuntimeError(f"LOKI_SKILL_DIR is not a Loki source tree: {configured}")
 
+    # os.getcwd() RAISES FileNotFoundError when the working directory has been
+    # deleted out from under the process. That is not hypothetical: a dashboard
+    # started inside a temp workspace keeps running after the workspace is
+    # cleaned up, and then EVERY endpoint that resolves a path 500s at once --
+    # observed as ~60 simultaneous 500s including /api/status, whose handler
+    # touches almost nothing. A long-lived server must survive losing its cwd.
+    def _cwd_or_none() -> "Path | None":
+        try:
+            return Path.cwd()
+        except OSError:
+            return None
+
     candidates = [
         Path.home() / ".claude" / "skills" / "loki-mode",
         Path(__file__).parent.parent,
-        Path.cwd()
+        _cwd_or_none(),
     ]
     for candidate in candidates:
-        if (candidate / "SKILL.md").exists() and (candidate / "autonomy" / "run.sh").exists():
-            return candidate
-    return Path.cwd()
+        if candidate is None:
+            continue
+        try:
+            if ((candidate / "SKILL.md").exists()
+                    and (candidate / "autonomy" / "run.sh").exists()):
+                return candidate
+        except OSError:
+            continue
+
+    # The fallback must not be the one path that can still raise. When the cwd
+    # is gone, resolve to this file's own tree -- it is on disk by definition,
+    # since we are executing out of it.
+    return _cwd_or_none() or Path(__file__).resolve().parent.parent
 
 SKILL_DIR = find_skill_dir()
 RUN_SH = SKILL_DIR / "autonomy" / "run.sh"
 
-# Ensure directories exist
-STATE_DIR.mkdir(parents=True, exist_ok=True)
-LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+def _cwd_or_skill_dir() -> Path:
+    """The cwd, or the skill tree when the cwd has been deleted.
+
+    Used where a real directory is required (subprocess cwd=), as opposed to
+    the confinement check in validate(), which must fail closed instead.
+    """
+    try:
+        return Path.cwd()
+    except OSError:
+        return SKILL_DIR
+
+# Ensure directories exist.
+# Best-effort at IMPORT time. LOKI_DIR defaults to the relative path ".loki",
+# so when the working directory has been deleted these mkdirs raise
+# FileNotFoundError and the whole module fails to import -- which takes the
+# entire dashboard down rather than the one feature that needs the directory.
+# Whoever actually writes into these paths still surfaces its own error.
+for _startup_dir in (STATE_DIR, LOG_DIR):
+    try:
+        _startup_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
 
 # Utility: atomic write with optional file locking
 def atomic_write_json(file_path: Path, data: dict, use_lock: bool = True):
@@ -160,14 +260,40 @@ app = FastAPI(
 # CORS middleware for dashboard frontend - restricted to localhost by default.
 # Set LOKI_DASHBOARD_CORS to override (comma-separated origins).
 _cors_default = "http://localhost:57374,http://127.0.0.1:57374"
-_cors_origins = os.environ.get("LOKI_DASHBOARD_CORS", _cors_default).split(",")
+_cors_raw = os.environ.get("LOKI_DASHBOARD_CORS", _cors_default)
+_cors_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+if "*" in _cors_origins or _cors_raw.strip() == "*":
+    if os.environ.get("LOKI_ENV") == "production":
+        raise RuntimeError(
+            "Wildcard CORS ('*') is not allowed in production. "
+            "Set LOKI_DASHBOARD_CORS to a specific origin list, "
+            "or set LOKI_ENV != production."
+        )
+    import logging
+
+    logging.getLogger(__name__).warning(
+        "LOKI_DASHBOARD_CORS is set to '*' -- all origins are allowed. "
+        "This is insecure for production deployments."
+    )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in _cors_origins if o.strip()],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def browser_mutation_boundary(request: Request, call_next):
+    """Refuse cross-origin browser mutations before control side effects."""
+    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+        if not browser_mutation_origin_allowed(request, _cors_origins):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "cross-origin mutation refused"},
+            )
+    return await call_next(request)
 
 
 # Request/Response models
@@ -202,8 +328,16 @@ class StartRequest(BaseModel):
         if not prd_path.is_file():
             raise ValueError(f"PRD path is not a file: {self.prd}")
 
-        # Verify path resolves within CWD or a reasonable parent
-        cwd = Path.cwd().resolve()
+        # Verify path resolves within CWD or a reasonable parent.
+        # FAIL CLOSED if the cwd is gone: this is a path-confinement check, so
+        # an unresolvable base must reject the path, never skip the comparison.
+        try:
+            cwd = Path.cwd().resolve()
+        except OSError as exc:
+            raise ValueError(
+                "cannot validate PRD path: the working directory no longer "
+                "exists (%s)" % exc
+            ) from exc
         try:
             prd_path.relative_to(cwd)
         except ValueError:
@@ -445,12 +579,17 @@ async def start_session(request: StartRequest):
 
     try:
         # Start the process
+        # RUN_SH is a trusted fixed path; provider and PRD were validated above,
+        # and argv is passed directly without a command shell.
         process = subprocess.Popen(
-            args,
+            args,  # lgtm[py/command-line-injection]
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
-            cwd=str(Path.cwd())
+            # A deleted cwd would make Popen itself raise; fall back to the
+            # skill tree rather than failing to launch the run at all.
+            cwd=str(_cwd_or_skill_dir()),
+            shell=False,
         )
 
         # Save provider for status tracking

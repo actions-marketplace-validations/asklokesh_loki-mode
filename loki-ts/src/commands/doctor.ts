@@ -4,8 +4,8 @@
 //   - Text mode: sectioned PASS/FAIL/WARN output, summary footer, exit 1 on
 //     any FAIL (warnings ok).
 //   - JSON mode: emit the structure documented in the migration inventory and
-//     produced by python3 in cmd_doctor_json. Always exits 0 in JSON mode so
-//     scripts can parse the result regardless of system health.
+//     produced by python3 in cmd_doctor_json. Exit 1 when summary.ok is false,
+//     matching text mode and the documented CI/init-container gate contract.
 //
 // Network probes (ChromaDB, MiroFish) use AbortSignal.timeout(2000) so a slow
 // probe never hangs the CLI. Secret env vars are checked for presence only --
@@ -70,6 +70,17 @@ export type ReceiptSigningCheck = {
   required: "optional";
 };
 
+// Provider availability: install state of every provider in
+// providers/loader.sh SUPPORTED_PROVIDERS, plus the one auto_detect_provider
+// would choose. Produced by autonomy/provider-offer.sh (providers-json), the
+// SAME helper the bash route calls, so the two cannot drift. Not counted in the
+// summary tally: it is informational, and a missing optional provider must
+// never flip doctor exit code.
+export type ProviderAvailability = {
+  selected: string | null;
+  providers: { name: string; installed: boolean }[];
+};
+
 // v7.7.17: memory subsystem health surface. Mirrors the bash side
 // (autonomy/loki:cmd_doctor_json) which reports the latest entries from
 // .loki/memory/.errors.log (rotated by memory/error_log.py). Sibling of
@@ -88,8 +99,14 @@ export type DoctorJson = {
   // (autonomy/loki:cmd_doctor_json) which now sets LOKI_VERSION env.
   loki_mode_version: string;
   checks: ToolCheck[];
+  // Which provider a build would actually auto-select, plus the install state
+  // of every supported provider. Null when providers/loader.sh is unavailable,
+  // matching the bash route, which omits the section rather than erroring.
+  provider_availability: ProviderAvailability | null;
   disk: DiskCheck;
   ai_provider: AiProviderCheck;
+  // Skill-link integrity, counted in the summary tally. See buildDoctorJson.
+  skills: SkillJson[];
   sentrux: SentruxCheck;
   receipt_signing: ReceiptSigningCheck;
   memory: MemoryHealth;
@@ -299,6 +316,37 @@ export function checkSkills(): SkillStatus[] {
   });
 }
 
+// JSON projection of a SkillStatus, byte-matching the bash cmd_doctor_json
+// `skills` entries. Kept next to checkSkills so text and JSON cannot drift.
+export type SkillJson = {
+  name: string;
+  path: string;
+  status: Status;
+  detail: string | null;
+  required: "required";
+};
+
+// Text mode renders `detail` with surrounding parens and a separate Fix line;
+// JSON carries the bare sentence with the fix inlined, matching bash.
+export function skillsForJson(): SkillJson[] {
+  return checkSkills().map((s) => ({
+    name: s.name,
+    // JSON may be persisted or forwarded by automation. Preserve the useful
+    // user-relative location without exposing a machine-specific home path.
+    path: s.path.startsWith(`${homedir()}/`) ? `~/${s.path.slice(homedir().length + 1)}` : s.path,
+    status: s.status,
+    detail:
+      s.status === "pass"
+        ? null
+        : s.status === "fail"
+          // The text view can show the target interactively, but persisted JSON
+          // must not disclose an absolute run root or target-derived secret.
+          ? "broken symlink. Fix: loki setup-skill"
+          : "not found - run loki setup-skill",
+    required: "required" as const,
+  }));
+}
+
 // ---------- Tool list (single source of truth shared by text + JSON) ----------
 
 // Display name (text mode, with min-version suffix per bash autonomy/loki:6354)
@@ -327,6 +375,7 @@ const TOOL_SPECS: readonly ToolSpec[] = [
   { displayName: "Codex CLI", jsonName: "Codex CLI", cmd: "codex", required: "optional" },
   { displayName: "Cline CLI", jsonName: "Cline CLI", cmd: "cline", required: "optional" },
   { displayName: "Aider CLI", jsonName: "Aider CLI", cmd: "aider", required: "optional" },
+  { displayName: "opencode CLI", jsonName: "opencode CLI", cmd: "opencode", required: "optional" },
 ];
 
 // Internal record carries both names; callers pick which one to render.
@@ -339,6 +388,57 @@ async function runAllToolChecks(): Promise<ToolRow[]> {
       return { ...c, displayName: spec.displayName };
     }),
   );
+}
+
+// ---------- Provider availability bridge --------------------------------------
+
+// Both of these shell out to autonomy/provider-offer.sh rather than reading
+// providers/loader.sh from TypeScript. That is deliberate and load-bearing:
+// doctor stdout is compared byte for byte between the two routes
+// (tests/test-doctor-blocker-parity.sh + the bun-parity workflow), and the
+// auto-selection priority order lives in ONE bash function. A TypeScript
+// reimplementation would be a second copy of that order, free to drift.
+//
+// Both fail closed and silently: a missing script, a spawn error, or any
+// non-zero status yields null / no output, and doctor carries on. That is the
+// same graceful skip the bash route performs when loader.sh cannot be sourced.
+function providerOfferScript(): string | null {
+  const p = resolve(REPO_ROOT, "autonomy/provider-offer.sh");
+  return existsSync(p) ? p : null;
+}
+
+export function readProviderAvailability(): ProviderAvailability | null {
+  const script = providerOfferScript();
+  if (!script) return null;
+  try {
+    const r = spawnSync("bash", [script, "providers-json"], { encoding: "utf8" });
+    if (r.status !== 0 || !r.stdout) return null;
+    const parsed = JSON.parse(r.stdout) as ProviderAvailability;
+    if (!parsed || !Array.isArray(parsed.providers)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+// Returns the rendered section, or "" to print nothing.
+//
+// NOTE the capture-and-re-emit, rather than stdio "inherit". The install-offer
+// call below can use "inherit" because it is gated on stdout being a TTY, so
+// the parity capture never reaches it. This section is ALWAYS on: when stdout
+// is a pipe, Bun buffers process.stdout.write while an inherited child writes
+// straight to fd 1, which would let this section overtake the lines printed
+// before it and break parity in a way that never reproduces on a terminal.
+export function renderProviderAvailability(): string {
+  const script = providerOfferScript();
+  if (!script) return "";
+  try {
+    const r = spawnSync("bash", [script, "providers"], { encoding: "utf8" });
+    if (r.status !== 0 || !r.stdout) return "";
+    return r.stdout;
+  } catch {
+    return "";
+  }
 }
 
 // ---------- JSON mode ---------------------------------------------------------
@@ -492,13 +592,13 @@ export async function buildDoctorJson(): Promise<DoctorJson> {
   else warnings++;
 
   // AGGREGATE PROVIDER CHECK, mirroring autonomy/loki:cmd_doctor_json. Each
-  // provider CLI is individually optional -- Claude OR Codex OR Cline OR Aider
+  // provider CLI is individually optional -- Claude, Codex, Cline, Aider, or opencode
   // -- so none can be marked required on its own. Having NONE is a blocker,
   // and the text path on both routes reports it as one.
   //
   // Without this, --json reported zero failures and ok true on a host that
   // cannot run a build, disagreeing with the same command's own exit code.
-  const anyProviderFound = ["claude", "codex", "cline", "aider"].some(
+  const anyProviderFound = ["claude", "codex", "cline", "aider", "opencode"].some(
     (p) => checks.find((c) => c.command === p)?.found === true,
   );
   const aiProvider: AiProviderCheck = {
@@ -512,11 +612,25 @@ export async function buildDoctorJson(): Promise<DoctorJson> {
   if (anyProviderFound) passed++;
   else failed++;
 
+  // SKILL LINK INTEGRITY, mirroring autonomy/loki:cmd_doctor_json. The text
+  // path on both routes fails closed on a broken skill symlink, but --json
+  // omitted skills entirely -- so a host with a dangling ~/.claude/skills/
+  // loki-mode had text exit 1 while --json reported failed 0 and ok true.
+  // Counted per entry, exactly as the text path tallies them.
+  const skills = skillsForJson();
+  for (const s of skills) {
+    if (s.status === "pass") passed++;
+    else if (s.status === "fail") failed++;
+    else warnings++;
+  }
+
   return {
     loki_mode_version: getVersion(),
     checks,
+    provider_availability: readProviderAvailability(),
     disk,
     ai_provider: aiProvider,
+    skills,
     sentrux,
     receipt_signing: receiptSigning,
     memory,
@@ -656,7 +770,7 @@ async function runText(): Promise<number> {
 
   // AI Providers
   process.stdout.write(`${CYAN}AI Providers:${NC}\n`);
-  const providerCmds = ["claude", "codex", "cline", "aider"];
+  const providerCmds = ["claude", "codex", "cline", "aider", "opencode"];
   // Per-provider install hint, byte-matching the bash route's
   // doctor_provider_install_cmd (autonomy/loki:8128). The bash route writes this
   // hint to STDERR (run.sh doctor_check_provider, `>&2`), so it must go to STDERR
@@ -670,6 +784,7 @@ async function runText(): Promise<number> {
     codex: "npm install -g @openai/codex",
     cline: "npm install -g cline",
     aider: "pip install aider-chat",
+    opencode: "npm install -g opencode-ai",
   };
   let anyProvider = false;
   for (const cmd of providerCmds) {
@@ -696,8 +811,17 @@ async function runText(): Promise<number> {
       sdkUsable = probe.status === 0;
     }
     if (sdkUsable) {
+      // Byte-mirrors the bash route. "No separate CLI needed" was true for
+      // `loki start` and false for demo/quick/quickstart, which stay on bash and
+      // require a binary on PATH -- so a green doctor was followed by exit 2.
       process.stdout.write(
-        `  ${badge("pass")}  Bundled Claude Agent SDK is usable -- no separate CLI needed\n`,
+        `  ${badge("pass")}  Bundled Claude Agent SDK is usable -- 'loki start' needs no separate CLI\n`,
+      );
+      process.stdout.write(
+        `         ${YELLOW}Note: loki demo/quick/quickstart still need a provider CLI on PATH${NC}\n`,
+      );
+      process.stdout.write(
+        `         ${YELLOW}      Install: npm install -g @anthropic-ai/claude-code${NC}\n`,
       );
       tally.pass++;
     } else {
@@ -726,6 +850,16 @@ async function runText(): Promise<number> {
   }
   process.stdout.write(`\n`);
 
+  // Provider Availability. Rendered by the shared bash helper so these bytes
+  // are the bash route bytes by construction. Empty string when loader.sh is
+  // unavailable, in which case nothing (not even the blank line) is printed --
+  // exactly what the bash route does.
+  const availability = renderProviderAvailability();
+  if (availability) {
+    process.stdout.write(availability);
+    process.stdout.write(`\n`);
+  }
+
   // API Keys (presence only -- never echo values)
   process.stdout.write(`${CYAN}API Keys:${NC}\n`);
   const claudeFound = byCmd.get("claude")?.found ?? false;
@@ -748,15 +882,26 @@ async function runText(): Promise<number> {
       );
       tally.pass++;
     } else if (loggedIn === "no") {
+      // BLOCKER, not a warning; byte-mirrors the bash route. As a warning this
+      // let a user pass doctor and confirm the spend before the auth preflight
+      // refused the build. A missing credential belongs at doctor time.
       process.stdout.write(
-        `  ${badge("warn")}  Claude CLI is NOT logged in -- run 'claude login' before a build (it would otherwise stall)\n`,
+        `  ${badge("fail")}  Claude CLI is NOT logged in -- a build would stall instead of running\n`,
       );
-      tally.warn++;
+      process.stdout.write(
+        `         ${YELLOW}Fix: claude login${NC}   (or set ANTHROPIC_API_KEY)\n`,
+      );
+      tally.blockers.push("Claude CLI is not logged in. Fix: claude login (or set ANTHROPIC_API_KEY)");
+      tally.fail++;
     } else if (claudeOauthExpired()) {
       process.stdout.write(
-        `  ${badge("warn")}  Claude login has EXPIRED -- run 'claude login' before a build (it would otherwise stall)\n`,
+        `  ${badge("fail")}  Claude login has EXPIRED -- a build would stall instead of running\n`,
       );
-      tally.warn++;
+      process.stdout.write(
+        `         ${YELLOW}Fix: claude login${NC}   (or set ANTHROPIC_API_KEY)\n`,
+      );
+      tally.blockers.push("Claude login has expired. Fix: claude login (or set ANTHROPIC_API_KEY)");
+      tally.fail++;
     } else {
       process.stdout.write(
         `  ${DIM}  --  ${NC}  ANTHROPIC_API_KEY not set (Claude CLI uses its own login)\n`,
@@ -1066,6 +1211,46 @@ async function runText(): Promise<number> {
   }
   process.stdout.write(`\n`);
 
+  // Install integrity. The bash route has checked this since v8.38.0; the Bun
+  // route -- the DEFAULT runtime -- did not, so the users most likely to hit
+  // the failure were the ones who could not see it.
+  //
+  // Why it matters: these four detectors ship via package.json `files[]`. When
+  // they were absent from the tarball, mutation-integrity failed closed on
+  // EVERY iteration for EVERY npm user, making first-pass completion
+  // impossible regardless of model output. Nothing in a git checkout can
+  // reproduce that -- which is exactly why doctor must assert it on the
+  // installed copy.
+  process.stdout.write(`${BOLD}Install integrity:${NC}\n`);
+  const detectors = [
+    "detect-test-mutations",
+    "detect-mock-problems",
+    "detect-semantic-test-problems",
+    "detect-invariant-violations",
+  ];
+  const missingDetectors: string[] = [];
+  for (const det of detectors) {
+    if (existsSync(resolve(REPO_ROOT, "tests", `${det}.sh`))) {
+      tally.pass++;
+    } else {
+      missingDetectors.push(`${det}.sh`);
+    }
+  }
+  if (missingDetectors.length === 0) {
+    process.stdout.write(
+      `  ${GREEN}OK${NC}    Quality-gate detectors present (${detectors.length}/${detectors.length})\n`,
+    );
+  } else {
+    process.stdout.write(
+      `  ${badge("fail")}  Quality-gate detectors MISSING: ${missingDetectors.join(" ")}\n`,
+    );
+    tally.fail++;
+    tally.blockers.push(
+      `Reinstall loki-mode: ${missingDetectors.length} quality-gate detector(s) missing, so every iteration fails closed`,
+    );
+  }
+  process.stdout.write(`\n`);
+
   // Summary
   process.stdout.write(
     `${BOLD}Summary:${NC} ${GREEN}${tally.pass} passed${NC}, ${RED}${tally.fail} failed${NC}, ${YELLOW}${tally.warn} warnings${NC}\n\n`,
@@ -1135,7 +1320,7 @@ export async function runDoctor(argv: readonly string[]): Promise<number> {
   if (json) {
     const result = await buildDoctorJson();
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");
-    return 0; // JSON mode always exits 0 (parity with bash cmd_doctor_json).
+    return result.summary.ok ? 0 : 1;
   }
   return runText();
 }

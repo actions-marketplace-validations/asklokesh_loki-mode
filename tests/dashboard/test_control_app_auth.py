@@ -144,6 +144,57 @@ print("OK")
 """
 
 
+_BODY_BROWSER_ORIGIN_BOUNDARY = """
+import os
+import tempfile
+from pathlib import Path
+tmp = tempfile.TemporaryDirectory(prefix="loki-control-origin-")
+os.environ["LOKI_DIR"] = str(Path(tmp.name) / ".loki")
+from fastapi.testclient import TestClient
+import dashboard.control as control
+client = TestClient(
+    control.app,
+    raise_server_exceptions=False,
+    client=("127.0.0.1", 5555),
+    base_url="http://127.0.0.1:61234",
+)
+pause = Path(os.environ["LOKI_DIR"]) / "PAUSE"
+blocked = client.post(
+    "/api/control/pause", headers={"Origin": "https://evil.example"})
+assert blocked.status_code == 403, blocked.text
+assert not pause.exists(), "cross-origin request mutated PAUSE"
+same = client.post(
+    "/api/control/pause", headers={"Origin": "http://127.0.0.1:61234"})
+assert same.status_code == 200, same.text
+assert pause.exists(), "same-origin custom-port request was not preserved"
+pause.unlink()
+originless = client.post("/api/control/pause")
+assert originless.status_code == 200, originless.text
+assert pause.exists(), "originless local client was not preserved"
+print("OK")
+"""
+
+
+_BODY_PRODUCTION_WILDCARD_REFUSED = """
+import os
+import tempfile
+from pathlib import Path
+tmp = tempfile.TemporaryDirectory(prefix="loki-control-wildcard-")
+os.environ["LOKI_DIR"] = str(Path(tmp.name) / ".loki")
+os.environ["LOKI_ENV"] = "production"
+os.environ["LOKI_DASHBOARD_CORS"] = "*"
+pause = Path(os.environ["LOKI_DIR"]) / "PAUSE"
+try:
+    import dashboard.control  # noqa: F401
+except RuntimeError as exc:
+    assert "Wildcard CORS ('*') is not allowed in production" in str(exc), exc
+else:
+    raise AssertionError("standalone control accepted production wildcard CORS")
+assert not pause.exists(), "refused startup created a control side effect"
+print("OK")
+"""
+
+
 class ControlAppAuthTest(unittest.TestCase):
     def _assert_child_passed(self, proc):
         """Fail with the child's stdout+stderr if it exited non-zero."""
@@ -171,6 +222,18 @@ class ControlAppAuthTest(unittest.TestCase):
     def test_auth_disabled_allows_anonymous(self):
         proc = _run_in_subprocess(
             _BODY_AUTH_DISABLED_ALLOWS, enterprise_auth=False
+        )
+        self._assert_child_passed(proc)
+
+    def test_browser_origin_boundary_precedes_control_side_effects(self):
+        proc = _run_in_subprocess(
+            _BODY_BROWSER_ORIGIN_BOUNDARY, enterprise_auth=False
+        )
+        self._assert_child_passed(proc)
+
+    def test_production_wildcard_is_refused_before_control_side_effects(self):
+        proc = _run_in_subprocess(
+            _BODY_PRODUCTION_WILDCARD_REFUSED, enterprise_auth=False
         )
         self._assert_child_passed(proc)
 

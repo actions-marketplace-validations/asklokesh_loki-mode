@@ -254,6 +254,14 @@ def _process_snapshot() -> dict[int, _ProcessRecord]:
     return snapshot
 
 
+class _LineageUnknown(Exception):
+    """The lineage marker could not be read because the process is gone.
+
+    Distinct from "the marker is absent". A vanished process is not evidence
+    of a lineage violation -- it is the absence of evidence either way.
+    """
+
+
 def _process_has_lineage_token(pid: int, token: str) -> bool:
     needle = f"{_LINEAGE_ENV_NAME}={token}".encode("ascii")
     if sys.platform == "darwin":
@@ -273,8 +281,41 @@ def _process_has_lineage_token(pid: int, token: str) -> bool:
     if sys.platform.startswith("linux"):
         try:
             with open(f"/proc/{pid}/environ", "rb") as handle:
-                return needle in handle.read().split(b"\0")
+                payload = handle.read()
+            if not payload:
+                # A zero-length read raises NOTHING. The kernel empties
+                # /proc/<pid>/environ as the process is reaped, so a fast
+                # runner yields b"" -- which splits to [b""], does not contain
+                # the needle, and returns "no marker" for a process that
+                # carried one. Indistinguishable from the FileNotFoundError
+                # case below and must be answered the same way.
+                raise _LineageUnknown(pid)
+            return needle in payload.split(b"\0")
+        except FileNotFoundError:
+            # The process is already gone. /proc/<pid>/environ disappears the
+            # moment a child is reaped, so a short-lived runner that exits
+            # before this check runs is indistinguishable here from one that
+            # never carried the marker -- and answering "no marker" for it
+            # fails the lineage guard and returns 127 as a LAUNCH failure, for
+            # a process that in fact launched and completed.
+            #
+            # Signal "unknown", not "absent". The caller decides, because only
+            # the caller knows whether the process it spawned is still alive.
+            # macOS never hit this: it has the pipe-handle fallback, so the
+            # bug was Linux-only and invisible on a developer Mac.
+            raise _LineageUnknown(pid) from None
+        except ProcessLookupError:
+            # ESRCH: the pid was reaped between opening and reading. Same fact
+            # as ENOENT above -- the process is gone, so its marker is UNKNOWN,
+            # not absent. Listed BEFORE the OSError clause because it is a
+            # subclass and would otherwise be swallowed into "no marker",
+            # which fails the lineage guard and reports 127 for a process that
+            # launched and completed.
+            raise _LineageUnknown(pid) from None
         except OSError:
+            # Anything else (EACCES on a hardened /proc, EIO) is a genuine
+            # read failure rather than evidence of a completed child, so it
+            # stays fail-closed: no marker.
             return False
     return False
 
@@ -354,10 +395,23 @@ class _LineageTracker:
         root = _process_record(process.pid)
         if root is None:
             raise RuntimeError("provider attempt identity is unavailable")
-        if not (
-            _process_has_lineage_token(root.pid, token)
-            or _process_has_lineage_pipe(root.pid, lineage_pipe_handles)
-        ):
+        try:
+            has_marker = (
+                _process_has_lineage_token(root.pid, token)
+                or _process_has_lineage_pipe(root.pid, lineage_pipe_handles)
+            )
+        except _LineageUnknown:
+            # The child exited before we could read its marker. That is a
+            # completed run, not a lineage violation -- and it is the common
+            # case for any runner that finishes fast. Confirm it really is our
+            # child (Popen.poll() is authoritative: it reaps only the process
+            # this object spawned) before accepting.
+            #
+            # This stays fail-closed for the case the guard exists to catch: a
+            # LIVE process whose marker is genuinely missing still raises,
+            # because poll() returns None for it and we fall through.
+            has_marker = process.poll() is not None
+        if not has_marker:
             raise RuntimeError("provider attempt lineage marker is unavailable")
         self.root_pid = root.pid
         self.session_id = root.session_id
