@@ -5,6 +5,45 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.24.0
+
+### Added
+
+- **The unattributed quarter of every build is now measured.** A profiled
+  16-minute build summed its stages to 723s against a 960s wall clock, leaving
+  237s (25%) attributed to nothing, and the profile's own guess for it named
+  "rsync of the engine copy". Measurement falsified that: there is no rsync in
+  the engine at all, interpreter startup is ~0.6s per iteration, and the hot-path
+  git operations cost tens of milliseconds. The real cause was structural -- all
+  nine timing call sites sat inside the iteration body, so pre-loop boot and
+  post-loop teardown were not slow to measure but impossible to measure. Both are
+  now bracketed with the existing additive seam, so the next profiled build
+  reports the split as data.
+
+### Changed
+
+- **A flat `sleep 2` is off the critical path of every build.** The dashboard is
+  polled on the same `/api/status` endpoint the reuse path already trusts and
+  proceeds the moment it serves. The liveness property is preserved rather than
+  traded for speed: the process must still be alive when the poll ends, which is
+  strictly stronger than a single check at t=2s, and the flat sleep remains as a
+  fallback where curl is unavailable.
+
+## v9.23.1
+
+### Fixed
+
+- **Four high-severity `fast-uri` advisories** (GHSA-5jgf-p345-68v8,
+  GHSA-f65p-4m7j-42xc, GHSA-fph4-wmhf-6fwf, GHSA-jqff-g426-hqxp): SSRF via
+  malformed IPv6 normalization and via repeated hostname percent-decoding, plus
+  two host-confusion paths. Fixed at the source with an override to the patched
+  release rather than waived, because the accepted-advisory list exists for
+  advisories that are genuinely unreachable in the shipped CLI, and a URL parser
+  reached through ajv is not one to argue about when a fix is one patch release
+  away. This predates v9.23.0: the same gate already failed on 2026-09-07.
+- **The lockfile's own root version had drifted to 9.12.0** while the package
+  shipped 9.23.0. Regenerating it corrected the drift.
+
 ## v9.23.0
 
 ### Fixed
