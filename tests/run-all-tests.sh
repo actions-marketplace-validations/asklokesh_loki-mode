@@ -236,6 +236,7 @@ run_test "outcome ledger anchors before it measures" "$SCRIPT_DIR/test-outcome-l
 run_test "intent ledger detects spec-drifted-from-intent" "$SCRIPT_DIR/test-intent-ledger.sh"
 run_test "pre-edit snapshot separates agent from human rescue" "$SCRIPT_DIR/test-preedit-snapshot.sh"
 run_test "server.json tracks VERSION (MCP registry not stale)" "$SCRIPT_DIR/test-server-json-current.sh"
+run_test "plugin.json tracks VERSION (plugin updates not stale)" "$SCRIPT_DIR/test-plugin-json-current.sh"
 run_test "brownfield assess changes nothing (enterprise trust claim)" "$SCRIPT_DIR/test-brownfield-assess-readonly.sh"
 run_test "EVALUATING.md claims stay runnable (no COMPARISON.md rot)" "$SCRIPT_DIR/test-evaluating-doc-runnable.sh"
 run_test "council never fabricates a reviewer verdict (INCONCLUSIVE != REJECT)" "$SCRIPT_DIR/test-council-no-fabricated-verdict.sh"
