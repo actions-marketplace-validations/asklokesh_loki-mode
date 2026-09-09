@@ -5,6 +5,46 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.23.0
+
+### Fixed
+
+- **The marketplace plugin failed to load at all.** `plugin.json` declared
+  `hooks: "./hooks/hooks.json"`, but Claude Code loads that standard path
+  automatically, so the manifest registered it twice and the loader rejected the
+  whole plugin: all three skills, the commands and the MCP server died with it
+  while `claude plugin install` still reported success. `manifest.hooks` is only
+  for hook files beyond the standard one, so the key is dropped. Guarded for both
+  the string and array forms while still allowing a genuine extra hook file.
+  Reported with the correct diagnosis and fix in #195/#196 by robert-clayton.
+- **The subagent fleet had silently collapsed to a single tier.** Claude Code
+  2.1.217 lowered the spawn-depth default from 5 to 1, so an agent that itself
+  delegates could no longer do so. Nothing errored; runs reported success having
+  done less work than the fleet pattern claims. Depth is now set explicitly at
+  source time and inherited by the whole subprocess tree, and the invariant is
+  "explicit" rather than any particular number, so a future upstream default
+  cannot change Loki's behavior again. The 20-subagent concurrency cap is
+  deliberately NOT raised; `LOKI_SUBAGENT_CONCURRENCY` opts in. An operator's own
+  pre-set value always wins, and `LOKI_SUBAGENT_CAPACITY=0` opts out entirely.
+- **`plugin.json` had drifted three releases behind `VERSION`** (pinned at
+  9.22.10 while 9.22.11-13 shipped), so installed plugins were never offered the
+  update. The release checklist already required this file to track VERSION; a
+  checklist did not prevent three consecutive misses, so a test now enforces it.
+
+### Changed
+
+- **Agent SDK 0.3.208 -> 0.3.266, Anthropic SDK -> 0.124.0.** The agent SDK was
+  58 releases behind. The Anthropic SDK range was worse than it looked: for a 0.x
+  version with a nonzero minor, caret pins the minor, so `^0.111.0` could never
+  float to 0.124.0 and was a hard pin wearing a range's clothes. Gated on a real
+  test pass rather than a version check, because three intervening releases are
+  breaking (0.3.233 removed the todo/task tools from the default surface, and
+  Loki reads TodoWrite): typecheck clean, 1589 pass / 0 fail across 113 files.
+- **Top advisory tier now resolves to `claude-fable-5-1`** (released 2026-09-01;
+  1M context, 128K output, $10/$50 per MTok, cache reads 0.025x base rather than
+  the usual 0.1x). `claude-fable-5` is retained as a legacy catalog entry rather
+  than deleted.
+
 ## v9.22.13
 
 ### Added
