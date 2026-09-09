@@ -65,6 +65,41 @@ else
 fi
 
 echo
+echo "T3 -- the manifest does not re-declare auto-loaded components"
+
+# WHY: Claude Code loads hooks/hooks.json from the plugin root automatically.
+# Naming that same standard path in manifest.hooks registers it TWICE and the
+# loader rejects the whole plugin:
+#   "Duplicate hooks file detected: ./hooks/hooks.json resolves to already-loaded file"
+# Every skill, command and the MCP server die with it, so the plugin is inert
+# for every marketplace user while `claude plugin install` still reports success
+# (issue #195, reported against 9.22.10). manifest.hooks is only for hook files
+# BEYOND the standard one. Assert the standard path is not re-declared, rather
+# than asserting the key is absent outright, so a genuine EXTRA hook file stays
+# legal.
+hooks_decl=$(python3 -c "
+import json
+d=json.load(open('$PLUGIN_JSON'))
+h=d.get('hooks')
+if h is None: print('')
+elif isinstance(h,str): print(h)
+elif isinstance(h,list): print('\\n'.join(x for x in h if isinstance(x,str)))
+else: print('INLINE')
+" 2>/dev/null)
+
+if [ -f "$REPO_ROOT/plugins/loki-mode/hooks/hooks.json" ]; then
+    ok "the standard hooks/hooks.json exists (auto-loaded by Claude Code)"
+    case "$hooks_decl" in
+        *"hooks/hooks.json"*)
+            bad "manifest re-declares the auto-loaded hooks/hooks.json -- plugin will fail to load (issue #195)" ;;
+        *)
+            ok "manifest does not re-declare the auto-loaded hooks path" ;;
+    esac
+else
+    ok "no standard hooks/hooks.json present; nothing to double-register"
+fi
+
+echo
 echo "==============================================================="
 echo "Results: $PASS passed, $FAIL failed, $((PASS+FAIL)) total"
 [ "$FAIL" -eq 0 ]
