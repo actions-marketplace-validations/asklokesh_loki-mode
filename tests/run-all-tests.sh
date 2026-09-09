@@ -240,6 +240,7 @@ run_test "plugin.json tracks VERSION (plugin updates not stale)" "$SCRIPT_DIR/te
 run_test "subagent fleet capacity is explicit (CC 2.1.217 defaults)" "$SCRIPT_DIR/test-subagent-fleet-capacity.sh"
 run_test "build wall-clock is attributable (boot/teardown timed)" "$SCRIPT_DIR/test-build-time-attribution.sh"
 run_test "README has no hand-maintained version (drifts by default)" "$SCRIPT_DIR/test-readme-no-stale-version.sh"
+run_test "doc-gen does not re-bill its shared context or run untiered" "$SCRIPT_DIR/test-docgen-cost-shape.sh"
 run_test "brownfield assess changes nothing (enterprise trust claim)" "$SCRIPT_DIR/test-brownfield-assess-readonly.sh"
 run_test "EVALUATING.md claims stay runnable (no COMPARISON.md rot)" "$SCRIPT_DIR/test-evaluating-doc-runnable.sh"
 run_test "council never fabricates a reviewer verdict (INCONCLUSIVE != REJECT)" "$SCRIPT_DIR/test-council-no-fabricated-verdict.sh"
