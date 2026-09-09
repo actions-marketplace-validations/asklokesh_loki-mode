@@ -5,6 +5,31 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.25.0
+
+### Changed
+
+- **Doc generation stops re-billing its own context.** The eight doc-gen provider
+  calls all carry the same project context (measured at 4,269 tokens on this
+  repo), but it sat at the end of each prompt, so the calls shared no cacheable
+  prefix and every one re-sent it at full input price: about 29,883 redundant
+  input tokens per run. Leading with the identical context makes it one cache
+  write plus seven cache reads at 0.1x.
+- **Doc generation runs on a pinned model tier.** The claude branch had no
+  `--model`, so all eight calls inherited the account default -- Opus for many
+  users, at 5x Sonnet's input and output price, for a summarization task.
+  Pinned, with `LOKI_DOCS_MODEL` to override.
+- **Agent SDK 0.3.267.**
+- **CLAUDE.md no longer overstates prompt caching.** It said `sdk_invoker.ts`
+  "applies `cache_control` on that split" as a statement of fact. That path is
+  opt-in and default OFF (`LOKI_SDK_PROMPT_CACHE=1`), it covers the raw-SDK judge
+  rather than the main agent path, and on the bash route `[CACHE_BREAKPOINT]` is
+  a documentation anchor that sets no header. The prefix-ordering rule it teaches
+  is still correct on every route; only the claim about what enforces it was wrong.
+
+Neither doc-gen change is visible in a log: the documents generate either way,
+so no gate goes red and only a bill shows the difference. Both are guarded.
+
 ## v9.24.0
 
 ### Added
