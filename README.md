@@ -41,6 +41,21 @@ Upgrade with `loki self-update`. Long form: [Installation Guide](docs/INSTALLATI
 
 </details>
 
+<details>
+<summary>Claude Code plugin (adds /loki-grill, /loki-spec-status, /loki-verify)</summary>
+
+```bash
+claude plugin marketplace add asklokesh/loki-mode
+claude plugin install loki-mode@loki-mode
+```
+
+Adds three slash commands and the Loki MCP server (memory, task queue, code
+search, build management) to Claude Code. It calls the CLI rather than bundling
+it, so install `loki-mode` above first. Verify with `claude plugin list`:
+a healthy install reports `Status: enabled`.
+
+</details>
+
 ## Use it
 
 ```bash
