@@ -31217,7 +31217,16 @@ _docs_invoke_provider() {
             # structurally identical captured `claude -p` resolution subcall).
             # env-prefix form because of the optional $t_prefix timeout wrapper.
             # No-op when caveman is absent.
-            result=$($t_prefix env CAVEMAN_DEFAULT_MODE=off claude -p "$prompt" 2>/dev/null) || exit_code=$?
+            # Model pin (v9.25.0). This site makes EIGHT sequential provider
+            # calls per doc-gen run, and without --model every one of them runs
+            # on whatever the account default is -- Opus for many users, at 5x
+            # Sonnet's input price and 5x its output price. Documentation is
+            # summarization over a context this code already assembled; it is
+            # not the workload that needs the top tier. Pinned to the same
+            # default the review subcall uses (run.sh:13762), and overridable
+            # for anyone who wants a different trade.
+            result=$($t_prefix env CAVEMAN_DEFAULT_MODE=off claude -p \
+                --model "${LOKI_DOCS_MODEL:-claude-sonnet-5}" "$prompt" 2>/dev/null) || exit_code=$?
             ;;
         codex)
             result=$($t_prefix codex exec --sandbox workspace-write "$prompt" 2>/dev/null) || exit_code=$?
@@ -31347,47 +31356,56 @@ _docs_generate() {
         echo -e "  ${CYAN}Generating${NC} $doc_file ..."
 
         if [ "$provider_available" = true ]; then
-            # Build a focused prompt for each doc type
+            # Build a focused prompt for each doc type.
+            #
+            # CONTEXT FIRST, AND THE ORDER IS LOAD-BEARING. All eight doc types
+            # share the same $context (measured at 4,269 tokens on this repo).
+            # With the per-type instruction first, the eight prompts share no
+            # common prefix, so every call re-sends the whole context at full
+            # input price: ~29,883 redundant input tokens per doc-gen run.
+            # Leading with the identical context makes it one cache write plus
+            # seven cache reads at 0.1x. Do not "tidy" the instruction back to
+            # the top -- that silently restores the redundant billing.
             case "$doc_type" in
                 README)
-                    prompt="Based on the following project context, generate a comprehensive README.md file. Include: project title, description, features, installation instructions, usage examples, and contribution guidelines. Use markdown formatting. Do NOT use emojis. Output ONLY the markdown content, no explanations.
+                    prompt="$context
 
-$context"
+Based on the project context above, generate a comprehensive README.md file. Include: project title, description, features, installation instructions, usage examples, and contribution guidelines. Use markdown formatting. Do NOT use emojis. Output ONLY the markdown content, no explanations."
                     ;;
                 ARCHITECTURE)
-                    prompt="Based on the following project context, generate an ARCHITECTURE.md file. Include: system overview, high-level design, component diagram (as text), data flow, directory structure explanation, key design decisions, and technology choices. Use markdown formatting. Do NOT use emojis. Output ONLY the markdown content, no explanations.
+                    prompt="$context
 
-$context"
+Based on the project context above, generate an ARCHITECTURE.md file. Include: system overview, high-level design, component diagram (as text), data flow, directory structure explanation, key design decisions, and technology choices. Use markdown formatting. Do NOT use emojis. Output ONLY the markdown content, no explanations."
                     ;;
                 API)
-                    prompt="Based on the following project context, generate an API.md file. Document all public APIs: REST endpoints, exported functions, classes, and their signatures. Include parameter types, return types, and brief descriptions. If no API is detected, document the main public interfaces. Use markdown formatting. Do NOT use emojis. Output ONLY the markdown content, no explanations.
+                    prompt="$context
 
-$context"
+Based on the project context above, generate an API.md file. Document all public APIs: REST endpoints, exported functions, classes, and their signatures. Include parameter types, return types, and brief descriptions. If no API is detected, document the main public interfaces. Use markdown formatting. Do NOT use emojis. Output ONLY the markdown content, no explanations."
                     ;;
                 SETUP)
-                    prompt="Based on the following project context, generate a SETUP.md file. Include: prerequisites, installation steps, environment variables, database setup, running locally, running in Docker (if applicable), and common troubleshooting. Use markdown formatting. Do NOT use emojis. Output ONLY the markdown content, no explanations.
+                    prompt="$context
 
-$context"
+Based on the project context above, generate a SETUP.md file. Include: prerequisites, installation steps, environment variables, database setup, running locally, running in Docker (if applicable), and common troubleshooting. Use markdown formatting. Do NOT use emojis. Output ONLY the markdown content, no explanations."
                     ;;
                 COMPONENTS)
-                    prompt="Based on the following project context, generate a COMPONENTS.md file. Document each major component/module/directory: its purpose, key files, public interface, and dependencies on other components. Use markdown formatting. Do NOT use emojis. Output ONLY the markdown content, no explanations.
+                    prompt="$context
 
-$context"
+Based on the project context above, generate a COMPONENTS.md file. Document each major component/module/directory: its purpose, key files, public interface, and dependencies on other components. Use markdown formatting. Do NOT use emojis. Output ONLY the markdown content, no explanations."
                     ;;
                 TESTING)
-                    prompt="Based on the following project context, generate a TESTING.md file. Include: test strategy, test types (unit, integration, e2e), how to run tests, test configuration, coverage goals, and CI integration. Use markdown formatting. Do NOT use emojis. Output ONLY the markdown content, no explanations.
+                    prompt="$context
 
-$context"
+Based on the project context above, generate a TESTING.md file. Include: test strategy, test types (unit, integration, e2e), how to run tests, test configuration, coverage goals, and CI integration. Use markdown formatting. Do NOT use emojis. Output ONLY the markdown content, no explanations."
                     ;;
                 DECISIONS)
-                    prompt="Based on the following project context, generate a DECISIONS.md file with Architectural Decision Records (ADRs). Infer key decisions from the technology stack, directory structure, and configuration. Each ADR should have: title, status, context, decision, and consequences. Use markdown formatting. Do NOT use emojis. Output ONLY the markdown content, no explanations.
+                    prompt="$context
 
-$context"
+Based on the project context above, generate a DECISIONS.md file with Architectural Decision Records (ADRs). Infer key decisions from the technology stack, directory structure, and configuration. Each ADR should have: title, status, context, decision, and consequences. Use markdown formatting. Do NOT use emojis. Output ONLY the markdown content, no explanations."
                     ;;
                 CLAUDE)
-                    prompt="Based on the following project context, generate a CLAUDE.md file for AI agent context. Include: project overview, key commands (build, test, run, lint), project structure with brief descriptions of each directory, coding conventions, important files, and any gotchas. This file helps AI coding assistants understand the project quickly. Use markdown formatting. Do NOT use emojis. Output ONLY the markdown content, no explanations.
+                    prompt="$context
 
-$context"
+Based on the project context above, generate a CLAUDE.md file for AI agent context. Include: project overview, key commands (build, test, run, lint), project structure with brief descriptions of each directory, coding conventions, important files, and any gotchas. This file helps AI coding assistants understand the project quickly. Use markdown formatting. Do NOT use emojis. Output ONLY the markdown content, no explanations."
                     ;;
             esac
 
