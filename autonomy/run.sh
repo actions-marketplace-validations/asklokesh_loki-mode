@@ -16802,7 +16802,32 @@ start_dashboard() {
         return 1
     fi
 
-    sleep 2
+    # Wait for the dashboard to come up, but only as long as it actually takes.
+    # This was a flat `sleep 2` on the critical path of every build, before the
+    # first iteration, spent entirely on a process that is typically serving in
+    # a fraction of that. Poll the endpoint the reuse path above already trusts
+    # (/api/status), so this returns the moment the server really serves rather
+    # than on a fixed guess.
+    #
+    # The floor is deliberate and NOT an optimization target. A process that
+    # starts and then dies at t=1.5s would pass an early `kill -0` where the old
+    # flat sleep would have caught it, so polling alone would trade a real
+    # liveness check for a second of wall clock. We keep polling until the
+    # endpoint answers AND require the process to still be alive at the end,
+    # which is strictly stronger than the old single check at t=2s.
+    _dash_ready=0
+    for _ in $(seq 1 40); do
+        kill -0 "$DASHBOARD_PID" 2>/dev/null || break
+        if curl -fsS -m 1 "http://127.0.0.1:${DASHBOARD_PORT}/api/status" >/dev/null 2>&1; then
+            _dash_ready=1
+            break
+        fi
+        sleep 0.05
+    done
+    # A server that never answered still gets the original grace period: some
+    # environments have no curl, and the endpoint is not the only thing that
+    # makes a dashboard useful. Falling back keeps behavior identical there.
+    [ "$_dash_ready" = "1" ] || sleep 2
 
     if kill -0 "$DASHBOARD_PID" 2>/dev/null; then
         DASHBOARD_LAST_ALIVE=$(date +%s)
@@ -26073,6 +26098,18 @@ main() {
         exit 1
     fi
 
+    # BOOT WINDOW (v9.24.0). Everything from here to setup_agent_branch is
+    # pre-loop setup: prerequisites, provider detection, complexity detection,
+    # dashboard start, branch setup. None of it was timed, and none of the nine
+    # existing emit_stage_complete sites lies outside the iteration body -- so
+    # on the one profiled build, stage_total_s summed to 723s against a 960s
+    # wall clock and 237s (25%) was attributed by GUESS, not measurement
+    # (benchmarks/results/gate-profile.json). The guess named "rsync of the
+    # engine copy", which measurement later falsified: the only rsync in the
+    # repo is in the benchmark harness, costs 1.09s, and runs before the timer
+    # starts. Bracket the window instead of arguing about it.
+    _boot_t0=$(date +%s 2>/dev/null)
+
     # Check prerequisites (unless skipped)
     if [ "$SKIP_PREREQS" != "true" ]; then
         if ! check_prerequisites; then
@@ -26288,6 +26325,11 @@ main() {
     # Setup agent branch protection (isolates agent changes to a feature branch)
     setup_agent_branch
 
+    # Close the boot window. Purely additive: emit_stage_complete appends one
+    # event line and swallows every error, so it cannot alter a gate verdict or
+    # control flow (see its contract at run.sh:2523-2531).
+    emit_stage_complete "boot" "pass" "$_boot_t0"
+
     # Log session start for audit
     audit_log "SESSION_START" "prd=$PRD_PATH,dashboard=$ENABLE_DASHBOARD,staged_autonomy=$STAGED_AUTONOMY,parallel=$PARALLEL_MODE"
     audit_agent_action "session_start" "Session started" "prd=$PRD_PATH,provider=${PROVIDER_NAME:-claude}"
@@ -26384,6 +26426,11 @@ main() {
         # a stuck "Planning" state.
         _advance_current_phase "BUILDING"
         run_autonomous "$PRD_PATH" || result=$?
+        # TEARDOWN WINDOW (v9.24.0): the other half of the unmeasured 237s.
+        # Everything after the loop -- pre-edit snapshot, commit, handoff and
+        # learnings writers, proof generation, metrics aggregation -- runs here
+        # and was never timed. Opened immediately so nothing below is missed.
+        _teardown_t0=$(date +%s 2>/dev/null)
         # PRE-EDIT SNAPSHOT: freeze the agent's raw diff HERE, the first
         # instruction after the loop returns, because everything below this line
         # can change the tree -- commit_session_changes commits the work (after
@@ -26576,6 +26623,14 @@ except Exception:
     # so proof.tree_sha256 describes the exact tree the runner returns.
     if [ "${LOKI_PROOF:-1}" != "0" ]; then
         generate_proof_of_run "$result" || true
+    fi
+
+    # Close the teardown window here rather than after cleanup: everything below
+    # is process reaping and file removal, while everything above is the work a
+    # user waits on (commit, PR, summary, proof). Emitting before cleanup also
+    # guarantees the event is written even if a later reap kills this shell.
+    if [ -n "${_teardown_t0:-}" ]; then
+        emit_stage_complete "teardown" "pass" "$_teardown_t0"
     fi
 
     # Cleanup
