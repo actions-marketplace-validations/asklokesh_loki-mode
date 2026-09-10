@@ -5,6 +5,27 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.27.3
+
+### Fixed
+
+- **`guard-changed.sh` cried wolf on every `autonomy/loki` edit.** Its
+  ShellCheck arm ran bare `shellcheck -S warning`, while the repo gate
+  (`tests/run-shellcheck.sh`) scans `find . -name "*.sh"` with exclusions
+  (`SC1090,SC1091` globally, plus `SC2034` under `tests/`, `providers/` and
+  `benchmarks/`). Two consequences:
+
+  - `autonomy/loki` has **no `.sh` extension**, so the repo gate never lints it
+    -- but this tool did, hard-failing on 90+ long-standing SC2155/SC2034
+    warnings for any edit to the most-edited file in the repo.
+  - The exclusions were missing, so tests and provider scripts could fail here
+    while passing the real gate.
+
+  A pre-push check that always fails gets ignored, which is the same defect as
+  one that is too slow. The arm now mirrors the repo gate exactly. Verified it
+  still catches the real thing: the SC2034 in `autonomy/verify.sh` that blocked
+  v9.26.0 is caught under the corrected configuration.
+
 ## v9.27.2
 
 ### Fixed
