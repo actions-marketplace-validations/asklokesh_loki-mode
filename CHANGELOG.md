@@ -5,6 +5,67 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.26.1
+
+### Fixed
+
+- **`loki config validate` now detects unknown keys in JSON and YAML configs.**
+  Extraction walks `LOKI_CONFIG_MAP` and pulls each KNOWN path out of the file,
+  so a key the map does not contain was never emitted and could not reach the
+  validate loop. A misspelled key validated clean (`rc=0`) while the identical
+  typo in `.env` format was correctly rejected (`rc=1`) -- the check existed but
+  was blind to two of its three input formats.
+
+  Detection now walks the file's own key set and diffs it against the map.
+  Scoped to `validate` only: the load and emit paths are unchanged, so a config
+  that runs today still runs. Container parents of a mapped key are not reported
+  (in `{"dashboard":{"port":1}}`, `dashboard` is a container, not a typo), and
+  inert metadata written by `loki init` (`version`, `template`, `created`) is
+  allowlisted rather than rejected.
+
+- **Removed a dead local declaration in `_verify_llm_review`.** Five variables
+  were assigned and never read; every return path uses explicit `printf`
+  literals. ShellCheck SC2034 flagged two of them, which failed the repo-wide
+  lint gate and blocked the v9.26.0 release from publishing. No behavior change.
+
+## v9.26.0
+
+### Added
+
+- **`loki verify` now runs an LLM review stage, on by default.** Until now the
+  receipt reported `llm_review.status = "skipped"` with the reason
+  "deterministic-only MVP (30-day cut)" for every user. Half the quality story
+  was unshipped, and anyone evaluating the receipt could see it. The stage runs
+  through the existing pure-HTTPS `loki internal sdk-judge` bridge, so
+  `verify.sh` stays free of the iteration-loop globals that
+  `completion-council.sh` depends on (a constraint documented at
+  `autonomy/verify.sh:6-13`).
+
+  Three states are recorded and never collapsed into each other:
+
+  - `reviewed` - the judge ran and returned findings
+  - `skipped` - the operator passed `--no-llm`
+  - `unavailable` - no API key, transport failure, or malformed response
+
+  Fail-closed throughout: an unavailable judge records the reason rather than
+  reporting a silent pass. The raw payload is written to `llm-review.json`
+  alongside the receipt.
+
+- **`--no-llm` is now a real opt-out.** It was previously parsed and discarded
+  (`shift` only). Scripts already passing it keep working and now get the
+  behavior the flag name has always implied.
+
+### Changed
+
+- **The verdict and exit codes are unchanged.** `llm_review` is recorded in the
+  evidence document but does not influence the verdict this release
+  (`affects_verdict` is `false` in the schema). Verdict influence lands behind
+  an explicit flag once it has been measured on real diffs; flipping it here
+  would silently break anyone gating CI on exit 0.
+- The review diff is capped at `LOKI_VERIFY_LLM_DIFF_BYTES` (default 200000).
+  When a diff is truncated, the truncation is disclosed in the recorded reason
+  rather than being applied silently.
+
 ## v9.25.2
 
 ### Fixed
