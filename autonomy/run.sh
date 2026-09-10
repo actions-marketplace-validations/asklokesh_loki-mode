@@ -12581,9 +12581,21 @@ auto_generate_docs_if_needed() {
         # to the user. LOKI_DOCS_TIMEOUT is still honored -- the whole block is
         # inside `if [ -z "${LOKI_DOCS_TIMEOUT:-}" ]`, so anyone who explicitly
         # asks for doc generation on a tiny project still gets it.
-        if [ "$_doc_src" -le 3 ]; then
-            log_info "Auto-documentation: ${_doc_src} source file(s) -- skipping generation (a project this small times out before producing a document; set LOKI_DOCS_TIMEOUT to force it)"
+        # Gate the skip on the SIMPLE tier, not on the file count alone.
+        # A standard/complex project can legitimately have few source files and
+        # still need its full doc suite -- tests/test-doc-scope-generator.sh
+        # exists precisely to assert that "quality at any complexity is
+        # preserved", and a count-only skip broke it. The simple tier already
+        # returns early further up for the same reason, so this only shortens a
+        # doomed run for projects that were never getting the full suite.
+        if [ "$_doc_src" -le 3 ] && [ "${DETECTED_COMPLEXITY:-}" = "simple" ]; then
+            log_info "Auto-documentation: ${_doc_src} source file(s) on the simple tier -- skipping generation (it times out before producing a document; set LOKI_DOCS_TIMEOUT to force it)"
             return 0
+        fi
+        # Everything else keeps the previous behavior: cap the timeout, still run.
+        if [ "$_doc_src" -le 3 ] && [ "$_doc_to" -gt 90 ]; then
+            log_info "Auto-documentation: ${_doc_src} source file(s) -- capping generation at 90s (was ${_doc_to}s)"
+            _doc_to=90
         fi
     fi
     local _doc_cmd=()
