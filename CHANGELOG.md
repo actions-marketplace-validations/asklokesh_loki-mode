@@ -5,6 +5,34 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.27.2
+
+### Fixed
+
+- **`scripts/guard-changed.sh` was slower than the gate it replaces.** A change
+  to `autonomy/loki` selects 144 suites, and **six of them never finish**
+  without a live model (`test-magic-injection`, `test-magic-rarv`,
+  `test-mirofish-integration`, `test-model-override`,
+  `test-trust-core-tests-detect`, `test-watch-command`). Measured end to end:
+  **1320s** -- worse than the 26m50s FULL tier this exists to avoid. A gate
+  nobody will run protects nothing.
+
+  Each suite now runs under a 60s budget (`GUARD_SUITE_TIMEOUT`), and a suite
+  that hits it is reported as **`SLOW ... NOT measured`** with its name in the
+  summary -- never counted as a pass. A timeout is an absent measurement, not
+  evidence of health.
+
+  Selection is also capped at 60 suites (`GUARD_MAX_SUITES`), and the count
+  that was **not** run is printed. Silent truncation would read as "everything
+  was covered" when it was not.
+
+  Same case measured after the change: **4m52s**, 3 suites named as unmeasured.
+
+- **Corrected the "~135s worst case" claim** in the v9.26.3 entry. It was
+  extrapolated from an unrepresentative 8-suite sample; the real figure was
+  1320s. The entry now states both the wrong number and the measured one rather
+  than quietly editing history.
+
 ## v9.27.1
 
 ### Added
@@ -94,8 +122,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checks that guard files we had just edited -- each discovered one 25-minute CI
   cycle at a time. CLAUDE.md already stated the rule; nothing enforced it.
 
-  Measured: 8s for a one-file change, ~135s worst case, versus 26m50s for the
-  FULL tier. Selection matches on repo-relative paths only -- basename matching
+  Measured: 8s for a one-file change. The "~135s worst case" figure in this
+  entry was extrapolated from an unrepresentative 8-suite sample and is wrong:
+  the real worst case (a change to `autonomy/loki`, 144 suites) is **1320s**,
+  because six provider-backed or long-polling suites never finish without a
+  live model. v9.27.2 bounds each suite and reports the unmeasured ones by
+  name, bringing that case to ~5 minutes. Selection matches on repo-relative
+  paths only -- basename matching
   pulled 486 suites for `autonomy/loki` (more than the FULL tier) while
   path-only pulls 143 and still selects the suites that actually broke v9.25.0
   and v9.25.1. Release-churn files (VERSION, package.json, Dockerfile, dist)

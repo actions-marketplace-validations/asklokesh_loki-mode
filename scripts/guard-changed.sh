@@ -110,7 +110,32 @@ if [ "${#SUITES[@]}" -eq 0 ]; then
     exit 0
 fi
 
-echo "guard-changed: running ${#SUITES[@]} guarding suite(s)"
+# Per-suite time budget. Measured 2026-09-10: the 144 suites selected by a
+# change to autonomy/loki took 1320s, because SIX of them run to a 120s timeout
+# (test-magic-injection, test-magic-rarv, test-mirofish-integration,
+# test-model-override, test-trust-core-tests-detect, test-watch-command --
+# provider-backed or long-polling, they cannot finish without a live model).
+# A 22-minute "fast" guard is worse than the FULL tier it exists to avoid, and
+# a gate nobody runs protects nothing.
+#
+# So: bound each suite, and REPORT the ones that hit the bound rather than
+# reporting them as passes. A timeout here is "not measured", never "fine".
+# 60s, not 25s: at 25s legitimate suites (test-doctor-json-skills) were reported
+# as unmeasured while passing fine given a little more time. The budget exists to
+# bound the six that never finish, not to cut off slow-but-working ones.
+GUARD_SUITE_TIMEOUT="${GUARD_SUITE_TIMEOUT:-60}"
+
+# Cap the number of suites, newest-selection-first, and SAY what was dropped.
+# Silent truncation would read as "everything was covered" when it was not.
+GUARD_MAX_SUITES="${GUARD_MAX_SUITES:-60}"
+if [ "${#SUITES[@]}" -gt "$GUARD_MAX_SUITES" ]; then
+    echo "guard-changed: ${#SUITES[@]} suites reference these files; running the first $GUARD_MAX_SUITES."
+    echo "guard-changed: NOT RUN: $(( ${#SUITES[@]} - GUARD_MAX_SUITES )) suite(s). Raise GUARD_MAX_SUITES to cover them,"
+    echo "guard-changed: or rely on CI, which shards the full run 4 ways."
+    SUITES=("${SUITES[@]:0:$GUARD_MAX_SUITES}")
+fi
+
+echo "guard-changed: running ${#SUITES[@]} guarding suite(s) (per-suite budget ${GUARD_SUITE_TIMEOUT}s)"
 echo
 
 # ShellCheck the changed shell files directly. This is NOT covered by suite
@@ -136,10 +161,17 @@ else
     echo "  SKIP  shellcheck (not installed) -- CI still runs it repo-wide"
 fi
 
-pass=0; fail=0; failed=()
+pass=0; fail=0; timedout=0; failed=(); slow=()
 for s in "${SUITES[@]}"; do
-    if out="$(timeout 300 bash "$s" 2>&1)"; then
+    src=0
+    out="$(timeout "$GUARD_SUITE_TIMEOUT" bash "$s" 2>&1)" || src=$?
+    if [ "$src" -eq 0 ]; then
         pass=$((pass+1)); printf '  PASS  %s\n' "$s"
+    elif [ "$src" -eq 124 ]; then
+        # 124 is timeout(1)'s own code. Not a pass and not a failure: the suite
+        # was not measured. Saying which ones keeps the summary honest.
+        timedout=$((timedout+1)); slow+=("$s")
+        printf '  SLOW  %s (over %ss -- NOT measured)\n' "$s" "$GUARD_SUITE_TIMEOUT"
     else
         fail=$((fail+1)); failed+=("$s"); printf '  FAIL  %s\n' "$s"
         printf '%s\n' "$out" | tail -12 | sed 's/^/        /'
@@ -147,7 +179,12 @@ for s in "${SUITES[@]}"; do
 done
 
 echo
-echo "guard-changed: $pass passed, $fail failed (shellcheck: $([ "$sc_fail" -eq 0 ] && echo clean || echo FAILED))"
+echo "guard-changed: $pass passed, $fail failed, $timedout not measured (shellcheck: $([ "$sc_fail" -eq 0 ] && echo clean || echo FAILED))"
+if [ "$timedout" -gt 0 ]; then
+    printf 'guard-changed: NOT MEASURED (exceeded %ss):\n' "$GUARD_SUITE_TIMEOUT"
+    printf '  %s\n' "${slow[@]}"
+    echo "guard-changed: these are provider-backed or long-polling; CI runs them with more time."
+fi
 if [ "$sc_fail" -ne 0 ]; then
     echo "guard-changed: shellcheck failed on a changed file -- this is what blocked v9.26.0."
     exit 1
