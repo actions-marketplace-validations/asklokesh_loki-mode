@@ -85,6 +85,43 @@ else
     fail "JSON: empty container falsely reported as an unknown key"
 fi
 
+# 5c. A host with no YAML parser must DEGRADE (report nothing) rather than
+#     invent a verdict -- and the JSON path must be unaffected by that absence.
+#     CI installs neither pyyaml nor yq, so this is the configuration CI runs.
+#
+#     The shim below matches ONLY the exact `-c "import yaml"` probe. A looser
+#     pattern (`*"import yaml"*`) also matches the walk's own source, which
+#     embeds that string, and would disable the JSON path too -- making this
+#     test report a defect that does not exist.
+REAL_PY="$(command -v python3)"
+if [ -n "$REAL_PY" ]; then
+    SHIM="$(mktemp -d)"
+    cat > "$SHIM/python3" <<SHIMEOF
+#!/bin/sh
+if [ "\$1" = "-c" ] && [ "\$2" = "import yaml" ]; then exit 1; fi
+exec "$REAL_PY" "\$@"
+SHIMEOF
+    chmod +x "$SHIM/python3"
+
+    printf 'dashboard:\n  enabeld: true\n' > "$WORK/nodep.yaml"
+    ndrc=0
+    PATH="$SHIM:$PATH" bash "$LOKI_BIN" config validate "$WORK/nodep.yaml" >/dev/null 2>&1 || ndrc=$?
+    if [ "$ndrc" -eq 0 ]; then
+        pass "no YAML parser: YAML degrades quietly (no invented verdict)"
+    else
+        fail "no YAML parser: YAML errored instead of degrading (rc=$ndrc)"
+    fi
+
+    njrc=0
+    PATH="$SHIM:$PATH" bash "$LOKI_BIN" config validate "$WORK/typo.json" >/dev/null 2>&1 || njrc=$?
+    if [ "$njrc" -eq 1 ]; then
+        pass "no YAML parser: JSON detection is unaffected"
+    else
+        fail "no YAML parser: JSON detection broke (rc=$njrc, expected 1)"
+    fi
+    rm -rf "$SHIM"
+fi
+
 # 6. Parity with .env, the format that already worked. Both must reject.
 printf 'LOKI_DASHBOARD_ENABELD=true\n' > "$WORK/typo.env"
 if [ "$(vrc "$WORK/typo.env")" -eq 1 ] && [ "$(vrc "$WORK/typo.json")" -eq 1 ]; then
