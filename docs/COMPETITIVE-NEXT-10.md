@@ -24,32 +24,32 @@ one strengthens a claim a buyer can verify without trusting us.
 
 ---
 
-## 1. Surface the evidence the receipt already holds
+## 1. Model provenance on the receipt -- SHIPPED v9.27.0
 
-**Status: the computation exists; the presentation does not.**
+**Corrected.** An earlier draft of this item claimed the exogenous/advisory gate
+split, files-changed and cost "do not reach the top of the receipt". That was
+wrong, and reading the renderers disproved it: `proof-template.html:1165-1192`
+already renders the split with the strongest honesty framing in the repo
+("a model that is confidently wrong scores itself green here"), plus
+disabled-gate disclosure, cost, tokens, wall clock and files changed.
 
-`autonomy/lib/proof-generator.py` already computes, per run:
+Five of the six fields were already shipped. **One was genuinely missing:**
+per-iteration model attribution. `autonomy/lib/decision_record.py` writes an
+append-only trail to `.loki/decisions/decisions.jsonl` once per dispatch, and
+already computes the audit fact worth showing -- `model_changed`, meaning more
+than one model id served one project. The proof generator read that file
+**zero times**.
 
-- the exogenous-vs-advisory gate split (`:291-307`) -- which gates are
-  agent-independent and which are model-authored, fail-closed on unknown gates
-- files changed and a stat-level diff hash (`:910-917`)
-- per-run efficiency cost, shared with the benchmark adapters so both compute it
-  identically (`:39`, `:93-94`)
+That is the question a regulated buyer actually asks, and the one Factory users
+complain about: did the deciding component change mid-run without anyone saying
+so? The run-level "Model" row cannot answer it.
 
-None of it reaches the top of the receipt. A reader has to know it is in there.
-
-This is the highest-value item because the research validated it from the
-outside: Factory users complain about false-green runs and untrustworthy model
-attribution. Those complaints describe exactly the fields Loki already has and
-does not show.
-
-**Do:** promote to the receipt header -- gate counts split exogenous/advisory,
-files changed, tokens and turns, dispatched model per iteration, per-run cost.
-No new measurement, no new dependency.
-
-**Verify:** a receipt from a real run displays all six without opening the JSON.
-
----
+**Shipped in v9.27.0** in both renderers, with three states never collapsed --
+`measured`, `no_records`, `unreadable`. An absent trail is reported as absent
+rather than rendered as silence that reads like "no swap happened", corrupt
+trail lines are counted rather than dropped, and `affects_verdict` is `false`:
+a mid-flight change is a disclosed fact (tier clamp, operator override,
+failover all cause it legitimately), never a fault and never a verdict input.
 
 ## 2. Make the machine contract discoverable
 
@@ -66,8 +66,16 @@ A CI author reads `--help`, sees "0 on success, nonzero on failure", and builds
 the coarse gate. Factory's `droid exec` advertises its exit codes in its own help
 output; ours are a doc you have to already know exists.
 
-**Do:** surface the durable contract in `loki start --help` and `loki verify
---help`, with a one-line pointer to `docs/exit-codes.md`.
+**Shipped in v9.27.1** for `loki start --help`: the two-tier contract, code 20,
+its retry semantics, and a pointer to `docs/exit-codes.md`. A drift assertion
+fails if the code stated in the help stops matching the code in the doc, since
+two documents disagreeing about a value a Kubernetes Job is configured on is
+worse than one.
+
+`loki verify --help` needed no change -- it already carried an `EXIT CODES`
+section. Adding a second one (which I briefly did) would have created exactly
+the duplicated-and-drifting help this item exists to prevent; a test now asserts
+there is exactly one.
 
 **Note:** the research framed this as "Loki has no headless one-shot contract".
 That framing was wrong -- the contract exists. The defect is discoverability,

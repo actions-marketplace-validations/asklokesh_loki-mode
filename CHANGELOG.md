@@ -5,6 +5,100 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.27.2
+
+### Fixed
+
+- **`scripts/guard-changed.sh` was slower than the gate it replaces.** A change
+  to `autonomy/loki` selects 144 suites, and **six of them never finish**
+  without a live model (`test-magic-injection`, `test-magic-rarv`,
+  `test-mirofish-integration`, `test-model-override`,
+  `test-trust-core-tests-detect`, `test-watch-command`). Measured end to end:
+  **1320s** -- worse than the 26m50s FULL tier this exists to avoid. A gate
+  nobody will run protects nothing.
+
+  Each suite now runs under a 60s budget (`GUARD_SUITE_TIMEOUT`), and a suite
+  that hits it is reported as **`SLOW ... NOT measured`** with its name in the
+  summary -- never counted as a pass. A timeout is an absent measurement, not
+  evidence of health.
+
+  Selection is also capped at 60 suites (`GUARD_MAX_SUITES`), and the count
+  that was **not** run is printed. Silent truncation would read as "everything
+  was covered" when it was not.
+
+  Same case measured after the change: **4m52s**, 3 suites named as unmeasured.
+
+- **Corrected the "~135s worst case" claim** in the v9.26.3 entry. It was
+  extrapolated from an unrepresentative 8-suite sample; the real figure was
+  1320s. The entry now states both the wrong number and the measured one rather
+  than quietly editing history.
+
+## v9.27.1
+
+### Added
+
+- **`loki start --help` now states the exit-code contract.** `docs/exit-codes.md`
+  documents a strong two-tier contract: with `LOKI_DURABLE_STATE=1`, code 20
+  means "deterministic terminal failure, retrying cannot help", which Helm wires
+  into a Kubernetes `podFailurePolicy` so a Job fails immediately instead of
+  burning `backoffLimit`. The help mentioned it **zero times** across 110 lines,
+  so a CI author read the help, saw only "0 on success, nonzero on failure", and
+  built the coarse gate. A contract nobody can discover might as well not have
+  shipped.
+
+  The help now names `LOKI_DURABLE_STATE`, code 20, what a platform should do
+  with each code, and points at the full table rather than duplicating it.
+
+  A drift assertion fails if the code stated in the help stops matching the code
+  in the doc: two documents disagreeing about a value a Job is configured on is
+  worse than one document.
+
+- `loki verify --help` needed **no change** -- it already carried an
+  `EXIT CODES` section. A test now asserts there is exactly one, because adding
+  a second is an easy mistake and duplicated help that drifts apart is worse
+  than a single statement.
+
+## v9.27.0
+
+### Added
+
+- **The evidence receipt now reports model provenance.**
+  `autonomy/lib/decision_record.py` has written an append-only trail to
+  `.loki/decisions/decisions.jsonl` once per dispatch for some time, and
+  already computed the audit fact worth showing: `model_changed`, meaning more
+  than one model id served a single project. The proof generator read that file
+  **zero times**, so the receipt could not answer the question a regulated
+  buyer actually asks -- did the deciding component change mid-run without
+  anyone saying so? The run-level "Model" row cannot answer it.
+
+  Both renderers now carry it, with **three states never collapsed**:
+
+  - `measured` -- per-model dispatch counts and whether the model changed
+  - `no_records` -- no trail for this run, stated explicitly
+  - `unreadable` -- the trail exists but could not be read, with the reason
+
+  A section that renders nothing when the trail is absent reads as "no swap
+  happened", which is the false green this receipt exists to prevent. Absence
+  of evidence is reported as absence of evidence. Corrupt trail lines are
+  counted in `unparseable_lines` rather than dropped, because an audit trail
+  that quietly discards what it cannot parse is worse than one admitting a gap.
+
+  **`model_changed` is a disclosed fact, not a fault.** A tier clamp, an
+  operator override and a mid-flight failover all cause it legitimately.
+  `affects_verdict` is `false`: this is provenance and never moves the verdict.
+
+  A receipt generated before this release has no `decisions` key and stays
+  silent rather than being described -- a run that never recorded the trail
+  cannot honestly report on it.
+
+### Fixed
+
+- **`scripts/guard-changed.sh` now sees uncommitted work.** It compared only
+  committed history against the base, so running it before a commit -- the one
+  moment a pre-push guard is for -- reported "nothing to guard" and guarded
+  nothing. It now covers committed, staged, unstaged and untracked paths.
+  Measured on this release's own diff: 12 receipt-guarding suites in 37s.
+
 ## v9.26.3
 
 ### Fixed
@@ -28,8 +122,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checks that guard files we had just edited -- each discovered one 25-minute CI
   cycle at a time. CLAUDE.md already stated the rule; nothing enforced it.
 
-  Measured: 8s for a one-file change, ~135s worst case, versus 26m50s for the
-  FULL tier. Selection matches on repo-relative paths only -- basename matching
+  Measured: 8s for a one-file change. The "~135s worst case" figure in this
+  entry was extrapolated from an unrepresentative 8-suite sample and is wrong:
+  the real worst case (a change to `autonomy/loki`, 144 suites) is **1320s**,
+  because six provider-backed or long-polling suites never finish without a
+  live model. v9.27.2 bounds each suite and reports the unmeasured ones by
+  name, bringing that case to ~5 minutes. Selection matches on repo-relative
+  paths only -- basename matching
   pulled 486 suites for `autonomy/loki` (more than the FULL tier) while
   path-only pulls 143 and still selects the suites that actually broke v9.25.0
   and v9.25.1. Release-churn files (VERSION, package.json, Dockerfile, dist)
