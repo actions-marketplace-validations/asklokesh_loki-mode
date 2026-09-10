@@ -5,6 +5,41 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.26.3
+
+### Fixed
+
+- **Corrected an environment-conditional assertion in the unknown-key test.**
+  The test suppressed pyyaml and then asserted YAML must degrade quietly, but
+  `yq` -- the documented fallback -- is preinstalled on the GitHub
+  ubuntu-24.04 runner. The fallback worked exactly as designed and returned
+  `rc=1`; the test called that a failure and blocked v9.26.2 from publishing.
+  The assertion now names its condition (`command -v yq`) and checks the
+  correct outcome for each case: detection via yq when present, quiet
+  degradation only when no parser exists at all. No production code changed.
+
+### Added
+
+- **`scripts/guard-changed.sh`** -- runs the test suites that reference the
+  files in your diff, plus ShellCheck on the changed shell files, before a push.
+
+  The FAST tier is the release gate and it defers the 282-suite shell run, so
+  three releases in one cycle (v9.25.0, v9.25.1, v9.26.0) failed to publish on
+  checks that guard files we had just edited -- each discovered one 25-minute CI
+  cycle at a time. CLAUDE.md already stated the rule; nothing enforced it.
+
+  Measured: 8s for a one-file change, ~135s worst case, versus 26m50s for the
+  FULL tier. Selection matches on repo-relative paths only -- basename matching
+  pulled 486 suites for `autonomy/loki` (more than the FULL tier) while
+  path-only pulls 143 and still selects the suites that actually broke v9.25.0
+  and v9.25.1. Release-churn files (VERSION, package.json, Dockerfile, dist)
+  are excluded, since they are named in hundreds of suites and are already
+  checked by the FAST tier.
+
+  It is necessary, not sufficient: it cannot catch a failure that depends on the
+  CI environment differing from yours, which is exactly how v9.26.2 failed. That
+  limitation is documented in the script header.
+
 ## v9.26.2
 
 ### Fixed

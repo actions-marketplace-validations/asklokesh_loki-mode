@@ -106,10 +106,25 @@ SHIMEOF
     printf 'dashboard:\n  enabeld: true\n' > "$WORK/nodep.yaml"
     ndrc=0
     PATH="$SHIM:$PATH" bash "$LOKI_BIN" config validate "$WORK/nodep.yaml" >/dev/null 2>&1 || ndrc=$?
-    if [ "$ndrc" -eq 0 ]; then
-        pass "no YAML parser: YAML degrades quietly (no invented verdict)"
+
+    # Suppressing pyyaml alone does NOT mean "no YAML parser": yq is the
+    # documented fallback and is preinstalled on the GitHub ubuntu-24.04 runner.
+    # With yq present the correct result is rc=1 (detected via the fallback);
+    # only with BOTH absent is rc=0 (quiet degradation) correct. Asserting rc=0
+    # unconditionally failed CI on a working fallback -- the code was right and
+    # the expectation was wrong.
+    if command -v yq >/dev/null 2>&1; then
+        if [ "$ndrc" -eq 1 ]; then
+            pass "no pyyaml but yq present: YAML detected via the yq fallback"
+        else
+            fail "yq fallback did not detect the typo (rc=$ndrc, expected 1)"
+        fi
     else
-        fail "no YAML parser: YAML errored instead of degrading (rc=$ndrc)"
+        if [ "$ndrc" -eq 0 ]; then
+            pass "no YAML parser at all: YAML degrades quietly (no invented verdict)"
+        else
+            fail "no YAML parser: YAML errored instead of degrading (rc=$ndrc)"
+        fi
     fi
 
     njrc=0
