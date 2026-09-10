@@ -7657,9 +7657,17 @@ cmd_web() {
             cmd_web_redirect_to_dashboard "$@"
             ;;
         stop)
+            # `loki web start` redirects to the dashboard (above), so stopping
+            # Purple Lab here left the user unable to stop what they had just
+            # started: start hit 57374, stop hit 57375. Stop BOTH -- the
+            # dashboard because that is what start launched, and Purple Lab
+            # because a long-lived pre-deprecation process may still be up.
+            cmd_dashboard_stop
             cmd_web_stop
             ;;
         status)
+            # Same reasoning as stop: report on what start actually launched.
+            cmd_dashboard_status
             cmd_web_status
             ;;
         logs)
@@ -7704,6 +7712,7 @@ cmd_web_redirect_to_dashboard() {
     # --port is shared and passes straight through.
     local orig_args=("$@")
     local dash_args=()
+    local _web_dropped_prd=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --no-open)
@@ -7711,10 +7720,17 @@ cmd_web_redirect_to_dashboard() {
                 shift
                 ;;
             --prd)
-                # Purple-Lab-only prefill; not supported by the dashboard.
+                # Purple-Lab-only prefill; the dashboard cannot accept it.
+                # Dropping it is correct, doing so SILENTLY is not: the user
+                # named a spec file and nothing would tell them it was ignored,
+                # so they would sit in front of an empty dashboard believing
+                # their PRD had been loaded. Say so, and name the command that
+                # actually takes a PRD.
+                _web_dropped_prd="${2:-}"
                 shift 2 2>/dev/null || shift
                 ;;
             --prd=*)
+                _web_dropped_prd="${1#--prd=}"
                 shift
                 ;;
             *)
@@ -7727,6 +7743,11 @@ cmd_web_redirect_to_dashboard() {
     # Safe empty-array expansion (bash 3.2 + set -u): ${arr[@]+"${arr[@]}"}
     if ! _deprecated_alias_should_suppress ${orig_args[@]+"${orig_args[@]}"}; then
         echo "Launching the dashboard (http://localhost:${DASHBOARD_DEFAULT_PORT}) instead of the deprecated Purple Lab." >&2
+    fi
+    if [ -n "$_web_dropped_prd" ]; then
+        echo "Note: --prd '${_web_dropped_prd}' was NOT loaded. The dashboard does not take a PRD;" >&2
+        echo "      it watches runs that are already going. To build from that spec:" >&2
+        echo "        loki start '${_web_dropped_prd}'" >&2
     fi
     cmd_dashboard_start ${dash_args[@]+"${dash_args[@]}"}
 }

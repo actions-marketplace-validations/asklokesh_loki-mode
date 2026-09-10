@@ -63,6 +63,35 @@ else
 fi
 
 echo
+echo "T3 -- a project too small to document does not pay a timeout"
+
+# WHY: the <=3-source-file branch used to CAP the timeout at 90s and still run.
+# On a project that small the run reaches the cap and is killed (exit 124), so
+# the 90s produced no document and the gate scored on pre-existing files -- the
+# same outcome as skipping, at 9% of wall clock on the profiled build.
+RUN_SH="$REPO_ROOT/autonomy/run.sh"
+if grep -qE '\[ "\$_doc_src" -le 3 \]' "$RUN_SH"; then
+    ok "the small-project branch exists"
+    # It must SKIP, not re-cap. Assert the branch body returns rather than
+    # assigning a smaller timeout.
+    if grep -A3 'if \[ "\$_doc_src" -le 3 \]' "$RUN_SH" | grep -q 'return 0'; then
+        ok "a <=3-source-file project skips generation instead of paying a timeout"
+    else
+        bad "the small-project branch no longer returns; it is paying for a doomed run again"
+    fi
+else
+    bad "the small-project branch is gone; every tiny project pays the full doc-gen timeout"
+fi
+
+# The escape hatch must survive: an operator who explicitly sets a timeout is
+# asking for generation and must still get it.
+if grep -q 'LOKI_DOCS_TIMEOUT' "$RUN_SH"; then
+    ok "LOKI_DOCS_TIMEOUT still overrides the skip"
+else
+    bad "LOKI_DOCS_TIMEOUT escape hatch lost"
+fi
+
+echo
 echo "==============================================================="
 echo "Results: $PASS passed, $FAIL failed, $((PASS+FAIL)) total"
 [ "$FAIL" -eq 0 ]

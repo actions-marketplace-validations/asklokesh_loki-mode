@@ -12547,11 +12547,22 @@ auto_generate_docs_if_needed() {
             -not -path '*/node_modules/*' -not -path '*/.loki/*' \
             -not -path '*/.git/*' -not -path '*/dist/*' 2>/dev/null | head -40 | wc -l | tr -d ' ')
         _doc_src="${_doc_src:-0}"
-        # <=3 source files cannot need an architecture suite. 90s still allows a
-        # README + USAGE pass, which is all the gate asks of a small project.
-        if [ "$_doc_src" -le 3 ] && [ "$_doc_to" -gt 90 ]; then
-            log_info "Auto-documentation: ${_doc_src} source file(s) -- capping generation at 90s (was ${_doc_to}s)"
-            _doc_to=90
+        # <=3 source files cannot need an architecture suite. This used to cap
+        # the timeout at 90s and still run; measurement showed that on a small
+        # project the run reaches the cap and is KILLED (exit 124 below), so the
+        # 90s bought nothing -- the gate then scored on whatever files already
+        # existed, exactly as it does when generation is skipped. On the one
+        # profiled build doc_generation was 90s of a 960s wall clock, 9%,
+        # producing no document (benchmarks/results/gate-profile.json).
+        #
+        # So skip outright rather than pay for a timeout. This is not a quality
+        # trade: the outcome for the gate is identical, and the 90s is returned
+        # to the user. LOKI_DOCS_TIMEOUT is still honored -- the whole block is
+        # inside `if [ -z "${LOKI_DOCS_TIMEOUT:-}" ]`, so anyone who explicitly
+        # asks for doc generation on a tiny project still gets it.
+        if [ "$_doc_src" -le 3 ]; then
+            log_info "Auto-documentation: ${_doc_src} source file(s) -- skipping generation (a project this small times out before producing a document; set LOKI_DOCS_TIMEOUT to force it)"
+            return 0
         fi
     fi
     local _doc_cmd=()
