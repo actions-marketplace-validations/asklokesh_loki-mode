@@ -2812,14 +2812,43 @@ check_policy() {
     local context_json="${2:-}"
     [ -z "$context_json" ] && context_json='{}'
 
-    # Only check if policy files exist
-    if [ ! -f ".loki/policies.json" ] && [ ! -f ".loki/policies.yaml" ]; then
+    # Only check if a policy file exists. This gate MUST agree with what
+    # src/policies/engine.js:_init actually loads, or the two disagree silently:
+    # engine.js falls back to the global ~/.loki policy (which is the only place
+    # the dashboard writes, api_v2.py:75,105), and a project-local-only test
+    # here would short-circuit before that fallback was ever consulted.
+    local _pol_global_dir="${LOKI_DATA_DIR:-$HOME/.loki}"
+    if [ ! -f ".loki/policies.json" ] && [ ! -f ".loki/policies.yaml" ] \
+       && [ ! -f "$_pol_global_dir/policies.json" ] \
+       && [ ! -f "$_pol_global_dir/policies.yaml" ]; then
         return 0
     fi
 
-    # Requires Node.js
+    # Requires Node.js. Reaching here means a policy file EXISTS, so the
+    # operator has expressed intent to enforce. Returning 0 for a missing
+    # runtime silently disables that enforcement and reports nothing: the run
+    # proceeds exactly as if every action were permitted. That is the worst
+    # shape a security control can take, because the operator believes it is on.
+    #
+    # Fail CLOSED instead, matching what check.js already does for a corrupt
+    # policy file (tests/test-policy-failclosed.sh). LOKI_POLICY_REQUIRE_NODE=0
+    # restores the old fail-open for a host that genuinely cannot install node
+    # and accepts running unenforced.
     if ! command -v node >/dev/null 2>&1; then
-        return 0
+        if [ "${LOKI_POLICY_REQUIRE_NODE:-1}" = "0" ]; then
+            log_warn "Policy file present but node is unavailable; enforcement SKIPPED (LOKI_POLICY_REQUIRE_NODE=0)"
+            return 0
+        fi
+        log_error "Policy file present but node is unavailable: cannot evaluate policy, refusing the action (fail-closed). Set LOKI_POLICY_REQUIRE_NODE=0 to run unenforced."
+        # Recorded like any other block. A refusal that leaves no trace is
+        # indistinguishable from a run that was never gated, and the receipt
+        # must be able to say WHY the action did not happen. The reason is
+        # distinct from a DENY: the policy was never evaluated.
+        audit_agent_action "policy_unevaluable" "Policy present but node unavailable" "enforcement=$enforcement_point"
+        emit_event_json "policy_unevaluable" \
+            "enforcement=$enforcement_point" \
+            "reason=node_unavailable"
+        return 1
     fi
 
     local result

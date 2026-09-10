@@ -5,6 +5,79 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.31.0
+
+Two defects that together meant the policy engine, which is real and correct,
+almost never ran. This is the enforcement-before-execution capability Factory
+sells to regulated buyers; ours was built and unreachable.
+
+### Fixed
+
+- **The only policy writer fed a file the reader never opened.** The dashboard
+  writes policies to `~/.loki/policies.json` (`dashboard/api_v2.py:75,105`, via
+  `LOKI_DATA_DIR`), while `src/policies/engine.js:_init` read only
+  `<projectDir>/.loki/policies.json`. An operator who created a policy through
+  the UI got no enforcement and no error explaining why.
+
+  The engine now falls back to the global file when the project defines none.
+  **Project-local still wins**: a repo shipping its own policy must not be
+  silently overridden by a machine-global one.
+
+  `autonomy/run.sh:check_policy` had to change with it. It short-circuits on
+  "no policy file" before invoking the engine, so a project-local-only test
+  there would have skipped before the new fallback was ever consulted. The two
+  gates now agree, which is the point: when they disagree, enforcement
+  disappears between them with nothing logged.
+
+- **A missing Node runtime silently disabled enforcement.** `check_policy`
+  returned 0 (allow) when `node` was unavailable, even though reaching that line
+  means a policy file EXISTS and the operator has expressed intent to enforce.
+  The run proceeded as if every action were permitted, and nothing was logged.
+  That is the worst shape a security control can take: the operator believes it
+  is on.
+
+  It now fails CLOSED, matching what `check.js` already does for a corrupt
+  policy file (`tests/test-policy-failclosed.sh`). `LOKI_POLICY_REQUIRE_NODE=0`
+  restores the old behaviour for a host that genuinely cannot install node and
+  accepts running unenforced -- and it says so, rather than staying silent.
+
+  **The refusal is recorded**, as a new `policy_unevaluable` event distinct from
+  `policy_denied`. A block that leaves no trace is indistinguishable from a run
+  that was never gated, and the receipt must be able to tell "denied by a rule"
+  from "could not be checked". The audit subscriber maps the new type, so it
+  reaches the chain rather than stopping at the log.
+
+  Absence of a policy still ALLOWS. That is not a bypass, it is the absence of
+  anything to apply, and turning it into a refusal would break every user who
+  has never written one.
+
+### Added
+
+- **`tests/test-policy-node-failclosed.sh`** (10 assertions). It extracts and
+  drives the REAL `check_policy` out of `run.sh` rather than reimplementing it,
+  because a second copy is how the two drift apart silently.
+
+  Two assertions exist to avoid vacuity. The engine-side check asserts on the
+  engine's REASON ("All policies passed" when the global file loaded, versus
+  "No policies configured" when nothing was found) rather than its exit code:
+  an empty global policy and no policy at all both exit 0, so an exit-code
+  assertion there would prove nothing. And the nodeless cases prove the run.sh
+  gate consults the global path, which the engine-side cases cannot, so both
+  halves are needed.
+
+  Every mutation verified: restoring the fail-open, refusing without recording,
+  unmapping the subscriber event, reverting the run.sh gate to project-local
+  only, and removing the engine's fallback branches each turn the suite red.
+
+### Honest limits
+
+- Still exactly one enforcement point (`pre_execution`). Writes, network, and
+  spend are not gated by this engine.
+- The Bun route has no policy engine at all, so none of this applies there.
+- A default install still has no policy file, so the gate remains inert until
+  someone writes one. Shipping a default baseline is a separate decision with
+  its own blast radius.
+
 ## v9.30.1
 
 A doc correction and a guard on behaviour that already works. **No product code
