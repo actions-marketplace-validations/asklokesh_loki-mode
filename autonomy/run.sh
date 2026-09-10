@@ -4245,6 +4245,27 @@ build_completion_summary() {
         stopped)        outcome_label="Stopped";          notify_title="Run stopped" ;;
         failed)         outcome_label="Failed";           notify_title="Run failed" ;;
         intervention)   outcome_label="Needs input";      notify_title="Input needed" ;;
+        # Every outcome below reached this case and fell through to the `*` arm,
+        # so the user's headline label was the raw enum string --
+        # "council_force_approved", "max_duration" -- at the exact moment they
+        # were deciding whether to trust the build. The guidance block further
+        # down already handles several of these properly; only the label was
+        # missing.
+        force_stopped)  outcome_label="Stopped without approval"
+                        notify_title="Run stopped (not approved)" ;;
+        budget_exceeded) outcome_label="Stopped at spend cap"
+                        notify_title="Run stopped (budget cap)" ;;
+        max_duration)   outcome_label="Time limit reached"
+                        notify_title="Run stopped (time limit)" ;;
+        max_retries_exceeded) outcome_label="Retries exhausted"
+                        notify_title="Run stopped (retries exhausted)" ;;
+        inconclusive_spec_contradiction) outcome_label="Spec contradiction"
+                        notify_title="Run stopped (spec contradiction)" ;;
+        # Force-approval is NOT the same as council approval, and labelling both
+        # "Completed" hid the difference on a product whose whole claim is a
+        # checkable receipt. Name it.
+        council_force_approved) outcome_label="Completed (force-approved)"
+                        notify_title="Run complete (force-approved)" ;;
         *)              outcome_label="$outcome";          notify_title="Run finished" ;;
     esac
 
