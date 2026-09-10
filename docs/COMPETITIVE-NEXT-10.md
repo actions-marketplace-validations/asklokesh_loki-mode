@@ -97,17 +97,22 @@ of the time is worse than no number.
 
 ## 4. Close the config-diagnostic gap for the remaining format
 
-**Status: shipped for JSON and .env in v9.26.1-9.26.2; YAML is parser-dependent.**
+**Status: shipped for JSON, `.env`, and YAML. Narrow residual gap only.**
 
-`loki config validate` now reports unknown keys in JSON and `.env`. YAML
-detection requires pyyaml or `yq`; with neither installed it degrades quietly
-(correct -- a missing parser must not invent a verdict) but silently provides no
-detection.
+`loki config validate` reports unknown keys in JSON and `.env` (v9.26.1) and in
+YAML via pyyaml with a `yq` fallback (v9.26.2). `yq` is preinstalled on the
+GitHub ubuntu-24.04 runner, and the fallback was verified against a stand-in
+honouring both invocation shapes the real `yq` is called with, so CI and any
+Linux host with either parser get full detection.
 
-**Do:** either vendor a minimal YAML key-path scanner (the file already has
-`loki_yaml_fallback_extract` for the read path, so the precedent exists), or
-state the dependency in `loki config validate --help` so the gap is visible
-rather than silent.
+The residual gap is narrow: a host with **neither** pyyaml nor `yq` (a stock
+macOS dev machine) gets no YAML detection. It degrades quietly, which is correct
+-- a missing parser must never invent a verdict -- but silently.
+
+**Do:** state the dependency in `loki config validate --help` so the gap is
+visible rather than silent. Vendoring a YAML scanner is not worth it for one
+host shape that already has a documented fallback available via `brew install
+yq`.
 
 ---
 
@@ -160,10 +165,16 @@ before every push. v9.26.0 failed the same way on repo-wide ShellCheck.
 CLAUDE.md already states the rule ("a check that guards the shipped artifact must
 run in the FAST tier"). The rule is not enforced.
 
-**Do:** when a change touches a file, run the deferred suites that grep that file
-before pushing. This session did it by hand (16 suites for `verify.sh`, then
-repo-wide ShellCheck) and it caught the failure locally instead of one 25-minute
-CI cycle at a time. Make it a script rather than a habit.
+**Shipped in v9.26.3** as `scripts/guard-changed.sh`: runs the suites that
+reference the files in your diff, plus ShellCheck on the changed shell files.
+Measured 8s for a one-file change, ~135s worst case, against 26m50s for the FULL
+tier. Verified it would have blocked the v9.26.0 push locally.
+
+**Remaining:** it is necessary, not sufficient. It cannot catch a failure that
+depends on CI differing from your machine -- which is exactly how v9.26.2 failed,
+on a suite this script selects and runs. The follow-on work is making
+environment-conditional assertions name their condition (`command -v yq`) rather
+than assume the author's host. That is a review habit, not a script.
 
 ---
 
