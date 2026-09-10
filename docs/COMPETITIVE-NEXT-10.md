@@ -5,9 +5,14 @@ fetched URL. Items that research proposed but that turned out to be **already
 shipped** are listed at the bottom under "Not items" with the evidence, because
 a plan that re-builds working code is worse than a shorter plan.
 
-There are **seven** real items, not ten. Three of the research's candidates were
+There are **eight** real items, not ten. Three of the research's candidates were
 already implemented, and two more are architecturally unavailable to Loki as
 designed. Padding to ten would mean inventing work.
+
+Items 1, 2 and 7 shipped in v9.27.0-v9.27.3. Item 8 was found by this work
+rather than by the research: a flaky trust suite that cost two release cycles.
+It is listed OPEN and unpatched, with the reason stated, rather than quietly
+fixed by loosening an assertion.
 
 ---
 
@@ -183,6 +188,42 @@ depends on CI differing from your machine -- which is exactly how v9.26.2 failed
 on a suite this script selects and runs. The follow-on work is making
 environment-conditional assertions name their condition (`command -v yq`) rather
 than assume the author's host. That is a review habit, not a script.
+
+---
+
+## 8. Fix the flaky assurance-tail suite (OPEN, not yet fixed)
+
+**Status: mechanism identified, not reproduced locally, deliberately not patched.**
+
+`tests/test-review-assurance-tail.sh` has failed CI twice on unrelated commits
+(v9.26.3 and v9.27.1), each costing a release cycle. Three different assertions
+failed across the two incidents:
+
+- `semantic shard FAIL: calls=3 (expected 4)`
+- `valid structured requirements coverage did not pass`
+- `requirements-forged-pass-error escaped parent-bound result publication`
+
+They share a mechanism: the suite drives **real background subshells** (`sleep 30`,
+`&`) and asserts **exact provider-call counts** (`= "1"`, `= "4"`) while also
+testing that a FAIL *cancels* sibling lineages. On a 4-way-sharded runner the
+cancellation can land before the last dispatch is logged, so the count races.
+
+The suite already anticipates contention: `REVIEW_TIMEOUT_SCALE` is 4x when
+`LOKI_TEST_SHARD` is set, and CI does set it (`.github/workflows/test.yml:149`).
+So the timeout budget is **not** the binding constraint -- the exact-equality
+call counts are.
+
+**Why it is not patched here.** Both incidents were settled by a rerun on the
+identical SHA (green both times), which proves flake and diff-innocence without
+touching a fail-closed trust suite. It did not reproduce locally across six runs
+including shard-scaled and CPU-loaded ones. Relaxing an exact count on a theory
+would weaken a gate that deliberately distinguishes a LOST shard from a
+CANCELLED one.
+
+**Do:** make the timing deterministic rather than the assertion looser -- have
+each dispatch log its intent *before* the call rather than after, so the count is
+stable regardless of when cancellation lands. That changes the contract the suite
+guards, so it needs its own cycle with the expected counts re-derived.
 
 ---
 

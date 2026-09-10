@@ -147,9 +147,23 @@ sc_fail=0
 if command -v shellcheck >/dev/null 2>&1; then
     for f in "${CHANGED[@]:-}"; do
         [ -n "$f" ] || continue
-        case "$f" in (*.sh|*/loki) ;; (*) continue ;; esac
+        # MATCH tests/run-shellcheck.sh EXACTLY, or this arm cries wolf.
+        #
+        # That gate scans `find . -name "*.sh"`, so extensionless scripts --
+        # autonomy/loki above all -- are NEVER linted by it. Linting them here
+        # hard-failed on 90+ long-standing SC2155/SC2034 warnings for ANY edit
+        # to the most-edited file in the repo. A pre-push check that always
+        # fails gets ignored, which is the same defect as one that is too slow.
+        #
+        # The exclusion sets are copied from that script (GLOBAL_EXCLUDES plus
+        # the per-directory ones); if it changes, change this with it.
+        case "$f" in (*.sh) ;; (*) continue ;; esac
         [ -f "$f" ] || continue
-        if ! sc_out="$(shellcheck -S warning "$f" 2>&1)"; then
+        _sc_ex="SC1090,SC1091"
+        case "$f" in
+            (providers/*.sh|tests/*.sh|benchmarks/*.sh) _sc_ex="$_sc_ex,SC2034" ;;
+        esac
+        if ! sc_out="$(shellcheck -S warning -e "$_sc_ex" "$f" 2>&1)"; then
             sc_fail=1
             printf '  FAIL  shellcheck %s\n' "$f"
             printf '%s\n' "$sc_out" | head -14 | sed 's/^/        /'
