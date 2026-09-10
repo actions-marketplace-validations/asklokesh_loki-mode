@@ -80,6 +80,49 @@ increasing order of strength:
 Only 2 and 3 survive an adversary who controls the machine, which is the case
 that matters for a receipt a third party is meant to trust.
 
+## What is closed as of v9.30.0
+
+`writeWitness` is now wired and, more importantly, **reconciled**. The gap was
+not only that nothing called it: `verifyUnified` called `verifyWitnessFile`,
+which checks the witness file's own monotonicity and never compares a witnessed
+tip to the live chain. Measured before the fix, with a witness file present and
+valid:
+
+```
+witnessed tip : 337d47ce70...      live tip now : d376cdd97d...
+verifyUnified : {"valid":true, "witness":{"present":true,"valid":true}}
+```
+
+A witness nobody reconciles is not a control. `reconcileWitnessedPrefix`
+(`src/audit/crosslink.js`) now compares each witnessed tip against the chain
+entry at that position, and `verifyUnified` folds the result into its verdict.
+The same forgery now returns `valid:false` with the entry named.
+
+The comparison is prefix-based rather than tip-equality on purpose: a chain
+legitimately grows after a witness, so requiring the tips to match would fire on
+normal operation, and a guard that fires on normal operation gets turned off.
+Both directions are mutation-tested.
+
+The subscriber writes a witness at session end and every
+`LOKI_AUDIT_WITNESS_INTERVAL_SEC` (default 300; `LOKI_AUDIT_WITNESS=0` opts out).
+Periodic witnessing matters because a witness taken only at shutdown is lost to
+SIGKILL, which is when the trail matters most.
+
+**What is still open, precisely.** A local witness file is itself rewritable by
+the same adversary. What the reconciliation buys is that forging now requires
+rewriting the chain AND every witness consistently, rather than the chain alone.
+That is a higher bar, not a closed door. The closed door is
+`LOKI_AUDIT_WITNESS_COMMAND`, which ships the witness line off the machine to a
+WORM mount or timestamping authority: an out-of-band copy is the only form that
+survives an adversary who controls this host. It is off by default because it
+needs infrastructure we cannot assume.
+
+Two honest limits that remain:
+
+- The subscriber is gated on `LOKI_AUDIT_ENABLED` (default false), so a default
+  install still writes no agent chain and no witness.
+- Nothing yet witnesses on the Bun route.
+
 ## Current honest claim
 
 Until a witness or off-machine signature is wired, the supportable claim is:

@@ -5,6 +5,84 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.30.0
+
+v9.29.0 said the audit chain is not tamper-proof and named the fix: a witness.
+This release wires it, and closes the larger half of the gap that wiring alone
+would have left open.
+
+### Fixed
+
+- **A witness nobody reconciles is not a control.** `writeWitness`
+  (`src/audit/crosslink.js:234`) had zero production callers, which was the
+  known half. The unknown half was worse: `verifyUnified` already called
+  `verifyWitnessFile`, and that function only checks the witness file's own
+  monotonicity. Nothing ever compared a witnessed tip against the live chain.
+
+  Measured before the fix, with a valid witness file sitting right beside the
+  forged chain:
+
+  ```
+  witnessed tip : 337d47ce70...      live tip now : d376cdd97d...
+  verifyUnified : {"valid":true, "witness":{"present":true,"valid":true}}
+  ```
+
+  Simply calling `writeWitness` from the engine would have shipped a control
+  that controls nothing, while making the receipt look stronger. That is
+  security theatre, and it is worse than the honest gap v9.29.0 published.
+
+  `reconcileWitnessedPrefix` now compares each witnessed tip against the chain
+  entry at that position, and `verifyUnified` folds the result into its verdict.
+  The same forgery now returns `valid:false` and names the entry: "entry 2
+  hashes 0d2f5b17... but a witness recorded 91852f2b...; witnessed history was
+  rewritten".
+
+  The comparison is prefix-based, not tip-equality. A chain legitimately grows
+  after a witness is taken, so requiring the tips to match would fire on normal
+  operation, and a guard that fires on normal operation gets turned off. Both
+  failure directions are mutation-tested: removing the reconciliation misses
+  three forgeries, and switching to tip-equality breaks honest growth.
+
+### Added
+
+- **The audit subscriber now writes witnesses.** At session end, after the
+  flush (witnessing before it would pin a tip missing every buffered entry and
+  then read as truncation), and every `LOKI_AUDIT_WITNESS_INTERVAL_SEC`
+  (default 300). Periodic witnessing matters because a witness taken only at
+  shutdown is lost to SIGKILL, which is exactly when the trail matters most.
+
+  `LOKI_AUDIT_WITNESS=0` opts out. `LOKI_AUDIT_WITNESS_COMMAND` ships each
+  witness line to an external party (a WORM mount, a timestamping authority).
+  A witness that cannot be written is reported on stderr and never takes down
+  the run; a missing witness reads as `no_records`, never as a pass.
+
+- **`tests/test-witness-reconciliation.js`** (11 assertions) and
+  **`tests/test-audit-js-suites.sh`**. The wrapper exists because
+  `tests/test-manifest-truncation.js` and `tests/audit/crosslink.test.js` both
+  passed and neither was registered in `run-all-tests.sh`, `local-ci.sh`, or any
+  workflow: **CI had never run either.** The audit chain is the trust core of
+  the receipt wedge and its tests were the least-run code in the repo. All three
+  now run, asserted individually rather than summed, and a missing `node` is a
+  failure to measure rather than a skip.
+
+  One assertion is deliberately inverted: the suite asserts that a re-forged
+  chain **still self-reports valid**. Asserting on `agent.valid` would miss the
+  whole defect, because the chain cannot detect this and is not expected to.
+  The trail verdict is what must go false.
+
+### Honest limits
+
+- A local witness file is rewritable by the same adversary. Reconciliation
+  raises the bar (forging now requires rewriting the chain AND every witness
+  consistently) rather than closing the door. `LOKI_AUDIT_WITNESS_COMMAND` is
+  what actually closes it, and it is off by default because it needs
+  infrastructure we cannot assume.
+- The subscriber is still gated on `LOKI_AUDIT_ENABLED` (default false), so a
+  default install writes no agent chain and no witness. That default flip is a
+  separate change with its own migration note.
+- Nothing witnesses on the Bun route (verified: zero audit references in
+  `loki-ts/src/runner/`).
+
 ## v9.29.0
 
 The audit chain is not tamper-proof, and we were saying it was. This release
