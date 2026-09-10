@@ -5,6 +5,14 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.25.2
+
+### Fixed
+
+- **The doc-generation skip now requires the simple tier, not just a small file
+  count.** A standard or complex project can legitimately have few source files and
+  still need its full doc suite; the count-only form regressed that guarantee.
+
 ## v9.25.1
 
 ### Fixed
