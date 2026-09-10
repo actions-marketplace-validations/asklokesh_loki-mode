@@ -5,6 +5,59 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.26.3
+
+### Fixed
+
+- **Corrected an environment-conditional assertion in the unknown-key test.**
+  The test suppressed pyyaml and then asserted YAML must degrade quietly, but
+  `yq` -- the documented fallback -- is preinstalled on the GitHub
+  ubuntu-24.04 runner. The fallback worked exactly as designed and returned
+  `rc=1`; the test called that a failure and blocked v9.26.2 from publishing.
+  The assertion now names its condition (`command -v yq`) and checks the
+  correct outcome for each case: detection via yq when present, quiet
+  degradation only when no parser exists at all. No production code changed.
+
+### Added
+
+- **`scripts/guard-changed.sh`** -- runs the test suites that reference the
+  files in your diff, plus ShellCheck on the changed shell files, before a push.
+
+  The FAST tier is the release gate and it defers the 282-suite shell run, so
+  three releases in one cycle (v9.25.0, v9.25.1, v9.26.0) failed to publish on
+  checks that guard files we had just edited -- each discovered one 25-minute CI
+  cycle at a time. CLAUDE.md already stated the rule; nothing enforced it.
+
+  Measured: 8s for a one-file change, ~135s worst case, versus 26m50s for the
+  FULL tier. Selection matches on repo-relative paths only -- basename matching
+  pulled 486 suites for `autonomy/loki` (more than the FULL tier) while
+  path-only pulls 143 and still selects the suites that actually broke v9.25.0
+  and v9.25.1. Release-churn files (VERSION, package.json, Dockerfile, dist)
+  are excluded, since they are named in hundreds of suites and are already
+  checked by the FAST tier.
+
+  It is necessary, not sufficient: it cannot catch a failure that depends on the
+  CI environment differing from yours, which is exactly how v9.26.2 failed. That
+  limitation is documented in the script header.
+
+## v9.26.2
+
+### Fixed
+
+- **YAML unknown-key detection now falls back to `yq`.** The check added in
+  9.26.1 depended on pyyaml alone, so on a host with `yq` but no pyyaml -- and
+  CI installs neither -- YAML configs silently got no detection at all. It now
+  reaches for pyyaml first and `yq` second, the same order the rest of
+  `config-map.sh` uses. With neither parser present the walk still degrades
+  quietly rather than inventing a verdict, and the JSON path is unaffected
+  either way.
+
+### Changed
+
+- Folded the v9.26.0 changelog entry into v9.26.1. v9.26.0 was committed and
+  pushed but never released (a ShellCheck warning failed Tests and the release
+  gate correctly refused to publish), so no tag or npm version for it exists.
+
 ## v9.26.1
 
 ### Fixed
@@ -23,12 +76,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inert metadata written by `loki init` (`version`, `template`, `created`) is
   allowlisted rather than rejected.
 
+  **YAML detection requires a YAML parser** (pyyaml, or `yq` as a fallback, the
+  same order the rest of the config code uses). With neither installed, YAML
+  configs get no unknown-key detection and validate exactly as before -- a
+  missing parser must degrade quietly, never invent a verdict. JSON and `.env`
+  detection need no extra dependency.
+
 - **Removed a dead local declaration in `_verify_llm_review`.** Five variables
   were assigned and never read; every return path uses explicit `printf`
   literals. ShellCheck SC2034 flagged two of them, which failed the repo-wide
   lint gate and blocked the v9.26.0 release from publishing. No behavior change.
 
-## v9.26.0
+### Note on v9.26.0
+
+v9.26.0 was committed and pushed but **never released**: a ShellCheck warning
+failed the Tests workflow, so the release gate correctly refused to publish. No
+`v9.26.0` git tag, GitHub release, or npm version was ever created -- verified
+against both `git ls-remote --tags` and the npm registry. Its changes ship here
+in 9.26.1. The entry is folded in below rather than left standing, because a
+changelog entry for a version nobody can install is the same class of defect as
+a receipt that reports a stage it never ran.
+
 
 ### Added
 

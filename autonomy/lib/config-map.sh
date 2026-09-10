@@ -853,6 +853,22 @@ loki_config_unknown_keys() {
     local file="$1" fmt="$2"
     command -v python3 >/dev/null 2>&1 || return 0
 
+    # YAML needs a parser. The rest of this file reaches for yq first, so do the
+    # same: convert to JSON via yq and let the JSON walk below handle it. That
+    # keeps detection working on a host with yq but no pyyaml (CI installs
+    # neither by default, and yq is the more common of the two here). Without
+    # either parser the walk no-ops and YAML validates as it did before -- a
+    # missing parser must not invent a verdict.
+    local scratch_json=""
+    if [ "$fmt" = "yaml" ] && ! python3 -c "import yaml" >/dev/null 2>&1; then
+        command -v yq >/dev/null 2>&1 || return 0
+        scratch_json="$(mktemp "${TMPDIR:-/tmp}/loki-cfg-uk.XXXXXX")" || return 0
+        if ! yq eval -o=json '.' "$file" > "$scratch_json" 2>/dev/null; then
+            rm -f "$scratch_json"; return 0
+        fi
+        file="$scratch_json"; fmt="json"
+    fi
+
     local map_str="" mapping
     for mapping in "${LOKI_CONFIG_MAP[@]}"; do map_str+="${mapping%%:*}"$'\n'; done
 
@@ -912,7 +928,14 @@ def walk(node, prefix):
 walk(data, "")
 for u in unknown:
     print(u)
-' 2>/dev/null || return 0
+' 2>/dev/null
+    # Always succeed: this helper reports keys on stdout, and a parser that
+    # cannot run must degrade to "nothing to report" rather than failing the
+    # caller. The `[ -n ... ] && rm` form would return non-zero on the common
+    # empty-scratch path and discard the captured output, so clean up with an
+    # unconditional rm on a possibly-empty path instead.
+    rm -f "${scratch_json:-/dev/null}" 2>/dev/null
+    return 0
 }
 
 loki_config_validate_file() {
