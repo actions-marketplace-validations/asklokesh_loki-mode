@@ -4245,6 +4245,27 @@ build_completion_summary() {
         stopped)        outcome_label="Stopped";          notify_title="Run stopped" ;;
         failed)         outcome_label="Failed";           notify_title="Run failed" ;;
         intervention)   outcome_label="Needs input";      notify_title="Input needed" ;;
+        # Every outcome below reached this case and fell through to the `*` arm,
+        # so the user's headline label was the raw enum string --
+        # "council_force_approved", "max_duration" -- at the exact moment they
+        # were deciding whether to trust the build. The guidance block further
+        # down already handles several of these properly; only the label was
+        # missing.
+        force_stopped)  outcome_label="Stopped without approval"
+                        notify_title="Run stopped (not approved)" ;;
+        budget_exceeded) outcome_label="Stopped at spend cap"
+                        notify_title="Run stopped (budget cap)" ;;
+        max_duration)   outcome_label="Time limit reached"
+                        notify_title="Run stopped (time limit)" ;;
+        max_retries_exceeded) outcome_label="Retries exhausted"
+                        notify_title="Run stopped (retries exhausted)" ;;
+        inconclusive_spec_contradiction) outcome_label="Spec contradiction"
+                        notify_title="Run stopped (spec contradiction)" ;;
+        # Force-approval is NOT the same as council approval, and labelling both
+        # "Completed" hid the difference on a product whose whole claim is a
+        # checkable receipt. Name it.
+        council_force_approved) outcome_label="Completed (force-approved)"
+                        notify_title="Run complete (force-approved)" ;;
         *)              outcome_label="$outcome";          notify_title="Run finished" ;;
     esac
 
@@ -12547,8 +12568,31 @@ auto_generate_docs_if_needed() {
             -not -path '*/node_modules/*' -not -path '*/.loki/*' \
             -not -path '*/.git/*' -not -path '*/dist/*' 2>/dev/null | head -40 | wc -l | tr -d ' ')
         _doc_src="${_doc_src:-0}"
-        # <=3 source files cannot need an architecture suite. 90s still allows a
-        # README + USAGE pass, which is all the gate asks of a small project.
+        # <=3 source files cannot need an architecture suite. This used to cap
+        # the timeout at 90s and still run; measurement showed that on a small
+        # project the run reaches the cap and is KILLED (exit 124 below), so the
+        # 90s bought nothing -- the gate then scored on whatever files already
+        # existed, exactly as it does when generation is skipped. On the one
+        # profiled build doc_generation was 90s of a 960s wall clock, 9%,
+        # producing no document (benchmarks/results/gate-profile.json).
+        #
+        # So skip outright rather than pay for a timeout. This is not a quality
+        # trade: the outcome for the gate is identical, and the 90s is returned
+        # to the user. LOKI_DOCS_TIMEOUT is still honored -- the whole block is
+        # inside `if [ -z "${LOKI_DOCS_TIMEOUT:-}" ]`, so anyone who explicitly
+        # asks for doc generation on a tiny project still gets it.
+        # Gate the skip on the SIMPLE tier, not on the file count alone.
+        # A standard/complex project can legitimately have few source files and
+        # still need its full doc suite -- tests/test-doc-scope-generator.sh
+        # exists precisely to assert that "quality at any complexity is
+        # preserved", and a count-only skip broke it. The simple tier already
+        # returns early further up for the same reason, so this only shortens a
+        # doomed run for projects that were never getting the full suite.
+        if [ "$_doc_src" -le 3 ] && [ "${DETECTED_COMPLEXITY:-}" = "simple" ]; then
+            log_info "Auto-documentation: ${_doc_src} source file(s) on the simple tier -- skipping generation (it times out before producing a document; set LOKI_DOCS_TIMEOUT to force it)"
+            return 0
+        fi
+        # Everything else keeps the previous behavior: cap the timeout, still run.
         if [ "$_doc_src" -le 3 ] && [ "$_doc_to" -gt 90 ]; then
             log_info "Auto-documentation: ${_doc_src} source file(s) -- capping generation at 90s (was ${_doc_to}s)"
             _doc_to=90
