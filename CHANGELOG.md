@@ -5,6 +5,38 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.25.1
+
+### Fixed
+
+- **`loki web --prd <file>` no longer discards the spec silently.** The dashboard
+  cannot accept a PRD, so dropping the flag is correct -- doing it without a word
+  left the user in front of an empty dashboard believing their spec had loaded.
+  It now says so and names `loki start`.
+- **`loki web stop` and `loki web status` now act on what `loki web start`
+  launched.** Start redirects to the dashboard (57374) while stop and status still
+  targeted the deprecated Purple Lab (57375), so a user could not stop what they
+  had just started.
+- **Quickstart's closing tip named a command that does not start anything.** It
+  said `loki dashboard`, which prints help and exits; it now says
+  `loki dashboard start`. This is the last line every first-run user reads.
+- **Terminal outcomes no longer render as raw enum strings.** Six outcomes fell
+  through to the internal identifier, so a run could end by telling the user
+  "inconclusive_spec_contradiction". Most importantly, a **force-approved** run and
+  a genuinely council-approved run both read "Completed"; force-approval is now
+  named as such, because that is exactly the distinction this product exists to
+  preserve.
+- **A release-blocking false positive.** A doc-gen model pin split one invocation
+  across two lines and a test that required `claude -p "$prompt"` to be adjacent
+  failed on it, blocking v9.25.0 from publishing while the behavior it guards was
+  intact. The assertion now tests the invariant rather than argv layout.
+
+### Changed
+
+- **A project with three or fewer source files skips doc generation** instead of
+  paying a 90s timeout that produces nothing. On the profiled build that was 9% of
+  wall clock for no document. `LOKI_DOCS_TIMEOUT` still forces it.
+
 ## v9.25.0
 
 ### Changed
