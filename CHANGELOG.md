@@ -5,6 +5,102 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.28.0
+
+Four defects, all the same species: the product asserting something it had not
+checked, or documenting a control it does not enforce. Found by an evidence-first
+research pass against Factory.ai and 8090, then verified against source before
+any code moved.
+
+### Fixed
+
+- **Buyer-facing docs claimed security enforcement the source disclaims.**
+  `autonomy/run.sh:515` states `LOKI_ALLOWED_PATHS` "Does NOT restrict
+  provider-driven agent writes (run.sh never sees them)", and
+  `check_command_allowed` carries "intentionally NOT called by run.sh" with zero
+  callers. That honesty never reached the documentation: `wiki/Enterprise-Features.md`
+  listed both variables in a production security checklist, and
+  `docs/certification/answer-key.md` marked "`LOKI_ALLOWED_PATHS` restricts which
+  directories agents can modify" as the **correct exam answer**. Measured: zero
+  caveat mentions across nine buyer-facing files.
+
+  All nine now carry a `SANDBOX-SCOPED` note stating what is enforced (two
+  mount-time call sites in `autonomy/sandbox.sh`, plus one for operator-typed
+  `loki sandbox run` argv), what is not, and that neither enforces anything
+  unless `LOKI_SANDBOX_MODE=true`. Guarded by
+  `tests/test-enforcement-doc-honesty.sh`, which asserts marker PRESENCE rather
+  than phrase absence: a grep for "restrict" near the variable name would fire
+  on the caveat text itself.
+
+  Fixed at the same time: a pre-existing certification answer-key mismatch (the
+  key said A, the quiz option was B).
+
+- **`loki config validate` printed OK for a file it never checked.** With no
+  usable parser the unknown-key walk returned nothing, and the caller turned
+  that silence into an affirmative `config validate: OK` with exit 0 for a YAML
+  file full of bogus keys. Reproduced before the fix. This shipped in v9.27.2
+  under my own mistaken description of it as "correct degradation" -- silence in
+  the helper was fine, the caller asserting validity from it was not.
+
+  The helper now reports "could not check" as a distinct status, and the verdict
+  reads `INCOMPLETE` with a stderr line naming the skipped check. A host with no
+  python3 at all was affected for every format, not just YAML.
+
+- **`loki logs` was dead.** It read `logs/session.log`, a path nothing in the
+  tree writes, and reported "No log file found" while the runner's real logs sat
+  in that same directory (`autonomy/run.sh:22409`). It now resolves the newest
+  `autonomy-YYYYMMDD.log` and falls back to `agent.log`.
+
+  The first version of this fix was worse than the bug: under `set -euo pipefail`,
+  `ls` exits 2 on a non-matching glob and pipefail propagates it, aborting before
+  the fallback -- exit 1 with zero output. Caught by review before release. The
+  test asserts log CONTENT via sentinels, because asserting "the error string is
+  absent" passes on a silent abort.
+
+- **`report cost` contradicted its own state file.** It read only the cap from
+  `.loki/metrics/budget.json` and then substituted the current run's cost, which
+  is unmeasured when no iteration has a recorded figure, falling back to `0.0`.
+  Result: `Used: $0.00 (0.0%) ... Status: OK` over a file reading
+  `"budget_used": 0.7992, "exceeded": true`, while `loki status` showed 160%.
+  The `--json` surface asserted `"exceeded": false`, which is what automation
+  gates on.
+
+  It now reads the recorded spend, falling back to the current run only when the
+  file carries no figure. Three other readers already did this; it was one
+  divergent reader. The "Cost not recorded for this run" contract for unmeasured
+  costs is preserved, and the exit code is unchanged.
+
+### Added
+
+- **`docs/stop-latency.md`.** Enterprises ask how fast a run can be stopped, and
+  the answer was undocumented. Investigating it inverted the premise: `loki stop`
+  is already bounded at about 1 second (process-group SIGTERM, 1s grace, then
+  SIGKILL), while `autonomy/run.sh:161` told users `touch .loki/STOP - stops
+  immediately`, which was false. The STOP file is read only at the top of an
+  iteration, so a STOP written mid-dispatch waits for the provider call to
+  return, bounded by `LOKI_PROVIDER_CALL_TIMEOUT` (default 7200s). The product
+  was recommending the two-hour path and calling it immediate.
+
+  Both numbers are published with their derivations, and the false claim is
+  corrected in place.
+
+- **The Bun runner now bounds its provider call.** It passed no timeout at all,
+  so on that route a provider call had no upper bound and a STOP file could
+  never be observed. It now honors `LOKI_PROVIDER_CALL_TIMEOUT` like the bash
+  route, using the SIGTERM-then-SIGKILL escalation `shellRun` already
+  implemented (`loki-ts/src/runner/providers.ts`).
+
+### Changed
+
+- `docs/COMPETITIVE-NEXT-10.md`: item 4's claim that quiet degradation was
+  "correct" is retracted with the reproduction that refuted it, and the hard
+  command blocklist is moved out of "architecturally unavailable". A design
+  review found it IS enforceable via read-only bind-mounts over resolved binary
+  inodes (seccomp cannot do it: `execve`'s pathname is a userspace pointer a BPF
+  filter cannot dereference; a PATH shim cannot either). It stays OPEN and
+  unbuilt, with the scoping constraint recorded: only Docker container mode has
+  a mount surface, so it must fail closed in the other two modes.
+
 ## v9.27.3
 
 ### Fixed

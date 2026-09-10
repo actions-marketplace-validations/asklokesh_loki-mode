@@ -501,6 +501,9 @@ run_test "Deploy receipt gate (--execute authorization)" "$SCRIPT_DIR/test-deplo
 # direct unit calls into the side-effect-free config-map.sh lib.
 run_test "Unified config-file (--config precedence + formats)" "$SCRIPT_DIR/test-config-file.sh"
 run_test "Config validate unknown-key detection (JSON/YAML parity)" "$SCRIPT_DIR/test-config-unknown-keys.sh"
+run_test "Enforcement claims in buyer-facing docs are scoped" "$SCRIPT_DIR/test-enforcement-doc-honesty.sh"
+run_test "loki logs reads the log the runner writes" "$SCRIPT_DIR/test-logs-command.sh"
+run_test "report cost agrees with its own budget state file" "$SCRIPT_DIR/test-report-cost-budget.sh"
 
 # Config-map no-yq YAML fallback: regression for same-last-segment key collision
 # and the BSD-sed \s stray-quote bug. Forces the fallback by hiding yq from PATH.

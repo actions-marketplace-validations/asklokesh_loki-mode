@@ -158,7 +158,13 @@
 # Human Intervention (Auto-Claude pattern):
 #   PAUSE file:          touch .loki/PAUSE - pauses after current session
 #   HUMAN_INPUT.md:      echo "instructions" > .loki/HUMAN_INPUT.md
-#   STOP file:           touch .loki/STOP - stops immediately
+#   STOP file:           touch .loki/STOP - graceful; read at the TOP of each
+#                        iteration, so a STOP written mid-dispatch waits for that
+#                        provider call to return (bounded by
+#                        LOKI_PROVIDER_CALL_TIMEOUT, default 7200s). It said
+#                        "stops immediately", which was false. For an immediate
+#                        stop use `loki stop` (process-group SIGTERM, 1s grace,
+#                        then SIGKILL). See docs/stop-latency.md.
 #   Ctrl+C (once):       Pauses execution, shows options
 #   Ctrl+C (twice):      Exits immediately
 #
