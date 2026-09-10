@@ -5,6 +5,100 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.29.0
+
+The audit chain is not tamper-proof, and we were saying it was. This release
+corrects the claim, publishes the threat model with a reproduction, and adds a
+guard so the overclaim cannot come back.
+
+This is the first release of a competitive program aimed at Factory.ai and 8090.
+Both sell governance: Factory through certification (SOC 2 Type II, ISO 27001,
+ISO 42001), 8090 through a governed workspace with an end-to-end audit trail.
+Both ask the buyer to trust the vendor. Our wedge is the opposite -- evidence the
+buyer verifies without trusting us -- and that wedge is worth nothing if our own
+integrity claim does not hold. So it gets checked first.
+
+### Fixed
+
+- **"Tamper-evident" overstated what the hash chains prove.** Both
+  implementations compute an unkeyed SHA-256 over public fields from a constant
+  genesis: `src/audit/log.js:16,127-134` (genesis is the literal `GENESIS`) and
+  `dashboard/audit.py:58,194-200` (genesis is `"0" * 64`). Every input to the
+  hash is present in the file being edited, so anyone who can write the log can
+  recompute a complete, internally consistent chain over invented history.
+
+  Reproduced on v9.28.1 against both, not argued:
+
+  ```
+  honest verify   : {"valid":true,"entries":2,"brokenAt":null,"error":null}
+  forged verify   : {"valid":true,"entries":2,"brokenAt":null,"error":null}
+  forged contents : NEVER HAPPENED | ALSO FORGED
+  ```
+
+  What the chain does prove is real and worth keeping: it detects corruption and
+  truncation. What it does not survive is the threat an audit log exists for --
+  a writer who rewrites history. Note the direction of the failure: a broken
+  chain is strong evidence of a problem, but an intact chain is not evidence of
+  integrity, because it is what both an honest run and a competent forgery
+  produce.
+
+  Corrected at every buyer-facing surface: `wiki/Enterprise.md` (which paired
+  the claim with SOC 2 / ISO 27001 / GDPR report generation),
+  `wiki/Security.md`, `wiki/Home.md`, the demo narration in
+  `demo/run-demo-auto.sh`, and the `_compute_chain_hash` docstring itself, which
+  asserted tamper-evidence at the point a future reader would trust it most.
+
+  `wiki/Enterprise.md` additionally now states that compliance reports are
+  generated in SOC 2 / ISO 27001 / GDPR shapes but that Loki Mode holds no
+  certification against those standards: the reports are inputs to your audit,
+  not a substitute for one.
+
+### Added
+
+- **`docs/AUDIT-CHAIN-THREAT-MODEL.md`.** States what the chain proves, carries
+  both reproductions, and names what would actually close the gap: a keyed MAC
+  (which moves the problem to key custody, and on a developer laptop the agent
+  usually runs as the user), an external witness, or a signature over the tip
+  with an off-machine key. Only the last two survive an adversary who controls
+  the machine, which is the case that matters for third-party evidence.
+
+  `writeWitness` already exists at `src/audit/crosslink.js:234` with zero
+  production callers. Wiring it is the natural next step and is deliberately not
+  bundled here: this release is about not overclaiming, and shipping the fix in
+  the same breath would blur whether the claim or the code changed.
+
+- **`tests/test-audit-chain-honesty.sh` (6 assertions) and
+  `tests/lib/scan-tamper-claims.py`.** The suite pins the measured property
+  itself: if someone later adds a keyed MAC or a witness, assertion 1 turns red
+  and the suite must be rewritten to match the new truth. The test tracks
+  reality rather than a wish.
+
+  Three details that are load-bearing, each found by the guard failing on
+  itself:
+
+  - The forgery assertion checks `entries_checked`, not just the verdict. A
+    first reproduction guessed the entry schema and got `valid=False,
+    entries_checked=0` -- the verifier had rejected the probe, not detected
+    tampering. Asserting the verdict alone would have recorded a false all-clear
+    and concluded the chain was sound.
+  - Claim matching is per OCCURRENCE, not per line. A line-level filter is
+    exploitable and was: inserting `tamper-proof` into a line that already read
+    "not tamper-proof against ..." exempted the whole line, and the mutation
+    stayed green. An honest caveat can no longer launder a false claim beside
+    it.
+  - The scan excludes `.loki/`. It is runtime state, and
+    `.loki/logs/bash-audit.jsonl` recorded the very mutation commands used to
+    test this guard and reported them as claims. A guard over user runtime state
+    fires on whatever the user typed.
+
+  A missing scanner reports UNMEASURED and fails, never clean. `tamper-proof
+  against X` stays permitted: `src/audit/crosslink.js:462-465` uses it to draw
+  the correct distinction, and banning an accurate statement would push authors
+  toward vaguer language, which is the opposite of the point.
+
+  Every assertion is mutation-verified, including the property guard (simulating
+  a keyed MAC turns it red) and the unmeasured path.
+
 ## v9.28.1
 
 Four test suites that had been failing or silently not running, plus the test
