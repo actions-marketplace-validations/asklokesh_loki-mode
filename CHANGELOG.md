@@ -5,6 +5,65 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.30.1
+
+A doc correction and a guard on behaviour that already works. **No product code
+changed** -- and the reason it did not is worth recording, because I nearly
+shipped a fix for a defect that did not exist.
+
+### The investigation that produced no code change
+
+Specialized agent roles are the axis Factory.ai competes on, so the claim was
+worth checking. `agents/types.json` ships 41 role definitions and the specialist
+loader in `autonomy/run.sh` reads `LOKI_AGENTS_TYPES_FILE`. A grep showed that
+variable being set only by tests, and a probe that ran the selector standalone
+showed the reviewer pool going from **4 to 14** when the file was supplied.
+
+That looked conclusive: 41 shipped roles never loading for any user. It was
+wrong. `autonomy/run.sh:14764` already exports
+`LOKI_AGENTS_TYPES_FILE="${PROJECT_DIR}/agents/types.json"` unconditionally, ten
+lines above the selector in the same function. The roles load today. My probe
+omitted the export the real code performs, so it measured the absence of
+something I had removed myself.
+
+It was caught by mutation testing before anything shipped: a mutation that
+repointed the default at a nonexistent file stayed **green**, which meant the
+assertion was not attributing. Chasing that produced the real export. A mutation
+that fails to go red is information, not a nuisance.
+
+The redundant change was reverted. What remains is the guard.
+
+### Fixed
+
+- **`README.md` overstated the mechanism.** It said Loki "assembles an agent
+  team from 41 specialized agent roles across 8 domains". Measured: the review
+  selector keyword-scores **10** of the 41 (`run.sh` `FOCUS_KEYWORDS`), and the
+  other 31 exist as role descriptions in `references/agents.md` that the
+  orchestrator adopts per phase -- nothing injects them into the prompt.
+
+  `references/agent-types.md:9` already described this correctly ("prompt-defined
+  specifications the orchestrator adopts per phase, not separate processes"); the
+  README summary had drifted from it. Now says what actually happens, and cites
+  where each half lives.
+
+### Added
+
+- **`tests/test-agent-types-loaded.sh`** (10 assertions). Pins a three-link chain
+  that can break silently at any point: `agents/types.json` exists, `agents/` is
+  in `package.json` `files[]` so npm users receive it, and `run.sh` exports the
+  path to an existing file **before** the selector runs. Break any link and the
+  specialized roles quietly stop reaching reviews with no error anywhere.
+
+  Two assertions exist because a weaker version let a mutation through:
+  matching the export as a literal string passed when the path was repointed at
+  a nonexistent file, so the suite now resolves what `run.sh` actually names and
+  checks that file exists. It also checks the export precedes the selector,
+  since the quoted heredoc reads only what was exported before it ran -- an
+  export that drifts below it is dead code that still greps fine.
+
+  All mutations verified: deleting the export, repointing it at a missing file,
+  and dropping `agents/` from `files[]` each turn the suite red.
+
 ## v9.30.0
 
 v9.29.0 said the audit chain is not tamper-proof and named the fix: a witness.
