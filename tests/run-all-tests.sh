@@ -499,6 +499,7 @@ run_test "Deploy receipt gate (--execute authorization)" "$SCRIPT_DIR/test-deplo
 # example|schema|validate`. Drives the real binary under LOKI_CONFIG_DUMP=1 +
 # direct unit calls into the side-effect-free config-map.sh lib.
 run_test "Unified config-file (--config precedence + formats)" "$SCRIPT_DIR/test-config-file.sh"
+run_test "Config validate unknown-key detection (JSON/YAML parity)" "$SCRIPT_DIR/test-config-unknown-keys.sh"
 
 # Config-map no-yq YAML fallback: regression for same-last-segment key collision
 # and the BSD-sed \s stray-quote bug. Forces the fallback by hiding yq from PATH.

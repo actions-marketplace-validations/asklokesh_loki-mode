@@ -90,7 +90,6 @@ VERIFY_SCHEMA_VERSION="1.0"
 # 0 sees no behavior change. Verdict influence is a separate, later flag.
 _verify_llm_review() {
     local out_dir="$1" merge_base="$2" head_sha="$3"
-    local status="skipped" reason="" summary="" findings_n=0 model=""
 
     if [ "${VERIFY_NO_LLM:-0}" = "1" ]; then
         printf '%s\t%s\t%s\t%s\t%s\n' "skipped" "--no-llm requested" "" "0" ""

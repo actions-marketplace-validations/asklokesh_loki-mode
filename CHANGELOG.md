@@ -5,6 +5,29 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.26.1
+
+### Fixed
+
+- **`loki config validate` now detects unknown keys in JSON and YAML configs.**
+  Extraction walks `LOKI_CONFIG_MAP` and pulls each KNOWN path out of the file,
+  so a key the map does not contain was never emitted and could not reach the
+  validate loop. A misspelled key validated clean (`rc=0`) while the identical
+  typo in `.env` format was correctly rejected (`rc=1`) -- the check existed but
+  was blind to two of its three input formats.
+
+  Detection now walks the file's own key set and diffs it against the map.
+  Scoped to `validate` only: the load and emit paths are unchanged, so a config
+  that runs today still runs. Container parents of a mapped key are not reported
+  (in `{"dashboard":{"port":1}}`, `dashboard` is a container, not a typo), and
+  inert metadata written by `loki init` (`version`, `template`, `created`) is
+  allowlisted rather than rejected.
+
+- **Removed a dead local declaration in `_verify_llm_review`.** Five variables
+  were assigned and never read; every return path uses explicit `printf`
+  literals. ShellCheck SC2034 flagged two of them, which failed the repo-wide
+  lint gate and blocked the v9.26.0 release from publishing. No behavior change.
+
 ## v9.26.0
 
 ### Added
