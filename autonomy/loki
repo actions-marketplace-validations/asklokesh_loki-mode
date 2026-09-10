@@ -2148,6 +2148,26 @@ cmd_start() {
                 echo "  loki start --yes                        # Skip confirmation prompt"
                 echo "  LOKI_PRD_FILE=./prd.md loki start       # PRD via env var"
                 echo ""
+                # Exit codes, stated where a CI author actually looks. The full
+                # contract lived only in docs/exit-codes.md, so a script author
+                # read this help, saw nothing, and built the coarse gate -- the
+                # tiered contract might as well not have shipped.
+                echo "Exit codes:"
+                echo "  0                      The run completed, or a human stopped it"
+                echo "  nonzero                Something went wrong (no finer signal by default)"
+                echo ""
+                echo "  With LOKI_DURABLE_STATE=1 the platform contract applies, which"
+                echo "  distinguishes 'retrying cannot help' from 'the process died':"
+                echo "    0                    Completed, or a human stopped it -> do not retry"
+                echo "    20                   Deterministic terminal failure (gate failed, max"
+                echo "                         iterations or retries, budget or wall-clock cap,"
+                echo "                         policy block, contradictory spec) -> do not retry;"
+                echo "                         the same inputs fail the same way"
+                echo "    other nonzero        Crash (SIGKILL, eviction, node loss) -> retry;"
+                echo "                         the run resumes from the durable volume"
+                echo "  Both the bash and Bun runners implement this identically."
+                echo "  Full table, including loki verify and loki ci: docs/exit-codes.md"
+                echo ""
                 echo "Note: 'loki run' is a deprecated alias for 'loki start' with an issue ref."
                 exit 0
                 ;;

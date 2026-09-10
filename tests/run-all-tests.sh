@@ -796,6 +796,7 @@ run_test "doctor is CI-gateable (nonzero on missing required dep)" "$SCRIPT_DIR/
 run_test "completion coverage (every real command in both shells)" "$SCRIPT_DIR/test-completion-coverage.sh"
 run_test "dry-run paths work and are discoverable from start --help" "$SCRIPT_DIR/test-dry-run-discoverable.sh"
 run_test "exit codes documented and matching the source" "$SCRIPT_DIR/test-exit-codes-documented.sh"
+run_test "Exit-code contract is discoverable from --help" "$SCRIPT_DIR/test-exit-codes-discoverable.sh"
 run_test "log verbosity (--quiet / LOKI_LOG_LEVEL, errors never hidden)" "$SCRIPT_DIR/test-log-verbosity.sh"
 run_test "verify --json emits pipeable evidence on stdout" "$SCRIPT_DIR/test-verify-json-stdout.sh"
 run_test "documented env vars exist in the source" "$SCRIPT_DIR/test-env-vars-documented.sh"

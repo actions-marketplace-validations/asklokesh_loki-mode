@@ -5,6 +5,31 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.27.1
+
+### Added
+
+- **`loki start --help` now states the exit-code contract.** `docs/exit-codes.md`
+  documents a strong two-tier contract: with `LOKI_DURABLE_STATE=1`, code 20
+  means "deterministic terminal failure, retrying cannot help", which Helm wires
+  into a Kubernetes `podFailurePolicy` so a Job fails immediately instead of
+  burning `backoffLimit`. The help mentioned it **zero times** across 110 lines,
+  so a CI author read the help, saw only "0 on success, nonzero on failure", and
+  built the coarse gate. A contract nobody can discover might as well not have
+  shipped.
+
+  The help now names `LOKI_DURABLE_STATE`, code 20, what a platform should do
+  with each code, and points at the full table rather than duplicating it.
+
+  A drift assertion fails if the code stated in the help stops matching the code
+  in the doc: two documents disagreeing about a value a Job is configured on is
+  worse than one document.
+
+- `loki verify --help` needed **no change** -- it already carried an
+  `EXIT CODES` section. A test now asserts there is exactly one, because adding
+  a second is an easy mistake and duplicated help that drifts apart is worse
+  than a single statement.
+
 ## v9.27.0
 
 ### Added

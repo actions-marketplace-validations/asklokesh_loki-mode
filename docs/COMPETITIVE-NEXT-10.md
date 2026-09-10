@@ -66,8 +66,16 @@ A CI author reads `--help`, sees "0 on success, nonzero on failure", and builds
 the coarse gate. Factory's `droid exec` advertises its exit codes in its own help
 output; ours are a doc you have to already know exists.
 
-**Do:** surface the durable contract in `loki start --help` and `loki verify
---help`, with a one-line pointer to `docs/exit-codes.md`.
+**Shipped in v9.27.1** for `loki start --help`: the two-tier contract, code 20,
+its retry semantics, and a pointer to `docs/exit-codes.md`. A drift assertion
+fails if the code stated in the help stops matching the code in the doc, since
+two documents disagreeing about a value a Kubernetes Job is configured on is
+worse than one.
+
+`loki verify --help` needed no change -- it already carried an `EXIT CODES`
+section. Adding a second one (which I briefly did) would have created exactly
+the duplicated-and-drifting help this item exists to prevent; a test now asserts
+there is exactly one.
 
 **Note:** the research framed this as "Loki has no headless one-shot contract".
 That framing was wrong -- the contract exists. The defect is discoverability,
