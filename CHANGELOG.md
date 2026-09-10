@@ -5,6 +5,138 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.31.0
+
+Two defects that together meant the policy engine, which is real and correct,
+almost never ran. This is the enforcement-before-execution capability Factory
+sells to regulated buyers; ours was built and unreachable.
+
+### Fixed
+
+- **The only policy writer fed a file the reader never opened.** The dashboard
+  writes policies to `~/.loki/policies.json` (`dashboard/api_v2.py:75,105`, via
+  `LOKI_DATA_DIR`), while `src/policies/engine.js:_init` read only
+  `<projectDir>/.loki/policies.json`. An operator who created a policy through
+  the UI got no enforcement and no error explaining why.
+
+  The engine now falls back to the global file when the project defines none.
+  **Project-local still wins**: a repo shipping its own policy must not be
+  silently overridden by a machine-global one.
+
+  `autonomy/run.sh:check_policy` had to change with it. It short-circuits on
+  "no policy file" before invoking the engine, so a project-local-only test
+  there would have skipped before the new fallback was ever consulted. The two
+  gates now agree, which is the point: when they disagree, enforcement
+  disappears between them with nothing logged.
+
+- **A missing Node runtime silently disabled enforcement.** `check_policy`
+  returned 0 (allow) when `node` was unavailable, even though reaching that line
+  means a policy file EXISTS and the operator has expressed intent to enforce.
+  The run proceeded as if every action were permitted, and nothing was logged.
+  That is the worst shape a security control can take: the operator believes it
+  is on.
+
+  It now fails CLOSED, matching what `check.js` already does for a corrupt
+  policy file (`tests/test-policy-failclosed.sh`). `LOKI_POLICY_REQUIRE_NODE=0`
+  restores the old behaviour for a host that genuinely cannot install node and
+  accepts running unenforced -- and it says so, rather than staying silent.
+
+  **The refusal is recorded**, as a new `policy_unevaluable` event distinct from
+  `policy_denied`. A block that leaves no trace is indistinguishable from a run
+  that was never gated, and the receipt must be able to tell "denied by a rule"
+  from "could not be checked". The audit subscriber maps the new type, so it
+  reaches the chain rather than stopping at the log.
+
+  Absence of a policy still ALLOWS. That is not a bypass, it is the absence of
+  anything to apply, and turning it into a refusal would break every user who
+  has never written one.
+
+### Added
+
+- **`tests/test-policy-node-failclosed.sh`** (10 assertions). It extracts and
+  drives the REAL `check_policy` out of `run.sh` rather than reimplementing it,
+  because a second copy is how the two drift apart silently.
+
+  Two assertions exist to avoid vacuity. The engine-side check asserts on the
+  engine's REASON ("All policies passed" when the global file loaded, versus
+  "No policies configured" when nothing was found) rather than its exit code:
+  an empty global policy and no policy at all both exit 0, so an exit-code
+  assertion there would prove nothing. And the nodeless cases prove the run.sh
+  gate consults the global path, which the engine-side cases cannot, so both
+  halves are needed.
+
+  Every mutation verified: restoring the fail-open, refusing without recording,
+  unmapping the subscriber event, reverting the run.sh gate to project-local
+  only, and removing the engine's fallback branches each turn the suite red.
+
+### Honest limits
+
+- Still exactly one enforcement point (`pre_execution`). Writes, network, and
+  spend are not gated by this engine.
+- The Bun route has no policy engine at all, so none of this applies there.
+- A default install still has no policy file, so the gate remains inert until
+  someone writes one. Shipping a default baseline is a separate decision with
+  its own blast radius.
+
+## v9.30.1
+
+A doc correction and a guard on behaviour that already works. **No product code
+changed** -- and the reason it did not is worth recording, because I nearly
+shipped a fix for a defect that did not exist.
+
+### The investigation that produced no code change
+
+Specialized agent roles are the axis Factory.ai competes on, so the claim was
+worth checking. `agents/types.json` ships 41 role definitions and the specialist
+loader in `autonomy/run.sh` reads `LOKI_AGENTS_TYPES_FILE`. A grep showed that
+variable being set only by tests, and a probe that ran the selector standalone
+showed the reviewer pool going from **4 to 14** when the file was supplied.
+
+That looked conclusive: 41 shipped roles never loading for any user. It was
+wrong. `autonomy/run.sh:14764` already exports
+`LOKI_AGENTS_TYPES_FILE="${PROJECT_DIR}/agents/types.json"` unconditionally, ten
+lines above the selector in the same function. The roles load today. My probe
+omitted the export the real code performs, so it measured the absence of
+something I had removed myself.
+
+It was caught by mutation testing before anything shipped: a mutation that
+repointed the default at a nonexistent file stayed **green**, which meant the
+assertion was not attributing. Chasing that produced the real export. A mutation
+that fails to go red is information, not a nuisance.
+
+The redundant change was reverted. What remains is the guard.
+
+### Fixed
+
+- **`README.md` overstated the mechanism.** It said Loki "assembles an agent
+  team from 41 specialized agent roles across 8 domains". Measured: the review
+  selector keyword-scores **10** of the 41 (`run.sh` `FOCUS_KEYWORDS`), and the
+  other 31 exist as role descriptions in `references/agents.md` that the
+  orchestrator adopts per phase -- nothing injects them into the prompt.
+
+  `references/agent-types.md:9` already described this correctly ("prompt-defined
+  specifications the orchestrator adopts per phase, not separate processes"); the
+  README summary had drifted from it. Now says what actually happens, and cites
+  where each half lives.
+
+### Added
+
+- **`tests/test-agent-types-loaded.sh`** (10 assertions). Pins a three-link chain
+  that can break silently at any point: `agents/types.json` exists, `agents/` is
+  in `package.json` `files[]` so npm users receive it, and `run.sh` exports the
+  path to an existing file **before** the selector runs. Break any link and the
+  specialized roles quietly stop reaching reviews with no error anywhere.
+
+  Two assertions exist because a weaker version let a mutation through:
+  matching the export as a literal string passed when the path was repointed at
+  a nonexistent file, so the suite now resolves what `run.sh` actually names and
+  checks that file exists. It also checks the export precedes the selector,
+  since the quoted heredoc reads only what was exported before it ran -- an
+  export that drifts below it is dead code that still greps fine.
+
+  All mutations verified: deleting the export, repointing it at a missing file,
+  and dropping `agents/` from `files[]` each turn the suite red.
+
 ## v9.30.0
 
 v9.29.0 said the audit chain is not tamper-proof and named the fix: a witness.

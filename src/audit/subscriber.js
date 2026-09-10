@@ -20,6 +20,11 @@ var EVENT_TO_AUDIT = {
     'session_end': { what: 'session_end', why: 'Loki session terminated' },
     'phase_change': { what: 'phase_change', why: 'RARV phase transition' },
     'policy_denied': { what: 'policy_violation', why: 'Policy engine blocked action' },
+    // Distinct from policy_denied: the policy was never EVALUATED. A policy
+    // file was present (so enforcement was intended) but node was unavailable,
+    // so run.sh refused fail-closed rather than proceeding unenforced. The
+    // receipt must be able to tell "denied by a rule" from "could not check".
+    'policy_unevaluable': { what: 'policy_unevaluable', why: 'Policy present but could not be evaluated; action refused fail-closed' },
     'policy_approval_required': { what: 'policy_approval', why: 'Policy requires approval' },
     'otel_span_start': null, // Skip OTEL internal events
     'otel_span_end': null,   // Skip OTEL internal events
