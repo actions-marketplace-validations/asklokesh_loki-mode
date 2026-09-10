@@ -9,10 +9,10 @@ There are **eight** real items, not ten. Three of the research's candidates were
 already implemented, and two more are architecturally unavailable to Loki as
 designed. Padding to ten would mean inventing work.
 
-Items 1, 2 and 7 shipped in v9.27.0-v9.27.3. Item 8 was found by this work
-rather than by the research: a flaky trust suite that cost two release cycles.
-It is listed OPEN and unpatched, with the reason stated, rather than quietly
-fixed by loosening an assertion.
+Items 1, 2 and 7 shipped in v9.27.0-v9.27.3. Items 3, 4 and 9 shipped in
+v9.28.0. Item 8 (a flaky trust suite) and item 10 (a hard command blocklist,
+designed but not built) are OPEN with their reasons stated, rather than quietly
+closed by loosening an assertion or shipping a claim we cannot keep.
 
 ---
 
@@ -88,25 +88,28 @@ which is a much cheaper fix.
 
 ---
 
-## 3. Publish a measured kill-switch latency
+## 3. Stop latency -- SHIPPED v9.28.0, and the premise was inverted
 
-**Status: mechanism exists, number does not.**
+**Status: published in `docs/stop-latency.md`.**
 
-`check_human_intervention()` (`autonomy/run.sh`) implements PAUSE/STOP/INPUT.
-There is no stated termination window anywhere in `docs/` (measured: zero
-matches for "termination window" or "kill switch").
+The premise of this item was backwards. `loki stop` is NOT slow: it kills the
+whole process group with SIGTERM, a 1 second grace, then SIGKILL
+(`autonomy/loki`, `_stop_group_by_pgid_files`), and that bound does not depend
+on what the run was doing.
 
-An enterprise buyer asks "how fast can I stop it?" Factory answers with a number.
-"There is a stop signal" is not an answer.
+What was slow is the mechanism the product itself recommended.
+`autonomy/run.sh:161` told users `touch .loki/STOP - stops immediately`. That
+was false: the STOP file is read only at the top of an iteration
+(`check_human_intervention` at `:25149`, called from the single site `:22301`),
+so a STOP written mid-dispatch waits for the provider call to return, bounded by
+`LOKI_PROVIDER_CALL_TIMEOUT` (default 7200s). The docs pointed at the two-hour
+path and called it immediate.
 
-**Do:** measure worst-case latency from signal to process exit across the bash
-and Bun routes, publish the number, and add a test that fails if it regresses
-past the published bound.
-
-**Care:** publish the measured worst case, not the median. A number we beat 50%
-of the time is worse than no number.
-
----
+Shipped: the false "stops immediately" claim is corrected in place,
+`docs/stop-latency.md` publishes both numbers with their derivations, and the
+Bun route's provider call now honors `LOKI_PROVIDER_CALL_TIMEOUT` -- it
+previously passed no timeout at all, leaving that route's STOP path with **no
+upper bound**.
 
 ## 4. Close the config-diagnostic gap for the remaining format
 
@@ -118,14 +121,18 @@ GitHub ubuntu-24.04 runner, and the fallback was verified against a stand-in
 honouring both invocation shapes the real `yq` is called with, so CI and any
 Linux host with either parser get full detection.
 
-The residual gap is narrow: a host with **neither** pyyaml nor `yq` (a stock
-macOS dev machine) gets no YAML detection. It degrades quietly, which is correct
--- a missing parser must never invent a verdict -- but silently.
+**CORRECTED, and closed in v9.28.0.** An earlier revision of this item called
+the no-parser path "quiet degradation, which is correct". That was wrong, and
+reproducing it settled the matter: with no parser the command printed
+`config validate: OK` and exit 0 for a YAML file full of bogus keys. Silence in
+the helper is fine; the CALLER turning that silence into an affirmative `OK` was
+an assertion of validity nobody had checked, which is the exact false green this
+project exists to prevent.
 
-**Do:** state the dependency in `loki config validate --help` so the gap is
-visible rather than silent. Vendoring a YAML scanner is not worth it for one
-host shape that already has a documented fallback available via `brew install
-yq`.
+The verdict is now `INCOMPLETE` with a stderr line naming the skipped check, and
+the helper reports "could not check" as a distinct status rather than an empty
+result indistinguishable from "checked, nothing found". Guarded by
+`tests/test-config-unknown-keys.sh` case 5d.
 
 ---
 
@@ -227,6 +234,30 @@ guards, so it needs its own cycle with the expected counts re-derived.
 
 ---
 
+## 9. Enforcement claims in buyer-facing docs -- SHIPPED v9.28.0
+
+The source was scrupulously honest and the docs were not.
+`autonomy/run.sh:515` states `LOKI_ALLOWED_PATHS` "Does NOT restrict
+provider-driven agent writes"; `check_command_allowed` is "intentionally NOT
+called" with zero callers. Meanwhile `wiki/Enterprise-Features.md` listed both
+as production security controls and `docs/certification/answer-key.md` marked
+"restricts which directories agents can modify" as the **correct exam answer**.
+Nine buyer-facing files, zero caveats.
+
+All nine now carry a `SANDBOX-SCOPED` note saying what is enforced (2 mount-time
+call sites in `autonomy/sandbox.sh`, and one for operator-typed
+`loki sandbox run` argv), what is not, and that both enforce nothing unless
+`LOKI_SANDBOX_MODE=true`. `tests/test-enforcement-doc-honesty.sh` guards it with
+marker-presence rather than phrase-absence, because a grep for "restrict" near
+the variable name fires on the caveat itself.
+
+Two errors in my own brief were caught while planning: it is 2 path-enforcement
+call sites, not 4 (I had counted the definition and a comment), and a
+pre-existing answer-key letter mismatch (key said A, quiz option was B) was
+fixed at the same time.
+
+---
+
 ## Not items (research proposed these; they are already shipped)
 
 - **Signed receipts default-off is a moat gated behind an env var.** The receipt
@@ -242,12 +273,45 @@ guards, so it needs its own cycle with the expected counts re-derived.
 - **A headless exec contract with documented exit codes.** Already exists via
   `LOKI_DURABLE_STATE=1`; see item 2, which is the real (smaller) gap.
 
-## Architecturally unavailable, and worth saying so
+## 10. Hard command blocklist (OPEN, designed, not built)
 
-- **Per-command risk tiers** and a **hard command blocklist** ("cannot be
-  bypassed by approval", per Factory's docs). `autonomy/run.sh:515` documents
-  that `LOKI_ALLOWED_PATHS` "does NOT restrict provider-driven agent writes
-  (run.sh never sees them)". You cannot classify a command you never observe.
-  The only honest form is a sandbox-boundary blocklist, which is a different and
-  much larger piece of work. Attempting a partial version would ship a security
-  claim we cannot keep.
+**CORRECTION.** This section previously listed a hard blocklist as
+"architecturally unavailable". That was too pessimistic. It is unavailable in
+`run.sh`, which never observes agent commands -- but a design review found a
+boundary where it IS enforceable, and the honest scope is narrower than Factory
+states for their own.
+
+What the review established:
+
+- **Seccomp cannot do it.** `autonomy/seccomp-sandbox.json` allows `execve`
+  unconditionally, and seccomp-bpf filters on register values: `execve`'s
+  pathname is a userspace pointer a filter cannot dereference. Any proposal to
+  "add blocked commands to seccomp" is not implementable.
+- **A PATH shim cannot do it.** Defeated by an absolute path, by `env -i`, or by
+  resetting PATH. That is precisely the class Factory claims to defeat.
+- **A read-only bind-mount over the resolved binary inode CAN.** The mount is
+  decided on the host before the container exists, and cannot be undone from
+  inside: `--cap-drop=ALL` (no `CAP_SYS_ADMIN`), `no-new-privileges`, non-root
+  user, and the seccomp profile denies `umount`. Because it targets an inode, no
+  string is matched, so `bash -c`, absolute paths, quoting and command
+  substitution all converge on the same blocked inode. That is a stronger claim
+  than argv parsing, not a weaker one.
+
+**The scoping finding that makes this honest.** `loki sandbox` has three modes,
+and only `docker` supports it. `docker sandbox create` (Docker Desktop microVM
+mode) takes no mount flags, and worktree mode has no container at all -- and
+auto-detect prefers Docker Desktop first. So the guarantee must be paired with
+**fail-closed refusal to start** in every unsupported mode, or it becomes the
+same overstatement this release just spent its time removing.
+
+Also worth stating plainly, which Factory's docs elide: blocking a program does
+not remove the capability. With the default bridge network an agent can fetch a
+replacement binary. `LOKI_SANDBOX_NETWORK=none` removes the capability.
+
+**Do:** implement as `LOKI_BLOCKLIST_COMMANDS` (a new key -- the existing
+`LOKI_BLOCKED_COMMANDS` is an advisory substring filter with different
+semantics), with the adversarial test matrix and a SKIP-not-PASS rule when
+Docker is unavailable. Design is complete; the build is a separate cycle.
+
+- **Per-command risk tiers** remain out of reach for the same original reason:
+  you cannot classify a command you never observe.

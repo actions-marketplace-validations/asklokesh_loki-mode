@@ -5,6 +5,185 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.28.1
+
+Four test suites that had been failing or silently not running, plus the test
+behind v9.28.0's one unbacked MEASURED label. **No product code changed** --
+every fix was a test asserting something about its environment that was not
+true, which is the same defect class v9.28.0 shipped to correct, found this
+time in our own suites.
+
+### Added
+
+- **`tests/test-stop-latency.sh`.** `docs/stop-latency.md` published "about 1
+  second to SIGKILL" and labelled it **MEASURED**, while the file it named as
+  the enforcing test did not exist. The number was derived from reading a
+  `sleep 1` in the source, never from timing a stop. A MEASURED label with no
+  measurement behind it is exactly what the previous release was about.
+
+  The suite now makes the label true. The victim installs a **SIGTERM trap** and
+  would otherwise sleep 7200 seconds, so it tests timeout-independence rather
+  than cooperative shutdown -- a victim that dies on SIGTERM would pass whether
+  or not the SIGKILL escalation existed.
+
+  Writing it surfaced a measurement error worth recording: the first version
+  drove `loki stop` end to end, and deleting the group SIGKILL entirely **left
+  it green**. `loki stop` reaps by two independent routes (`_kill_pid` on the
+  recorded pid, which carries its own `kill -9`, and the process-group path), so
+  an end-to-end test cannot attribute the bound to either. The suite now drives
+  `_stop_group_by_pgid_files` directly for the attributing assertion and times
+  the whole command separately. Both assertions are mutation-verified; the
+  end-to-end one alone was not sufficient.
+
+### Fixed
+
+- **`tests/test-dashboard-multiproject.sh` failed 4 of 29 assertions on macOS
+  and passed on Linux CI.** `_cleanup_registry_entry_state` refuses a PID
+  registry entry whose parent directory fails `realpath == abspath` -- a
+  deliberate symlink guard. On macOS `$TMPDIR` is `/var/folders/...` and `/var`
+  is a symlink to `/private/var`, so **every** entry the fixture built was
+  refused and the suite could never exercise the code it targeted. The product
+  check is correct; the fixture was the thing lying about its path. Resolved the
+  fixture root with `pwd -P`: 29/29.
+
+- **`tests/test-cluster-workflow.sh` had never printed a single result.** Under
+  `set -euo pipefail`, `((PASS++))` evaluates to PASS's *old* value, so with
+  PASS at 0 the first passing assertion returned exit status 1 and killed the
+  script -- no output, no counts, exit 1. Switched to `((++PASS))`, which
+  evaluates to the new value: 12/12. The suite was also in no runner, so nothing
+  had ever noticed.
+
+- **`tests/test-failover.sh` asserted host state it had assumed.** It treated an
+  absent `ANTHROPIC_API_KEY` as "no authentication" and demanded the provider
+  report UNHEALTHY. But `check_provider_health` deliberately accepts an API key
+  **or** an OAuth session, because Claude Code supports both -- so the suite
+  failed on every machine with a real Claude Code login while passing on a bare
+  CI runner. It now enumerates the same auth sources the function does and
+  asserts agreement with the documented contract: 14/14.
+
+- **`tests/test-cross-project-learning.sh` asserted a UI that no longer
+  exists.** Two assertions grepped `autonomy/.loki/dashboard/index.html` for
+  markers (`learnings-patterns`, `fetchLearnings`, and an `API_URL` literal).
+  That file was deleted in `a451fb02` and is untracked; those markers now appear
+  nowhere in the repo except in the test itself. `grep` on a missing file
+  reports failure without ever saying the file is gone.
+
+  The feature moved to the dashboard API rather than disappearing, so the
+  assertions were retargeted to the surface that exists: the
+  `/api/registry/learnings` endpoint and its `require_scope("read")` guard. The
+  scope guard is the property worth pinning -- a cross-project learnings store
+  read without authentication leaks one project's history to another. Both are
+  mutation-verified. 9/9.
+
+### Changed
+
+- **Three suites registered in `tests/run-all-tests.sh` for the first time**
+  (`test-cluster-workflow`, `test-cross-project-learning`, `test-failover`).
+  All three existed on disk and were in no runner, so CI had never executed
+  them; one of them had never produced output at all. They pass now, and a
+  future regression in any of them will be seen.
+
+- `docs/stop-latency.md` states precisely what MEASURED covers: which victim,
+  which call, and the two-reaping-routes caveat that keeps the end-to-end number
+  from attributing the bound. The STOP-file worst case stays **DERIVED**, and a
+  guard now fails if either label drifts from what the suite actually checks.
+
+## v9.28.0
+
+Four defects, all the same species: the product asserting something it had not
+checked, or documenting a control it does not enforce. Found by an evidence-first
+research pass against Factory.ai and 8090, then verified against source before
+any code moved.
+
+### Fixed
+
+- **Buyer-facing docs claimed security enforcement the source disclaims.**
+  `autonomy/run.sh:515` states `LOKI_ALLOWED_PATHS` "Does NOT restrict
+  provider-driven agent writes (run.sh never sees them)", and
+  `check_command_allowed` carries "intentionally NOT called by run.sh" with zero
+  callers. That honesty never reached the documentation: `wiki/Enterprise-Features.md`
+  listed both variables in a production security checklist, and
+  `docs/certification/answer-key.md` marked "`LOKI_ALLOWED_PATHS` restricts which
+  directories agents can modify" as the **correct exam answer**. Measured: zero
+  caveat mentions across nine buyer-facing files.
+
+  All nine now carry a `SANDBOX-SCOPED` note stating what is enforced (two
+  mount-time call sites in `autonomy/sandbox.sh`, plus one for operator-typed
+  `loki sandbox run` argv), what is not, and that neither enforces anything
+  unless `LOKI_SANDBOX_MODE=true`. Guarded by
+  `tests/test-enforcement-doc-honesty.sh`, which asserts marker PRESENCE rather
+  than phrase absence: a grep for "restrict" near the variable name would fire
+  on the caveat text itself.
+
+  Fixed at the same time: a pre-existing certification answer-key mismatch (the
+  key said A, the quiz option was B).
+
+- **`loki config validate` printed OK for a file it never checked.** With no
+  usable parser the unknown-key walk returned nothing, and the caller turned
+  that silence into an affirmative `config validate: OK` with exit 0 for a YAML
+  file full of bogus keys. Reproduced before the fix. This shipped in v9.27.2
+  under my own mistaken description of it as "correct degradation" -- silence in
+  the helper was fine, the caller asserting validity from it was not.
+
+  The helper now reports "could not check" as a distinct status, and the verdict
+  reads `INCOMPLETE` with a stderr line naming the skipped check. A host with no
+  python3 at all was affected for every format, not just YAML.
+
+- **`loki logs` was dead.** It read `logs/session.log`, a path nothing in the
+  tree writes, and reported "No log file found" while the runner's real logs sat
+  in that same directory (`autonomy/run.sh:22409`). It now resolves the newest
+  `autonomy-YYYYMMDD.log` and falls back to `agent.log`.
+
+  The first version of this fix was worse than the bug: under `set -euo pipefail`,
+  `ls` exits 2 on a non-matching glob and pipefail propagates it, aborting before
+  the fallback -- exit 1 with zero output. Caught by review before release. The
+  test asserts log CONTENT via sentinels, because asserting "the error string is
+  absent" passes on a silent abort.
+
+- **`report cost` contradicted its own state file.** It read only the cap from
+  `.loki/metrics/budget.json` and then substituted the current run's cost, which
+  is unmeasured when no iteration has a recorded figure, falling back to `0.0`.
+  Result: `Used: $0.00 (0.0%) ... Status: OK` over a file reading
+  `"budget_used": 0.7992, "exceeded": true`, while `loki status` showed 160%.
+  The `--json` surface asserted `"exceeded": false`, which is what automation
+  gates on.
+
+  It now reads the recorded spend, falling back to the current run only when the
+  file carries no figure. Three other readers already did this; it was one
+  divergent reader. The "Cost not recorded for this run" contract for unmeasured
+  costs is preserved, and the exit code is unchanged.
+
+### Added
+
+- **`docs/stop-latency.md`.** Enterprises ask how fast a run can be stopped, and
+  the answer was undocumented. Investigating it inverted the premise: `loki stop`
+  is already bounded at about 1 second (process-group SIGTERM, 1s grace, then
+  SIGKILL), while `autonomy/run.sh:161` told users `touch .loki/STOP - stops
+  immediately`, which was false. The STOP file is read only at the top of an
+  iteration, so a STOP written mid-dispatch waits for the provider call to
+  return, bounded by `LOKI_PROVIDER_CALL_TIMEOUT` (default 7200s). The product
+  was recommending the two-hour path and calling it immediate.
+
+  Both numbers are published with their derivations, and the false claim is
+  corrected in place.
+
+- **The Bun runner now bounds its provider call.** It passed no timeout at all,
+  so on that route a provider call had no upper bound and a STOP file could
+  never be observed. It now honors `LOKI_PROVIDER_CALL_TIMEOUT` like the bash
+  route, using the SIGTERM-then-SIGKILL escalation `shellRun` already
+  implemented (`loki-ts/src/runner/providers.ts`).
+
+### Changed
+
+- `docs/COMPETITIVE-NEXT-10.md`: item 4's claim that quiet degradation was
+  "correct" is retracted with the reproduction that refuted it, and the hard
+  command blocklist is moved out of "architecturally unavailable". A design
+  review found it IS enforceable via read-only bind-mounts over resolved binary
+  inodes (seccomp cannot do it: `execve`'s pathname is a userspace pointer a BPF
+  filter cannot dereference; a PATH shim cannot either). It stays OPEN and
+  unbuilt, with the scoping constraint recorded: only Docker container mode has
+  a mount surface, so it must fail closed in the other two modes.
+
 ## v9.27.3
 
 ### Fixed

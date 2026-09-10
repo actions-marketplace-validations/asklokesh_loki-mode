@@ -501,6 +501,16 @@ run_test "Deploy receipt gate (--execute authorization)" "$SCRIPT_DIR/test-deplo
 # direct unit calls into the side-effect-free config-map.sh lib.
 run_test "Unified config-file (--config precedence + formats)" "$SCRIPT_DIR/test-config-file.sh"
 run_test "Config validate unknown-key detection (JSON/YAML parity)" "$SCRIPT_DIR/test-config-unknown-keys.sh"
+run_test "Enforcement claims in buyer-facing docs are scoped" "$SCRIPT_DIR/test-enforcement-doc-honesty.sh"
+run_test "loki logs reads the log the runner writes" "$SCRIPT_DIR/test-logs-command.sh"
+run_test "report cost agrees with its own budget state file" "$SCRIPT_DIR/test-report-cost-budget.sh"
+run_test "loki stop is bounded regardless of provider timeout" "$SCRIPT_DIR/test-stop-latency.sh"
+# Registered here for the first time. All three existed on disk but were in no
+# runner, so CI had never executed them; test-cluster-workflow.sh had never even
+# printed a result (set -e killed it on its first pass()). Each passes now.
+run_test "Cluster workflow templates and swarm classes" "$SCRIPT_DIR/test-cluster-workflow.sh"
+run_test "Cross-project learning surface" "$SCRIPT_DIR/test-cross-project-learning.sh"
+run_test "Cross-provider auto-failover" "$SCRIPT_DIR/test-failover.sh"
 
 # Config-map no-yq YAML fallback: regression for same-last-segment key collision
 # and the BSD-sed \s stray-quote bug. Forces the fallback by hiding yq from PATH.
