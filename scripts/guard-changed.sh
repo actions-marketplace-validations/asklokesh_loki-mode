@@ -47,13 +47,28 @@ SKIP_RE='^(tests/|docs/|wiki/|CHANGELOG|VERSION$|package\.json$|package-lock\.js
 # is run directly; version/doc churn has no behavioral suite to find.
 # NOTE: no `mapfile` -- macOS ships bash 3.2, where it does not exist. The repo
 # already guards this class of failure (tests/test-bash32-parse.sh).
+# Every path this push would carry: committed-vs-base, staged, and unstaged.
+#
+# Committed-only was wrong in the one case the tool exists for -- you run this
+# BEFORE committing, so a working tree full of edits reported "nothing to
+# guard" and guarded nothing. Untracked files are included too: a brand-new
+# test or script is exactly the kind of thing that needs its guards run.
+_guard_changed_paths() {
+    local base="$1"
+    {
+        git diff --name-only "$base"...HEAD 2>/dev/null || true
+        git diff --name-only HEAD 2>/dev/null || true
+        git ls-files --others --exclude-standard 2>/dev/null || true
+    } | sort -u
+}
+
 CHANGED=()
 while IFS= read -r _f; do [ -n "$_f" ] && CHANGED+=("$_f"); done < <(
-    git diff --name-only "$BASE"...HEAD 2>/dev/null | grep -vE "$SKIP_RE" || true
+    _guard_changed_paths "$BASE" | grep -vE "$SKIP_RE" || true
 )
 CHANGED_TESTS=()
 while IFS= read -r _f; do [ -n "$_f" ] && CHANGED_TESTS+=("$_f"); done < <(
-    git diff --name-only "$BASE"...HEAD 2>/dev/null | grep -E '^tests/test.*\.sh$' || true
+    _guard_changed_paths "$BASE" | grep -E '^tests/test.*\.sh$' || true
 )
 
 if [ "${#CHANGED[@]}" -eq 0 ] && [ "${#CHANGED_TESTS[@]}" -eq 0 ]; then

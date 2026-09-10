@@ -5,6 +5,47 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.27.0
+
+### Added
+
+- **The evidence receipt now reports model provenance.**
+  `autonomy/lib/decision_record.py` has written an append-only trail to
+  `.loki/decisions/decisions.jsonl` once per dispatch for some time, and
+  already computed the audit fact worth showing: `model_changed`, meaning more
+  than one model id served a single project. The proof generator read that file
+  **zero times**, so the receipt could not answer the question a regulated
+  buyer actually asks -- did the deciding component change mid-run without
+  anyone saying so? The run-level "Model" row cannot answer it.
+
+  Both renderers now carry it, with **three states never collapsed**:
+
+  - `measured` -- per-model dispatch counts and whether the model changed
+  - `no_records` -- no trail for this run, stated explicitly
+  - `unreadable` -- the trail exists but could not be read, with the reason
+
+  A section that renders nothing when the trail is absent reads as "no swap
+  happened", which is the false green this receipt exists to prevent. Absence
+  of evidence is reported as absence of evidence. Corrupt trail lines are
+  counted in `unparseable_lines` rather than dropped, because an audit trail
+  that quietly discards what it cannot parse is worse than one admitting a gap.
+
+  **`model_changed` is a disclosed fact, not a fault.** A tier clamp, an
+  operator override and a mid-flight failover all cause it legitimately.
+  `affects_verdict` is `false`: this is provenance and never moves the verdict.
+
+  A receipt generated before this release has no `decisions` key and stays
+  silent rather than being described -- a run that never recorded the trail
+  cannot honestly report on it.
+
+### Fixed
+
+- **`scripts/guard-changed.sh` now sees uncommitted work.** It compared only
+  committed history against the base, so running it before a commit -- the one
+  moment a pre-push guard is for -- reported "nothing to guard" and guarded
+  nothing. It now covers committed, staged, unstaged and untracked paths.
+  Measured on this release's own diff: 12 receipt-guarding suites in 37s.
+
 ## v9.26.3
 
 ### Fixed
