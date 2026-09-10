@@ -180,11 +180,16 @@ else
 fi
 
 # Test 14: the endpoint must be read-scoped, not public. A learnings store is
-# cross-PROJECT, so an unauthenticated read leaks one customer's history to
+# cross-PROJECT, so an unauthenticated read leaks one project's history to
 # another; that is the property worth pinning, not a hardcoded port literal.
+#
+# Matched as ONE exact decorator line, not as "path near scope". A windowed
+# match (grep -A1) can pick up a NEIGHBOURING endpoint's guard and report this
+# endpoint as protected while it is bare -- the same slack the repo's packaging
+# rule warns about: assert the required thing individually, never a proximity
+# or a count.
 echo "Test 14: learnings endpoint requires the read scope"
-if grep -A1 '"/api/registry/learnings"' "$SERVER_PY" | grep -q 'require_scope("read")' \
-   || grep -q '"/api/registry/learnings".*require_scope("read")' "$SERVER_PY"; then
+if grep -q '@app.get("/api/registry/learnings", dependencies=\[Depends(auth.require_scope("read"))\])' "$SERVER_PY"; then
     pass "learnings endpoint is guarded by require_scope(\"read\")"
 else
     fail "learnings endpoint is not scope-guarded"

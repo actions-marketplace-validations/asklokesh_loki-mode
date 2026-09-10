@@ -25,11 +25,16 @@ fail() { FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
 echo "test-stop-latency"
 
 VICTIM_PGID=""
+# EVERY victim ever started, not just the current one. The suite starts two, and
+# a single VICTIM_PGID holds only the most recent: an abort between them leaked
+# the first, which then sat for the full 7200s its sleep asked for. Observed --
+# an orphan from an interrupted run was still alive well after that run ended.
+ALL_VICTIM_PGIDS=""
 cleanup() {
-    # Never leave a victim behind, whatever the outcome above.
-    if [ -n "$VICTIM_PGID" ]; then
-        kill -KILL -- -"$VICTIM_PGID" 2>/dev/null || true
-    fi
+    local g
+    for g in $ALL_VICTIM_PGIDS; do
+        kill -KILL -- -"$g" 2>/dev/null || true
+    done
     rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -81,6 +86,7 @@ start_victim() {
 LD="$WORK/bounded"
 mkdir -p "$LD"
 VICTIM_PGID="$(start_victim "$LD")" || VICTIM_PGID=""
+ALL_VICTIM_PGIDS="$ALL_VICTIM_PGIDS $VICTIM_PGID"
 if [ -z "$VICTIM_PGID" ] || [ "$VICTIM_PGID" = "$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')" ]; then
     # Refusing to run rather than asserting against our own group, which
     # _stop_group_by_pgid_files deliberately skips. A skip is reported, never
@@ -124,6 +130,7 @@ fi
 LD2="$WORK/endtoend"
 mkdir -p "$LD2"
 VICTIM_PGID="$(start_victim "$LD2")" || VICTIM_PGID=""
+ALL_VICTIM_PGIDS="$ALL_VICTIM_PGIDS $VICTIM_PGID"
 if [ -z "$VICTIM_PGID" ] || [ "$VICTIM_PGID" = "$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')" ]; then
     echo "  SKIP: could not start a second victim in its own process group"
 else
