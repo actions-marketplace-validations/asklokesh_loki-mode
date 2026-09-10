@@ -22,6 +22,23 @@ tool children die with the orchestrator. **This bound does not depend on what
 the run was doing when you issued it** -- that timeout-independence is the
 actual property worth relying on, and it is what the test asserts.
 
+What "MEASURED" means here, precisely: `tests/test-stop-latency.sh` starts a
+victim in its own process group that **installs a SIGTERM trap and would
+otherwise sleep for 7200 seconds**, then drives `_stop_group_by_pgid_files`
+against it and times the call. A cooperative victim would prove nothing -- it
+would die on the SIGTERM whether or not the escalation existed. The suite
+asserts the seconds scale rather than a sub-second figure, because it runs on
+shared CI hardware and the claim that matters is "seconds, not the two hours
+the victim asked for".
+
+One caveat the suite records rather than hides: `loki stop` reaps by two
+independent routes (`_kill_pid` on the recorded pid, which carries its own
+`kill -9` escalation, and the process-group path above). Either alone kills the
+victim, so an end-to-end `loki stop` cannot attribute the bound to the group
+path. Verified by mutation: deleting the group SIGKILL left an end-to-end test
+green. The suite therefore drives the group reaper directly for the attributing
+assertion, and times the whole command separately for the number a user feels.
+
 From the dashboard Stop button the bound is larger: `_killpg_project`
 (`dashboard/server.py`) sends SIGTERM, polls for up to 5 seconds, then SIGKILL,
 and a confirming reaper sweep follows it. Treat the dashboard button as

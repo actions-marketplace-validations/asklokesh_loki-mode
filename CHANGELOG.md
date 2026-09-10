@@ -5,6 +5,89 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.28.1
+
+Four test suites that had been failing or silently not running, plus the test
+behind v9.28.0's one unbacked MEASURED label. **No product code changed** --
+every fix was a test asserting something about its environment that was not
+true, which is the same defect class v9.28.0 shipped to correct, found this
+time in our own suites.
+
+### Added
+
+- **`tests/test-stop-latency.sh`.** `docs/stop-latency.md` published "about 1
+  second to SIGKILL" and labelled it **MEASURED**, while the file it named as
+  the enforcing test did not exist. The number was derived from reading a
+  `sleep 1` in the source, never from timing a stop. A MEASURED label with no
+  measurement behind it is exactly what the previous release was about.
+
+  The suite now makes the label true. The victim installs a **SIGTERM trap** and
+  would otherwise sleep 7200 seconds, so it tests timeout-independence rather
+  than cooperative shutdown -- a victim that dies on SIGTERM would pass whether
+  or not the SIGKILL escalation existed.
+
+  Writing it surfaced a measurement error worth recording: the first version
+  drove `loki stop` end to end, and deleting the group SIGKILL entirely **left
+  it green**. `loki stop` reaps by two independent routes (`_kill_pid` on the
+  recorded pid, which carries its own `kill -9`, and the process-group path), so
+  an end-to-end test cannot attribute the bound to either. The suite now drives
+  `_stop_group_by_pgid_files` directly for the attributing assertion and times
+  the whole command separately. Both assertions are mutation-verified; the
+  end-to-end one alone was not sufficient.
+
+### Fixed
+
+- **`tests/test-dashboard-multiproject.sh` failed 4 of 29 assertions on macOS
+  and passed on Linux CI.** `_cleanup_registry_entry_state` refuses a PID
+  registry entry whose parent directory fails `realpath == abspath` -- a
+  deliberate symlink guard. On macOS `$TMPDIR` is `/var/folders/...` and `/var`
+  is a symlink to `/private/var`, so **every** entry the fixture built was
+  refused and the suite could never exercise the code it targeted. The product
+  check is correct; the fixture was the thing lying about its path. Resolved the
+  fixture root with `pwd -P`: 29/29.
+
+- **`tests/test-cluster-workflow.sh` had never printed a single result.** Under
+  `set -euo pipefail`, `((PASS++))` evaluates to PASS's *old* value, so with
+  PASS at 0 the first passing assertion returned exit status 1 and killed the
+  script -- no output, no counts, exit 1. Switched to `((++PASS))`, which
+  evaluates to the new value: 12/12. The suite was also in no runner, so nothing
+  had ever noticed.
+
+- **`tests/test-failover.sh` asserted host state it had assumed.** It treated an
+  absent `ANTHROPIC_API_KEY` as "no authentication" and demanded the provider
+  report UNHEALTHY. But `check_provider_health` deliberately accepts an API key
+  **or** an OAuth session, because Claude Code supports both -- so the suite
+  failed on every machine with a real Claude Code login while passing on a bare
+  CI runner. It now enumerates the same auth sources the function does and
+  asserts agreement with the documented contract: 14/14.
+
+- **`tests/test-cross-project-learning.sh` asserted a UI that no longer
+  exists.** Two assertions grepped `autonomy/.loki/dashboard/index.html` for
+  markers (`learnings-patterns`, `fetchLearnings`, and an `API_URL` literal).
+  That file was deleted in `a451fb02` and is untracked; those markers now appear
+  nowhere in the repo except in the test itself. `grep` on a missing file
+  reports failure without ever saying the file is gone.
+
+  The feature moved to the dashboard API rather than disappearing, so the
+  assertions were retargeted to the surface that exists: the
+  `/api/registry/learnings` endpoint and its `require_scope("read")` guard. The
+  scope guard is the property worth pinning -- a cross-project learnings store
+  read without authentication leaks one project's history to another. Both are
+  mutation-verified. 9/9.
+
+### Changed
+
+- **Three suites registered in `tests/run-all-tests.sh` for the first time**
+  (`test-cluster-workflow`, `test-cross-project-learning`, `test-failover`).
+  All three existed on disk and were in no runner, so CI had never executed
+  them; one of them had never produced output at all. They pass now, and a
+  future regression in any of them will be seen.
+
+- `docs/stop-latency.md` states precisely what MEASURED covers: which victim,
+  which call, and the two-reaping-routes caveat that keeps the end-to-end number
+  from attributing the bound. The STOP-file worst case stays **DERIVED**, and a
+  guard now fails if either label drifts from what the suite actually checks.
+
 ## v9.28.0
 
 Four defects, all the same species: the product asserting something it had not
