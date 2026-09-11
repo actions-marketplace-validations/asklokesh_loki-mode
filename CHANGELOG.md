@@ -5,6 +5,84 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.34.0
+
+The buyer's verification command gets a front door, and post-release smoke stops
+failing with no diagnostic.
+
+### Added
+
+- **`loki proof chain`.** `tools/verify-chain.py` runs the whole verification
+  chain and reports one verdict. It shipped in `package.json` `files[]` and **no
+  loki command surfaced it**, so the command a buyer runs to check our output
+  without trusting us was undiscoverable. Our wedge is "a receipt you verify
+  yourself"; a verifier nobody can invoke does not deliver it.
+
+  The tool's exit contract is preserved exactly: `0 PASSED`, `1 FAILED`,
+  `2 UNAVAILABLE`, `3 NOTHING`. Collapsing 2 or 3 into 1 would destroy the
+  distinction that makes the verdict worth anything: a chain that could not be
+  checked is not a chain that failed, and zero receipts is not a passing audit.
+  Both are asserted individually, and the human output says so in words rather
+  than only in an exit code.
+
+  Guarded by `tests/test-proof-chain-command.sh` (7 assertions). Three mutations
+  verified, including the two dangerous ones: turning UNAVAILABLE into a pass,
+  and swallowing the verdict so an empty workspace reports success.
+
+### Fixed
+
+- **Post-release smoke failed on npm and docker with no diagnostic, and the
+  handler that was supposed to explain why could never run.** The steps looked
+  correct:
+
+  ```
+  set -uo pipefail
+  loki doctor --json > /tmp/doctor.json
+  RC=$?
+  if [ "$RC" -ne 0 ]; then echo "FATAL: ..."; exit 1; fi
+  ```
+
+  GitHub runs steps with `bash -e {0}`, so `-e` is on regardless of that `set`
+  line. A non-zero exit aborts the step **before** `RC=$?` is read, so the
+  handler never runs and the job dies silently. Demonstrated rather than
+  asserted:
+
+  ```
+  bash    probe.sh -> "REACHED:1"   exit 0
+  bash -e probe.sh -> (no output)   exit 1
+  ```
+
+  Fixed with `|| RC=$?` at **five** sites across `post-release-smoke.yml` and
+  `test.yml` -- the same bug in every one -- and the handlers now print the
+  captured output, so the next failure says what broke instead of nothing.
+
+  Worth stating plainly: this was CI reporting a real problem badly, not a false
+  alarm. The npm and docker artifacts were fine.
+
+- **A misleading claim of my own, from v9.33.0.** That entry repeated an audit
+  finding that "~46 of 54 `tools/*.py` have no production callers". Measured:
+  **42 of them are operator-run CLI utilities with `__main__` entrypoints**,
+  which is a legitimate design, not dead code. Zero tools are dead. A CLI tool's
+  caller is the operator. The v9.33.0 entry is annotated in place with the
+  correction.
+
+### Added
+
+- **`tests/test-workflow-rc-capture.sh`** (4 assertions). The `bash -e` failure
+  mode is silent -- the workflow does not report "your handler is unreachable",
+  it just dies -- so it needs a guard rather than vigilance. The suite first
+  DEMONSTRATES the mechanism with a probe rather than asserting it from memory,
+  then scans all 21 workflow files, and guards against vacuity: a scan that
+  found no workflows would otherwise report nothing wrong.
+
+### Honest limits
+
+- `loki proof chain` fronts the existing verifier; it does not make the chain
+  stronger. What it verifies is still bounded by
+  `docs/AUDIT-CHAIN-THREAT-MODEL.md`.
+- On a developer host with broken skill symlinks, `loki doctor` exits 1 for a
+  real local reason. That is correct behaviour and is not changed here.
+
 ## v9.33.0
 
 Code that ships to every user and that nothing can reach. This release does not
@@ -78,9 +156,11 @@ delete it; it makes the repo unable to acquire more of it silently.
 
 ### Honest limits
 
-- Scope is `src/integrations/`. The audit found ~46 of 54 `tools/*.py` with no
-  production callers and `dashboard/api_evidence.py` likewise; those are not
-  covered by this scanner yet and are not claimed to be.
+- Scope is `src/integrations/`. An earlier framing of "~46 of 54 `tools/*.py`
+  have no production callers" is CORRECTED in v9.34.0: measured, 42 of them are
+  operator-run CLI utilities with `__main__` entrypoints, which is a legitimate
+  design rather than dead code. Zero tools are dead. `dashboard/api_evidence.py`
+  is not covered by this scanner and is not claimed to be.
 - Nothing was deleted. Every flagged module still ships; what changed is that
   each now carries a recorded verdict, and a new one cannot appear unnoticed.
 

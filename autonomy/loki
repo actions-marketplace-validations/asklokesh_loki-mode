@@ -36120,6 +36120,32 @@ PYEOF
             python3 "$passport_tool" "$contract" "$receipt_path" "$output" "$@"
             exit $?
             ;;
+        chain)
+            # The whole verification chain, one verdict. tools/verify-chain.py
+            # shipped in files[] and NO loki command surfaced it, so the command
+            # a buyer runs to check our output without trusting us was
+            # undiscoverable. That is the wedge, so it gets a front door.
+            #
+            # The tool's exit contract is preserved EXACTLY:
+            #   0 PASSED  1 FAILED  2 UNAVAILABLE  3 NOTHING
+            # Collapsing 2 or 3 into 1 would destroy the measured / unreadable /
+            # no-records distinction that makes the verdict worth anything: a
+            # chain that could not be checked is not a chain that failed.
+            local chain_tool="${SKILL_DIR}/tools/verify-chain.py"
+            if [ ! -f "$chain_tool" ]; then
+                echo -e "${RED}Chain verifier not found: ${chain_tool}${NC}" >&2
+                exit 2
+            fi
+            if ! command -v python3 >/dev/null 2>&1; then
+                echo -e "${RED}python3 unavailable: the chain could not be verified (UNAVAILABLE, not a pass)${NC}" >&2
+                exit 2
+            fi
+            # `set -e` is active (loki:22) and a FAILED verdict is a NORMAL
+            # result here, so a bare call would abort before the status is read.
+            local _chain_rc=0
+            python3 "$chain_tool" "$@" || _chain_rc=$?
+            exit $_chain_rc
+            ;;
         md)
             # Paste-able Markdown for a PR comment, a Slack message, or a
             # ticket. The renderer already existed -- render_evidence_receipt_md
