@@ -10,7 +10,7 @@ Loki Mode v5.51.0 includes a comprehensive enterprise layer for organizations th
 
 ### Security
 
-**[Enterprise Security](../docs/enterprise/security.md)** -- Authentication (token auth, OIDC/SSO), authorization (role-based scopes), API security (TLS, rate limiting, CORS), webhook security (HMAC-SHA256), hash-chained audit logging (detects corruption and truncation; NOT tamper-proof against an adversary with write access to the log -- see `docs/AUDIT-CHAIN-THREAT-MODEL.md`), syslog forwarding, data residency, and policy engine security.
+**[Enterprise Security](../docs/enterprise/security.md)** -- Authentication (token auth, OIDC/SSO), authorization (role-based scopes, enforced by `require_scope` on the dashboard API and active only when `LOKI_ENTERPRISE_AUTH` or OIDC is configured; with auth disabled every scope check returns allow, which is the default posture), API security (TLS, rate limiting, CORS), webhook security (HMAC-SHA256), hash-chained audit logging (detects corruption and truncation; NOT tamper-proof against an adversary with write access to the log -- see `docs/AUDIT-CHAIN-THREAT-MODEL.md`), syslog forwarding, data residency, and policy engine security.
 
 ### Performance
 

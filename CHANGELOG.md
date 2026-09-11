@@ -5,6 +5,74 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.32.0
+
+Who did it. An audit trail that cannot name an actor is not an audit trail, and
+a role label that enforces nothing is worse than no label.
+
+### Fixed
+
+- **Every audit entry claimed an actor nobody established.** `_audit()` in
+  `web-app/server.py` hardcoded `user="system"`, and neither of its two call
+  sites passed anything else. "system" is worse than blank: it asserts an actor
+  that was never verified.
+
+  This is the DEFAULT posture, not an edge case. `web-app/auth.py:1-4` states
+  that with no `DATABASE_URL` authentication is completely disabled and every
+  endpoint is open, and `/api/audit-log` carries no auth dependency. So in the
+  default configuration the actor is genuinely **unknowable**.
+
+  Entries now carry an `actor_state` of `identified`, `unauthenticated`, or
+  `unreadable`, and the three never collapse. An authenticated principal is
+  attributed by id; an unconfigured deployment says so rather than inventing a
+  name; and a lookup that throws is recorded as its own state so it cannot be
+  mistaken for "nobody was logged in". Attribution can never break the action it
+  describes.
+
+- **The team `role` field looked like a permission and enforced nothing.**
+  Measured: it is written (`:7887`) and echoed back and **never read for any
+  authorization decision** anywhere in the file. `/api/teams`,
+  `/api/teams/{id}/members` and `/api/audit-log` have no auth dependency at all.
+
+  Kept, because the UI displays it and removing it would break that surface, but
+  now labelled `NOT AN AUTHORIZATION CONTROL` at the point a reader would
+  otherwise trust it. A decorative control is worse than none: a buyer may rely
+  on it. Wiring real enforcement means putting an auth dependency on those
+  routes first, which is a larger change than a label and is not pretended here.
+
+- **`wiki/Enterprise.md` claimed "authorization (role-based scopes)" without its
+  precondition.** `require_scope` IS real enforcement on the dashboard API, but
+  `dashboard/auth.py:787-788` returns allow when neither `LOKI_ENTERPRISE_AUTH`
+  nor OIDC is configured, and that is the default. The claim now names the
+  mechanism and the condition under which it applies.
+
+- **The web-app audit log is not the tamper-evident one.** It rewrites a
+  500-entry JSON array in place on every append, so it is a recent-activity
+  view. Said so at the function, pointing at
+  `docs/AUDIT-CHAIN-THREAT-MODEL.md`, so it is not cited as audit evidence.
+
+### Added
+
+- **`tests/test-audit-actor-attribution.sh`** (8 assertions). It extracts and
+  drives the REAL `_audit` functions out of `server.py` rather than
+  reimplementing them, and asserts each of the three actor states individually
+  rather than checking that "an actor was recorded" -- a count or a presence
+  check would pass on the fabricated "system" it exists to prevent.
+
+  All mutations verified: restoring the hardcoded actor, collapsing `unreadable`
+  into `unauthenticated`, and ignoring an authenticated principal each turn the
+  suite red. The second matters most: folding the error state into the honest
+  one is the subtle version of this defect, and a test that only checked for
+  "not system" would have missed it.
+
+### Honest limits
+
+- This attributes actors; it does not authenticate them. With auth disabled the
+  honest answer stays `unauthenticated` for every entry, which is accurate and
+  not useful. Turning that into `identified` requires enabling auth, which is a
+  deployment decision.
+- The `role` field still enforces nothing. It is now labelled, not wired.
+
 ## v9.31.0
 
 Two defects that together meant the policy engine, which is real and correct,
