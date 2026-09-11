@@ -5,6 +5,38 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.34.1
+
+v9.34.0 did not publish: its own new test failed CI, so Release refused. The
+gate worked. This ships the same content plus the fix.
+
+### Fixed
+
+- **My `tests/test-workflow-rc-capture.sh` failed CI on good files.** Its YAML
+  assertion ran `import yaml` and treated ANY exception as "invalid YAML".
+  `pyyaml` is installed on a developer laptop and **not** on the GitHub runner,
+  so an ImportError was reported as a broken workflow file. Every file was fine.
+
+  That is the unmeasured-versus-failed confusion this release series exists to
+  correct, committed by the guard written to prevent it. Now delegated to
+  `tests/lib/check-workflow-yaml.py`, which reports three states that never
+  collapse: `OK`, `NO_PARSER` (skipped, explicitly not counted as a pass), and
+  `INVALID` (named, with the reason).
+
+  Verified under a simulated runner with `pyyaml` hidden: the suite reports SKIP
+  and exits 0. Both arms mutation-tested -- genuinely invalid YAML still FAILS
+  rather than skipping, and reintroducing an unreachable `RC=$?` handler still
+  fails.
+
+  The workflow RC scan moved to `tests/lib/scan-workflow-rc.py` for the same
+  reason the YAML check did: an inline heredoc inside a shell heredoc broke the
+  file twice while editing it.
+
+- **Post-release smoke diagnostics now print the FAILING checks**, not the first
+  40 lines of a long JSON document. The v9.34.0 fix made CI print doctor output
+  for the first time, and the output was truncated before reaching the entry
+  that failed -- better than silence, still not diagnostic.
+
 ## v9.34.0
 
 The buyer's verification command gets a front door, and post-release smoke stops

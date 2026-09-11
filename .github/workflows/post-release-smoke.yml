@@ -137,7 +137,9 @@ jobs:
           if [ "$RC" -ne 0 ]; then
             echo "FATAL: loki doctor --json exited with $RC"
             echo "--- doctor output (what actually failed) ---"
-            cat /tmp/doctor.json 2>/dev/null | head -40 || echo "(no output captured)"
+            grep -B3 '"status": "fail"' /tmp/doctor.json 2>/dev/null | head -30 || true
+            grep -A5 '"summary"' /tmp/doctor.json 2>/dev/null | head -10 || true
+            head -5 /tmp/doctor.json 2>/dev/null || echo "(no output captured)"
             exit 1
           fi
           python3 -c "import json,sys; json.load(open('/tmp/doctor.json')); print('doctor --json is valid JSON')"
@@ -191,7 +193,9 @@ jobs:
           if [ "$RC" -ne 0 ]; then
             echo "FATAL: docker doctor --json exited with $RC"
             echo "--- doctor output (what actually failed) ---"
-            cat /tmp/docker-doctor.json 2>/dev/null | head -40 || echo "(no output captured)"
+            grep -B3 '"status": "fail"' /tmp/docker-doctor.json 2>/dev/null | head -30 || true
+            grep -A5 '"summary"' /tmp/docker-doctor.json 2>/dev/null | head -10 || true
+            head -5 /tmp/docker-doctor.json 2>/dev/null || echo "(no output captured)"
             exit 1
           fi
           python3 -c "import json,sys; json.load(open('/tmp/docker-doctor.json')); print('docker doctor --json is valid JSON')"
