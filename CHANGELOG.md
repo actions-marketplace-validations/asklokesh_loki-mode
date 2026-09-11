@@ -5,6 +5,177 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.38.0
+
+Four receipt fields that degraded to values indistinguishable from success.
+
+### Fixed
+
+- **A phantom reviewer inflated the council roster.** A real proof artifact
+  carried FOUR `council.reviewers[]` entries where three agents voted; the
+  fourth was `role:"" vote:"" summary:""`, materialized from a
+  devil's-advocate file that is not a reviewer. A buyer counting reviewers on
+  the receipt counted one that never voted. The flat reviewer path now skips a
+  record carrying neither a role nor a vote. Measured on the real artifact:
+  4 rows -> 3, roles `convergence-voter`, `requirements-verifier`,
+  `test-auditor`.
+
+- **`disabled_phases` always reported `[]`.** The audit finding as written said
+  `loki_apply_build_profile` "never exports"; that was wrong, it has 24 export
+  lines. The real defect is sharper: it exported exactly the five phases it
+  ENABLES and none of the six it DISABLES, so the receipt structurally could
+  not report what a build profile had switched off. An absent export reads as
+  "nothing was disabled", which is the same shape of lie as a zero that means
+  "unmeasured". Six phases now export: `api_tests`, `integration`,
+  `performance`, `regression`, `uat`, `web_research`.
+
+- **`cost.usd` summed a `0.0` default for unpriced records.** `available` was a
+  single flag covering cost AND tokens, so a run with real token counts and no
+  priced record reported `usd: 0.0, available: true` -- the receipt asserting
+  the run cost nothing while its own token counts proved work happened. Cost
+  now reports separately:
+
+  | records | usd | cost_available | cost_partial |
+  |---|---|---|---|
+  | priced | 0.5 | true | false |
+  | explicit `cost_usd: 0` | 0.0 | true | false |
+  | priced + key absent on some | 0.5 | true | true (lower bound) |
+  | tokens, no cost key anywhere | null | false | -- |
+
+  An explicit measured `{"cost_usd": 0}` is a GENUINE zero (a free cache-hit
+  iteration) and stays `0.0`. The first version of this fix keyed on
+  `cost_usd > 0` and nulled that case, which is its own dishonesty; it keys on
+  PRESENCE of the field instead. `test_genuine_zero_cost_stays_zero_not_null`
+  passes unmodified, which is the check that no contract was redefined to fit
+  the change.
+
+- **`base_sha` was a fabricated empty-tree constant on a non-git run.**
+  `_empty_tree_sha` returned the well-known `4b825dc6...` hash without first
+  establishing that a repository exists, so a receipt from a non-git workspace
+  carried a real-looking base SHA for a tree it never read. It now runs
+  `git rev-parse --is-inside-work-tree` first and returns `""` outside a repo,
+  matching the `head_sha -> ""` discipline already applied next to it. In a
+  real repo the constant is preserved unchanged.
+
+### Not fixed, and why
+
+`wall_clock_sec` returns `0` on unparseable timestamps and on a negative delta,
+so "could not measure" would be indistinguishable from "no time elapsed". It is
+left OPEN-UNREPRODUCED rather than fixed: the real artifact reports `396`
+correctly against its own timestamps, and neither collapse path has been
+observed. Changing a JSON contract and the HTML renderer that reads it, on a
+defect that cannot be demonstrated, is the speculative work this program exists
+to avoid.
+
+### Provenance
+
+These are 4 of 9 confirmed findings from a 34-agent receipt-integrity audit
+(606 tool uses, six evidence surfaces in parallel). Every candidate was
+adversarially refuted by an independent agent before counting: **28 candidates
+-> 9 confirmed, 19 refuted.** That 68% refutation rate is the point -- nineteen
+plausible-looking findings would have become false claims about our own
+product. With v9.37.0's HIGH chain, 7 of 9 are now fixed.
+
+Guarded by `tests/test-static-analysis-noop-not-pass.sh`, which now carries 10
+assertions across all four fixes plus the v9.37.0 pair. Each fix was
+mutation-verified in both directions: reverting it goes red, and over-correcting
+goes red too.
+
+## v9.37.0
+
+A gate that scanned nothing no longer reports a pass, and the receipt says NOT
+VERIFIED when nothing was verified.
+
+### Fixed
+
+- **`static_analysis` reported `passed` after examining ZERO files.** When there
+  were no changed files to check, `enforce_static_analysis` touched
+  `static-analysis.pass` and returned. The receipt reader promotes a bare `.pass`
+  marker straight to `status: "passed"` (`proof-generator.py:352-353`), so a gate
+  that examined nothing rendered identically to one that examined everything and
+  found it clean.
+
+  **This was not cosmetic.** `static_analysis` is typically the only EXOGENOUS
+  (agent-independent) gate in a receipt, and `any_verified`
+  (`proof-generator.py:1694-1707`) is satisfied by a single passed exogenous
+  gate. That no-op pass was the one term standing between the honest headline and
+  a green-ish one. Measured through the real reader and the real headline
+  function:
+
+  | static_analysis | exogenous passed | headline |
+  |---|---|---|
+  | `passed` (before) | 1/1 | VERIFIED WITH GAPS |
+  | `inconclusive` (after) | 0/1 | **NOT VERIFIED** |
+
+  Observed on a real run in a NON-GIT directory: file discovery is git-based, so
+  `changed_files` was empty, the gate examined none of the three files the run
+  had just created, and the receipt still reported a passing exogenous gate. That
+  run left `static-analysis.pass` at 0 bytes with `static-analysis.json` absent --
+  a combination only the no-changed-files early return produces.
+
+  The path now writes `{"files_checked":0,"status":"inconclusive",
+  "reason":"no_changed_files"}` and does not touch the marker.
+
+  **INCONCLUSIVE, not failed**, deliberately: having nothing to scan is not a
+  defect in the delivered code, and reporting a failure would trade one
+  dishonesty for another while blocking runs that legitimately changed nothing.
+  The gate still returns 0 -- only the CLAIM changed, not the control flow.
+
+  Guarded by `tests/test-static-analysis-noop-not-pass.sh` (5 assertions). Two
+  mutations verified: restoring the `touch` goes red, and over-correcting to
+  `failed` also goes red. The guard catches dishonesty in both directions.
+
+- **`unit_tests` reported `passed` for a project with no test runner.** The same
+  defect, one gate over. The no-test-runner branch wrote an honest record
+  (`{"runner":"none","status":"not_run","pass":"inconclusive"}`) and ALSO touched
+  `unit-tests.pass`. The reader checks the marker FIRST, so the honest record was
+  never read, and the receipt claimed a passing gate while `honesty.degraded` in
+  the same document said tests did not run.
+
+  What kept the bug alive was a comment asserting *"unit-tests.pass is only read
+  for the status-line display"*. That premise was false --
+  `proof-generator.py:346` reads the same marker into the receipt. Measured by
+  driving the real collector:
+
+  ```
+  marker present + {"status":"not_run"} json  -> "passed"
+  json only, no marker                        -> "not_run"
+  ```
+
+  The touch is removed. All three outcomes now stay distinct and were each
+  verified: real tests pass -> `passed`; no runner -> `not_run`; real tests fail
+  -> `failed`. Non-blocking behaviour is preserved by the existing `return 0`,
+  not by claiming a pass. The status line falls back to PENDING, which is the
+  truthful rendering for a project whose tests never ran.
+
+### How this was found
+
+A receipt-integrity audit ran 34 agents across six evidence surfaces of
+`proof.json`, asking one question per field: is this populated by an independent
+measurement, or can it silently degrade to a value a reader would interpret as
+success? Every candidate finding was then adversarially refuted by a separate
+agent.
+
+**28 candidate findings -> 9 confirmed, 19 refuted.** The refutations were
+substantive ("the explicit unmeasured marker EXISTS", "cosmetic, no reader could
+be misled"), and that 68% refutation rate is the point: nineteen plausible claims
+about our own receipt did not survive contact with the source.
+
+The three HIGH findings were all the same defect and are all closed by one
+change. One MEDIUM finding (`unit_tests`) turned out to be the same defect again
+and is fixed here too. Five MEDIUM findings remain and are being worked in
+order.
+
+### Honest limits
+
+- This fixes the CLAIM, not the coverage. A non-git workspace still yields no
+  changed files, so static analysis genuinely has nothing to scan there; the
+  receipt now says so instead of implying a clean scan.
+- The six MEDIUM findings are not addressed here: `unit_tests` passing via the
+  no-test-runner branch, `base_sha` as a fabricated empty-tree constant, a
+  phantom reviewer row, `disabled_phases` reporting `[]`, `cost.usd` summing a
+  `0.0` default, and `wall_clock_sec` collapsing.
+
 ## v9.36.0
 
 The most expensive step in a build now reports how long it took.
