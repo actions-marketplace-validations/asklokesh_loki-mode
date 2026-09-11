@@ -5,6 +5,85 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.33.0
+
+Code that ships to every user and that nothing can reach. This release does not
+delete it; it makes the repo unable to acquire more of it silently.
+
+### Fixed
+
+- **"Jira bidirectional sync" and "Linear bidirectional sync" were never
+  reachable.** Both were built, tested, and listed in `package.json` `files[]`,
+  so they ship to every npm user and CI stays green because their own tests
+  import them. Nothing runs them.
+
+  Verified, not inferred: the only dispatcher is
+  `src/integrations/sync-subscriber.js`, and **nothing spawns it** (the only
+  matches for its name in the repo are its own log strings). Even if something
+  did, its Jira branch would throw on construction: it passes `{baseUrl, token}`
+  while `jira/api-client.js:32` requires `{baseUrl, email, apiToken}`.
+  Reproduced by execution:
+
+  ```
+  THROWS with the caller shape: JiraApiClient requires baseUrl, email, and apiToken
+  constructed OK with the documented shape
+  ```
+
+  The 2026 CHANGELOG entry advertising both is annotated in place with the
+  correction rather than rewritten, because it shipped and the record should
+  show what was claimed and what was true.
+
+  **What IS real:** the Jira READ path. `loki start PROJ-456`
+  (`autonomy/issue-providers.sh:321`) works and `README.md:634` documents the
+  right env vars. Write-back does not exist. Linear has no read path either, so
+  Linear support is not user-reachable at all -- recorded here rather than
+  advertised.
+
+### Added
+
+- **`tests/lib/scan-unreachable-shipped.py` and
+  `tests/test-no-unreachable-shipped.sh`** (4 assertions). The durable
+  deliverable: the repo can no longer acquire shipped-but-unreachable modules
+  without someone recording a decision.
+
+  The distinction it enforces is the one that took this defect years to surface.
+  Not "does anything reference this file" -- tests and CI smoke-imports
+  reference everything -- but "does any RUNTIME path reach it". Four of the
+  seven flagged modules are required only by
+  `.github/workflows/integrity-audit.yml` running `node -e "require(...)"`,
+  which proves they LOAD, never that they RUN.
+
+  Allowlisting requires a REASON, and an entry whose reason is blank fails the
+  suite. That is deliberate: a mute button would recreate the defect one level
+  up, and this guard exists precisely because plausible-looking evidence
+  (passing tests, green CI, a files[] entry) hid unreachable code.
+
+  Two corrections found while building it, both by the guard failing on itself:
+
+  - It first reported **zero** unreachable modules, because
+    `graphify-out/cache/stat-index.json` indexes every path in the repo and
+    matched everything. A generated cache is not a caller. Excluding generated
+    trees took the count from 0 to 17.
+  - Those 17 included false positives: a bare substring matched
+    `api-client.js` against a dashboard-ui component and `package-lock.json`.
+    Proximity is not a caller. Matching require/import/spawn SYNTAX took 17 down
+    to the 7 real ones.
+
+  The suite also asserts the scan is **non-vacuous** (22 modules against 810
+  files). A scanner that examines nothing reports nothing missing, and an empty
+  result is an absent measurement rather than a pass.
+
+  All mutations verified: a new unreachable module, an allowlist entry with an
+  empty reason, and removing the CHANGELOG correction each turn the suite red.
+
+### Honest limits
+
+- Scope is `src/integrations/`. The audit found ~46 of 54 `tools/*.py` with no
+  production callers and `dashboard/api_evidence.py` likewise; those are not
+  covered by this scanner yet and are not claimed to be.
+- Nothing was deleted. Every flagged module still ships; what changed is that
+  each now carries a recorded verdict, and a new one cannot appear unnoticed.
+
 ## v9.32.0
 
 Who did it. An audit trail that cannot name an actor is not an audit trail, and
@@ -24364,7 +24443,14 @@ multi-persona debate (MoMoA) into a native Loki subsystem.
 
 ### Added - Enterprise Integrations (P0-6, P0-7, P0-8)
 - Jira bidirectional sync: epic-to-PRD conversion, webhook handler, sub-task creation
+  (CORRECTION, v9.33.0: the modules were built and tested but never wired. No
+  runtime path reaches them: the only dispatcher, src/integrations/sync-subscriber.js,
+  is never spawned, and its Jira branch would throw on construction. The Jira
+  READ path users actually use is autonomy/issue-providers.sh:321 and is real;
+  write-back is not. See v9.33.0.)
 - Linear bidirectional sync: reusable adapter pattern, webhook support
+  (CORRECTION, v9.33.0: same as above, and Linear has no shell read path either,
+  so Linear support is not user-reachable at all.)
 - GitHub Actions: enterprise trigger patterns, fork trust controls, expression injection prevention
 
 ### Security
