@@ -24514,12 +24514,31 @@ EOF
                 _loki_check_claim_grounding || true
             fi
             local _loki_completion_ready=1
+            # TIME THE COUNCIL. Measured on a one-function build: the agent did
+            # the work in 71s and the council window was 142s -- the largest
+            # single cost in the run -- yet it was the one major step with no
+            # stage_complete record, so its cost could only be INFERRED from
+            # artifact mtimes. Inferring duration from mtimes is invalid (an
+            # mtime says when a file was written, not how long a step took), and
+            # doing so produced a wrong attribution that had to be retracted.
+            # Emitting the real number makes the profile measured rather than
+            # guessed. Purely additive: emit_stage_complete never changes a
+            # verdict, an exit code, or control flow.
+            local _council_t0
+            _council_t0=$(date +%s 2>/dev/null || echo "")
             if loki_is_supervised_simple_web; then
                 _loki_supervised_completion_gates_pass "${gate_failures:-}" && _loki_completion_ready=0
             elif type council_should_stop &>/dev/null \
                  && LOKI_COMPLETION_CLAIMED="$_loki_completion_claimed" council_should_stop; then
                 _loki_completion_ready=0
             fi
+            # Status reports what the council DECIDED, not whether it errored:
+            # "pass" = it approved a stop, "not_run" = it ran and declined to
+            # stop (the build continues). Both are normal outcomes; neither is a
+            # failure, so neither is reported as one.
+            emit_stage_complete "completion_council" \
+                "$([ "$_loki_completion_ready" -eq 0 ] 2>/dev/null && echo pass || echo not_run)" \
+                "$_council_t0" 2>/dev/null || true
             if [ "$_loki_completion_ready" -eq 0 ]; then
                 # bash-F1: council_should_stop returns 0 from a genuine approval
                 # AND from two force-stop safety valves (stagnation flood /
