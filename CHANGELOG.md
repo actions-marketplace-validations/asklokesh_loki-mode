@@ -5,6 +5,197 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.34.1
+
+v9.34.0 did not publish: its own new test failed CI, so Release refused. The
+gate worked. This ships the same content plus the fix.
+
+### Fixed
+
+- **My `tests/test-workflow-rc-capture.sh` failed CI on good files.** Its YAML
+  assertion ran `import yaml` and treated ANY exception as "invalid YAML".
+  `pyyaml` is installed on a developer laptop and **not** on the GitHub runner,
+  so an ImportError was reported as a broken workflow file. Every file was fine.
+
+  That is the unmeasured-versus-failed confusion this release series exists to
+  correct, committed by the guard written to prevent it. Now delegated to
+  `tests/lib/check-workflow-yaml.py`, which reports three states that never
+  collapse: `OK`, `NO_PARSER` (skipped, explicitly not counted as a pass), and
+  `INVALID` (named, with the reason).
+
+  Verified under a simulated runner with `pyyaml` hidden: the suite reports SKIP
+  and exits 0. Both arms mutation-tested -- genuinely invalid YAML still FAILS
+  rather than skipping, and reintroducing an unreachable `RC=$?` handler still
+  fails.
+
+  The workflow RC scan moved to `tests/lib/scan-workflow-rc.py` for the same
+  reason the YAML check did: an inline heredoc inside a shell heredoc broke the
+  file twice while editing it.
+
+- **Post-release smoke diagnostics now print the FAILING checks**, not the first
+  40 lines of a long JSON document. The v9.34.0 fix made CI print doctor output
+  for the first time, and the output was truncated before reaching the entry
+  that failed -- better than silence, still not diagnostic.
+
+## v9.34.0
+
+The buyer's verification command gets a front door, and post-release smoke stops
+failing with no diagnostic.
+
+### Added
+
+- **`loki proof chain`.** `tools/verify-chain.py` runs the whole verification
+  chain and reports one verdict. It shipped in `package.json` `files[]` and **no
+  loki command surfaced it**, so the command a buyer runs to check our output
+  without trusting us was undiscoverable. Our wedge is "a receipt you verify
+  yourself"; a verifier nobody can invoke does not deliver it.
+
+  The tool's exit contract is preserved exactly: `0 PASSED`, `1 FAILED`,
+  `2 UNAVAILABLE`, `3 NOTHING`. Collapsing 2 or 3 into 1 would destroy the
+  distinction that makes the verdict worth anything: a chain that could not be
+  checked is not a chain that failed, and zero receipts is not a passing audit.
+  Both are asserted individually, and the human output says so in words rather
+  than only in an exit code.
+
+  Guarded by `tests/test-proof-chain-command.sh` (7 assertions). Three mutations
+  verified, including the two dangerous ones: turning UNAVAILABLE into a pass,
+  and swallowing the verdict so an empty workspace reports success.
+
+### Fixed
+
+- **Post-release smoke failed on npm and docker with no diagnostic, and the
+  handler that was supposed to explain why could never run.** The steps looked
+  correct:
+
+  ```
+  set -uo pipefail
+  loki doctor --json > /tmp/doctor.json
+  RC=$?
+  if [ "$RC" -ne 0 ]; then echo "FATAL: ..."; exit 1; fi
+  ```
+
+  GitHub runs steps with `bash -e {0}`, so `-e` is on regardless of that `set`
+  line. A non-zero exit aborts the step **before** `RC=$?` is read, so the
+  handler never runs and the job dies silently. Demonstrated rather than
+  asserted:
+
+  ```
+  bash    probe.sh -> "REACHED:1"   exit 0
+  bash -e probe.sh -> (no output)   exit 1
+  ```
+
+  Fixed with `|| RC=$?` at **five** sites across `post-release-smoke.yml` and
+  `test.yml` -- the same bug in every one -- and the handlers now print the
+  captured output, so the next failure says what broke instead of nothing.
+
+  Worth stating plainly: this was CI reporting a real problem badly, not a false
+  alarm. The npm and docker artifacts were fine.
+
+- **A misleading claim of my own, from v9.33.0.** That entry repeated an audit
+  finding that "~46 of 54 `tools/*.py` have no production callers". Measured:
+  **42 of them are operator-run CLI utilities with `__main__` entrypoints**,
+  which is a legitimate design, not dead code. Zero tools are dead. A CLI tool's
+  caller is the operator. The v9.33.0 entry is annotated in place with the
+  correction.
+
+### Added
+
+- **`tests/test-workflow-rc-capture.sh`** (4 assertions). The `bash -e` failure
+  mode is silent -- the workflow does not report "your handler is unreachable",
+  it just dies -- so it needs a guard rather than vigilance. The suite first
+  DEMONSTRATES the mechanism with a probe rather than asserting it from memory,
+  then scans all 21 workflow files, and guards against vacuity: a scan that
+  found no workflows would otherwise report nothing wrong.
+
+### Honest limits
+
+- `loki proof chain` fronts the existing verifier; it does not make the chain
+  stronger. What it verifies is still bounded by
+  `docs/AUDIT-CHAIN-THREAT-MODEL.md`.
+- On a developer host with broken skill symlinks, `loki doctor` exits 1 for a
+  real local reason. That is correct behaviour and is not changed here.
+
+## v9.33.0
+
+Code that ships to every user and that nothing can reach. This release does not
+delete it; it makes the repo unable to acquire more of it silently.
+
+### Fixed
+
+- **"Jira bidirectional sync" and "Linear bidirectional sync" were never
+  reachable.** Both were built, tested, and listed in `package.json` `files[]`,
+  so they ship to every npm user and CI stays green because their own tests
+  import them. Nothing runs them.
+
+  Verified, not inferred: the only dispatcher is
+  `src/integrations/sync-subscriber.js`, and **nothing spawns it** (the only
+  matches for its name in the repo are its own log strings). Even if something
+  did, its Jira branch would throw on construction: it passes `{baseUrl, token}`
+  while `jira/api-client.js:32` requires `{baseUrl, email, apiToken}`.
+  Reproduced by execution:
+
+  ```
+  THROWS with the caller shape: JiraApiClient requires baseUrl, email, and apiToken
+  constructed OK with the documented shape
+  ```
+
+  The 2026 CHANGELOG entry advertising both is annotated in place with the
+  correction rather than rewritten, because it shipped and the record should
+  show what was claimed and what was true.
+
+  **What IS real:** the Jira READ path. `loki start PROJ-456`
+  (`autonomy/issue-providers.sh:321`) works and `README.md:634` documents the
+  right env vars. Write-back does not exist. Linear has no read path either, so
+  Linear support is not user-reachable at all -- recorded here rather than
+  advertised.
+
+### Added
+
+- **`tests/lib/scan-unreachable-shipped.py` and
+  `tests/test-no-unreachable-shipped.sh`** (4 assertions). The durable
+  deliverable: the repo can no longer acquire shipped-but-unreachable modules
+  without someone recording a decision.
+
+  The distinction it enforces is the one that took this defect years to surface.
+  Not "does anything reference this file" -- tests and CI smoke-imports
+  reference everything -- but "does any RUNTIME path reach it". Four of the
+  seven flagged modules are required only by
+  `.github/workflows/integrity-audit.yml` running `node -e "require(...)"`,
+  which proves they LOAD, never that they RUN.
+
+  Allowlisting requires a REASON, and an entry whose reason is blank fails the
+  suite. That is deliberate: a mute button would recreate the defect one level
+  up, and this guard exists precisely because plausible-looking evidence
+  (passing tests, green CI, a files[] entry) hid unreachable code.
+
+  Two corrections found while building it, both by the guard failing on itself:
+
+  - It first reported **zero** unreachable modules, because
+    `graphify-out/cache/stat-index.json` indexes every path in the repo and
+    matched everything. A generated cache is not a caller. Excluding generated
+    trees took the count from 0 to 17.
+  - Those 17 included false positives: a bare substring matched
+    `api-client.js` against a dashboard-ui component and `package-lock.json`.
+    Proximity is not a caller. Matching require/import/spawn SYNTAX took 17 down
+    to the 7 real ones.
+
+  The suite also asserts the scan is **non-vacuous** (22 modules against 810
+  files). A scanner that examines nothing reports nothing missing, and an empty
+  result is an absent measurement rather than a pass.
+
+  All mutations verified: a new unreachable module, an allowlist entry with an
+  empty reason, and removing the CHANGELOG correction each turn the suite red.
+
+### Honest limits
+
+- Scope is `src/integrations/`. An earlier framing of "~46 of 54 `tools/*.py`
+  have no production callers" is CORRECTED in v9.34.0: measured, 42 of them are
+  operator-run CLI utilities with `__main__` entrypoints, which is a legitimate
+  design rather than dead code. Zero tools are dead. `dashboard/api_evidence.py`
+  is not covered by this scanner and is not claimed to be.
+- Nothing was deleted. Every flagged module still ships; what changed is that
+  each now carries a recorded verdict, and a new one cannot appear unnoticed.
+
 ## v9.32.0
 
 Who did it. An audit trail that cannot name an actor is not an audit trail, and
@@ -24364,7 +24555,14 @@ multi-persona debate (MoMoA) into a native Loki subsystem.
 
 ### Added - Enterprise Integrations (P0-6, P0-7, P0-8)
 - Jira bidirectional sync: epic-to-PRD conversion, webhook handler, sub-task creation
+  (CORRECTION, v9.33.0: the modules were built and tested but never wired. No
+  runtime path reaches them: the only dispatcher, src/integrations/sync-subscriber.js,
+  is never spawned, and its Jira branch would throw on construction. The Jira
+  READ path users actually use is autonomy/issue-providers.sh:321 and is real;
+  write-back is not. See v9.33.0.)
 - Linear bidirectional sync: reusable adapter pattern, webhook support
+  (CORRECTION, v9.33.0: same as above, and Linear has no shell read path either,
+  so Linear support is not user-reachable at all.)
 - GitHub Actions: enterprise trigger patterns, fork trust controls, expression injection prevention
 
 ### Security
