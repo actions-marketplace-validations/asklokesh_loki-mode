@@ -509,6 +509,7 @@ run_test "audit chain claims match what the chain proves" "$SCRIPT_DIR/test-audi
 run_test "audit subsystem Node suites (witness, manifest, crosslink)" "$SCRIPT_DIR/test-audit-js-suites.sh"
 run_test "shipped agent roles reach the review pool" "$SCRIPT_DIR/test-agent-types-loaded.sh"
 run_test "policy present but unevaluable refuses fail-closed" "$SCRIPT_DIR/test-policy-node-failclosed.sh"
+run_test "audit entries attribute an actor honestly" "$SCRIPT_DIR/test-audit-actor-attribution.sh"
 # Registered here for the first time. All three existed on disk but were in no
 # runner, so CI had never executed them; test-cluster-workflow.sh had never even
 # printed a result (set -e killed it on its first pass()). Each passes now.
