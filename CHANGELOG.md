@@ -5,6 +5,139 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.36.0
+
+The most expensive step in a build now reports how long it took.
+
+### Added
+
+- **`completion_council` stage timing.** Sixteen build stages emit a
+  `stage_complete` record carrying `duration_s`. The completion council did not
+  -- and on a measured one-function build the council window was **142s against
+  71s of actual agent work**, making it the largest single cost in the run and
+  the only major step whose cost could not be read from an emitted event.
+
+  It now emits one record like every other stage. `status` reports what the
+  council DECIDED: `pass` when it approved a stop, `not_run` when it ran and
+  declined to stop. Both are normal outcomes, so neither is reported as a
+  failure.
+
+  **Purely additive.** The dispatched decision is unchanged; the emit only reads
+  `_loki_completion_ready`, never assigns to it, and a failing emitter cannot
+  fail the caller.
+
+  Guarded by `tests/test-council-stage-timing.sh` (6 assertions).
+
+### Fixed
+
+- **"Installed 9.35.0" then `loki --version` says 9.22.3, and the nudge tells you
+  to install again.** Reported by a user, reproduced exactly:
+
+  ```
+  $ bun install -g loki-mode
+  installed loki-mode@9.35.0
+  $ loki --version
+  Loki Mode v9.22.3
+  A newer Loki Mode is available: 9.35.0 (you have 9.22.3). Update: bun install -g loki-mode
+  ```
+
+  The install worked. A **different, older loki sat earlier on PATH** and kept
+  winning -- here a leftover `~/.local/bin/loki` symlink into an old npm-global
+  tree under Homebrew's node. Reinstalling updates a copy PATH never reaches, so
+  the advice sent the user round a loop with no exit.
+
+  The nudge now detects a newer copy that is already installed but shadowed, and
+  says so:
+
+  ```
+  Loki Mode 9.35.0 is installed but not the one running (you are running 9.22.3).
+    Another loki earlier on PATH is winning. Newer copy: /Users/you/.bun/bin/loki
+    Run `which -a loki` to see the order, then remove or re-point the earlier entry.
+  ```
+
+  Best-effort and fail-silent: an unreadable or non-package PATH entry is
+  skipped, so the worst case is the ordinary update hint, never a crash or a
+  false report. Guarded by 5 tests in
+  `loki-ts/tests/util/update_check.test.ts`; verified against the unfixed code,
+  where the reported behaviour returns and the test fails.
+
+  Found while fixing this: the existing update-check tests read the host's real
+  PATH, so a developer machine that genuinely had a shadowed install broke an
+  unrelated assertion. The shared setup now pins PATH and restores it, and the
+  pre-existing test passes **unmodified**.
+
+- **A timed-out benchmark run leaked its whole process tree.**
+  `subprocess.run(timeout=...)` kills only the process it spawned.
+  `loki start` re-execs as `/tmp/loki-run-*.sh` and spawns its own descendants,
+  so a timed-out cell left that tree ALIVE and still holding provider capacity.
+
+  Measured, not theorised: stopping a benchmark matrix leaked **seven** live
+  `loki-bench-loki-*` runs that survived more than an hour. They starved later
+  trials into their own 600s timeouts and made clean verification runs look
+  like they had "died immediately". **A timeout that does not reap manufactures
+  the very failure it reports** -- the next trial times out because the last one
+  is still running.
+
+  `run_cli` now spawns with `start_new_session` and, on timeout, signals the
+  whole process group: TERM first so the engine can flush state, then KILL for
+  whatever remains. The injected-`runner` seam that tests mock through is
+  untouched and is asserted to stay that way.
+
+  Guarded by `benchmarks/bench/tests/test_timeout_reaps_tree.py` (3 tests). The
+  grandchild is asserted BY PID after the timeout returns, because a test that
+  only checked the direct child would have passed against the buggy code --
+  `subprocess.run` always killed that one. Verified against the original code:
+  the grandchild survives, and the test fails.
+
+### Why this was worth a release
+
+Because the alternative is what I did first: I inferred the cost profile from
+artifact mtimes and got it wrong.
+
+Reading a 58s gap between two file timestamps, I attributed it to a specific
+step. That inference is invalid: an mtime records WHEN a file was written, not
+how long the step that wrote it took.
+
+Then I compounded it. Re-measuring the suspected step directly gave 0.09s, so I
+retracted the claim -- but that measurement was taken against a project whose
+artifacts already existed, so a cache short-circuited the work. I had measured
+the cache-hit path and reported it as the cost of the step.
+
+What finally settled it was watching a live run with `ps`: **eight concurrent
+`claude` processes**, with several steps in flight at once. The run is not a
+sequence of additive phases, so per-phase attribution that assumes serial
+execution is measuring overlapping work no matter how carefully the timestamps
+are read.
+
+That is the case for emitting the number. A `stage_complete` record brackets a
+real start and end; a profile assembled from file timestamps is archaeology, and
+one assembled from a cache hit is worse.
+
+### Honest limits
+
+- This measures the council; it does not make it cheaper. What the 142s buys is
+  the completion verdict behind the receipt.
+- **The new record is unit-verified, not yet observed in a live run.** The
+  assertions drive `emit_stage_complete` directly and are mutation-verified, but
+  every end-to-end run attempted for this release completed through a path that
+  did not reach the council dispatch, so no live `completion_council` record has
+  been captured yet. Stated plainly rather than implied: the code is guarded, the
+  field measurement is still outstanding.
+- Of a measured 508s build, `agent` (71s), `code_review` (128s) and now
+  `completion_council` are attributable from emitted events. The remainder is
+  still unattributed, and it will stay that way until it is instrumented too --
+  it is deliberately NOT estimated here.
+- **Stage durations do not sum to wall clock, and must not be presented as if
+  they do.** Steps run concurrently: a live run shows the council, the wiki
+  generator and the reviewers all dispatching provider calls at the same time
+  (eight `claude` processes observed at once). Each record is a real bracket
+  around one stage; the set of them is not a partition of the run.
+- On that build all six council evidence gates reported `Pass-through`
+  (`no_test_runner`, `no_app_runner`, `no_ui_files`, `not_serveable`), so the
+  voters ran where there was structurally nothing to verify. That is a real
+  efficiency signal, but acting on it needs the measurement this release adds,
+  not an inference.
+
 ## v9.35.0
 
 When the model you pinned is not the model that ran, the receipt now says so.
