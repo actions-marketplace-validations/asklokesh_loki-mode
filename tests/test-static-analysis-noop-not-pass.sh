@@ -251,5 +251,103 @@ else
     fail "the no-runner path touches unit-tests.pass again; a testless project reports a passing gate"
 fi
 
+# 8. PHANTOM REVIEWERS. The council block is the receipt's central trust signal,
+#    so a padded roster overstates how much independent review happened. The
+#    nested vote path already refused a row with a blank role AND blank vote
+#    ("noise, not a reviewer"); the FLAT path did not, so any council/*.json that
+#    is not a verdict file rendered as an empty reviewer. Observed on a real run:
+#    evidence-gate-details.json and state.json inflated a genuine 3-voter council.
+cat > "$WORK/council.py" <<'PYEOF'
+import importlib.util, json, os, sys, tempfile
+spec = importlib.util.spec_from_file_location("pg", "autonomy/lib/proof-generator.py")
+m = importlib.util.module_from_spec(spec)
+try:
+    spec.loader.exec_module(m)
+except SystemExit:
+    pass
+
+# Reproduce the real shape: three genuine verdict files plus two non-reviewer
+# files that live in the same directory and match the same glob.
+# Mirrors the REAL layout: _collect_council reads council/votes/, where a
+# round file carries nested per-member votes and a devil's-advocate RESULT file
+# (issues_found/override/details -- no role, no vote) sits beside it. That DA
+# file is what rendered as a phantom reviewer on the observed run.
+d = tempfile.mkdtemp()
+vdir = os.path.join(d, "council", "votes")
+os.makedirs(vdir)
+json.dump({
+    "round": 1, "threshold": 2, "total_members": 3, "expected_members": 3,
+    "complete_votes": 3, "continue_votes": 0, "verdict": "COMPLETE",
+    "votes": [
+        {"role": "convergence-voter", "vote": "COMPLETE", "reason": "ok"},
+        {"role": "requirements-verifier", "vote": "COMPLETE", "reason": "ok"},
+        {"role": "test-auditor", "vote": "COMPLETE", "reason": "ok"},
+    ],
+}, open(os.path.join(vdir, "round-1.json"), "w"))
+json.dump({"round": 1, "issues_found": 0, "override": False, "details": "none"},
+          open(os.path.join(vdir, "devils-advocate-round-1.json"), "w"))
+
+c = m._collect_council(d)
+rs = c.get("reviewers") or []
+roles = sorted(r.get("role") or "" for r in rs)
+print(json.dumps({"count": len(rs), "roles": roles}))
+# Every rendered reviewer must carry a role or a vote; the three real voters
+# must all survive (a guard that dropped real reviewers would be worse).
+blank = [r for r in rs if not (r.get("role") or r.get("vote"))]
+sys.exit(0 if not blank and len(rs) == 3 else 1)
+PYEOF
+if OUT="$(python3 "$WORK/council.py" 2>&1)"; then
+    pass "the council roster carries only real reviewers ($OUT)"
+else
+    fail "phantom or missing reviewers in the council roster: $OUT"
+fi
+
+# 9. DISABLED PHASES MUST BE VISIBLE. The receipt derives disabled_phases by
+#    scanning the environment for LOKI_PHASE_* set to false, so a phase that is
+#    disabled but never EXPORTED is invisible to it. loki_apply_build_profile
+#    exported only the phases it leaves ON, so a narrowed run reported
+#    disabled_phases [] / all_phases_enabled true while six phases were off --
+#    defeating the field's stated purpose, that a receipt must be able to say
+#    what was NOT checked.
+for _ph in API_TESTS INTEGRATION PERFORMANCE REGRESSION UAT WEB_RESEARCH; do
+    if awk -v want="LOKI_PHASE_$_ph" '
+        /^loki_apply_build_profile\(\)/ { inf = 1 }
+        inf && /^[[:space:]]*export / { if (index($0, want)) { found = 1 } }
+        inf && /^\}$/ { exit }
+        END { exit found ? 0 : 1 }
+    ' autonomy/run.sh; then
+        :
+    else
+        fail "LOKI_PHASE_$_ph is disabled by the build profile but never exported; the receipt cannot report it"
+        _ph_bad=1
+    fi
+done
+[ -z "${_ph_bad:-}" ] && pass "every phase the build profile disables is exported so the receipt can report it"
+
+# 10. BEHAVIOUR: the reader must surface them. Guards against the export being
+#     present but the field still empty (e.g. a renamed prefix).
+cat > "$WORK/phases.py" <<'PYEOF'
+import importlib.util, json, os, sys, tempfile
+spec = importlib.util.spec_from_file_location("pg", "autonomy/lib/proof-generator.py")
+m = importlib.util.module_from_spec(spec)
+try:
+    spec.loader.exec_module(m)
+except SystemExit:
+    pass
+d = tempfile.mkdtemp()
+os.makedirs(os.path.join(d, "quality"))
+for k in ("API_TESTS", "INTEGRATION", "PERFORMANCE", "REGRESSION", "UAT", "WEB_RESEARCH"):
+    os.environ["LOKI_PHASE_" + k] = "false"
+g = m._collect_quality_gates(d)
+dp = g.get("disabled_phases") or []
+print(json.dumps({"disabled_phases": dp, "all_phases_enabled": g.get("all_phases_enabled")}))
+sys.exit(0 if len(dp) == 6 and g.get("all_phases_enabled") is False else 1)
+PYEOF
+if OUT="$(python3 "$WORK/phases.py" 2>&1)"; then
+    pass "the receipt reports every disabled phase ($OUT)"
+else
+    fail "disabled phases are not surfaced in the receipt: $OUT"
+fi
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

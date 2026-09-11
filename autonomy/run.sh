@@ -831,6 +831,17 @@ print(catalog["providers"]["claude"]["cli_aliases"].get(os.environ["_LOKI_SELECT
 
     export LOKI_PHASE_UNIT_TESTS LOKI_PHASE_E2E_TESTS
     export LOKI_PHASE_CODE_REVIEW LOKI_PHASE_SECURITY LOKI_PHASE_ACCESSIBILITY
+    # EXPORT THE PHASES THIS PROFILE TURNS OFF, not only the ones it leaves on.
+    # The receipt derives quality_gates.disabled_phases by scanning the
+    # environment for LOKI_PHASE_* set to false (proof-generator.py:470-478), so
+    # a phase that is disabled but never exported is INVISIBLE to it: the receipt
+    # reported disabled_phases [] and all_phases_enabled true while six phases
+    # were switched off. That defeats the field's stated purpose -- "a receipt
+    # must be able to say what was NOT checked" -- and makes a narrowed run look
+    # identical to a full one. The sibling loki_apply_scoped_change_profile
+    # already exports the phases it changes; this one exported only its enables.
+    export LOKI_PHASE_API_TESTS LOKI_PHASE_INTEGRATION LOKI_PHASE_PERFORMANCE
+    export LOKI_PHASE_REGRESSION LOKI_PHASE_UAT LOKI_PHASE_WEB_RESEARCH
     export LOKI_COUNCIL_ENABLED LOKI_EVIDENCE_GATE LOKI_PROOF_GATE LOKI_PROOF
     export LOKI_DASHBOARD LOKI_PARALLEL_MODE LOKI_MAX_PARALLEL_AGENTS
     export LOKI_MAX_ITERATIONS LOKI_MAX_RETRIES LOKI_BASE_WAIT LOKI_MAX_WAIT

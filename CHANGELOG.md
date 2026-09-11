@@ -5,6 +5,82 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.38.0
+
+Four receipt fields that degraded to values indistinguishable from success.
+
+### Fixed
+
+- **A phantom reviewer inflated the council roster.** A real proof artifact
+  carried FOUR `council.reviewers[]` entries where three agents voted; the
+  fourth was `role:"" vote:"" summary:""`, materialized from a
+  devil's-advocate file that is not a reviewer. A buyer counting reviewers on
+  the receipt counted one that never voted. The flat reviewer path now skips a
+  record carrying neither a role nor a vote. Measured on the real artifact:
+  4 rows -> 3, roles `convergence-voter`, `requirements-verifier`,
+  `test-auditor`.
+
+- **`disabled_phases` always reported `[]`.** The audit finding as written said
+  `loki_apply_build_profile` "never exports"; that was wrong, it has 24 export
+  lines. The real defect is sharper: it exported exactly the five phases it
+  ENABLES and none of the six it DISABLES, so the receipt structurally could
+  not report what a build profile had switched off. An absent export reads as
+  "nothing was disabled", which is the same shape of lie as a zero that means
+  "unmeasured". Six phases now export: `api_tests`, `integration`,
+  `performance`, `regression`, `uat`, `web_research`.
+
+- **`cost.usd` summed a `0.0` default for unpriced records.** `available` was a
+  single flag covering cost AND tokens, so a run with real token counts and no
+  priced record reported `usd: 0.0, available: true` -- the receipt asserting
+  the run cost nothing while its own token counts proved work happened. Cost
+  now reports separately:
+
+  | records | usd | cost_available | cost_partial |
+  |---|---|---|---|
+  | priced | 0.5 | true | false |
+  | explicit `cost_usd: 0` | 0.0 | true | false |
+  | priced + key absent on some | 0.5 | true | true (lower bound) |
+  | tokens, no cost key anywhere | null | false | -- |
+
+  An explicit measured `{"cost_usd": 0}` is a GENUINE zero (a free cache-hit
+  iteration) and stays `0.0`. The first version of this fix keyed on
+  `cost_usd > 0` and nulled that case, which is its own dishonesty; it keys on
+  PRESENCE of the field instead. `test_genuine_zero_cost_stays_zero_not_null`
+  passes unmodified, which is the check that no contract was redefined to fit
+  the change.
+
+- **`base_sha` was a fabricated empty-tree constant on a non-git run.**
+  `_empty_tree_sha` returned the well-known `4b825dc6...` hash without first
+  establishing that a repository exists, so a receipt from a non-git workspace
+  carried a real-looking base SHA for a tree it never read. It now runs
+  `git rev-parse --is-inside-work-tree` first and returns `""` outside a repo,
+  matching the `head_sha -> ""` discipline already applied next to it. In a
+  real repo the constant is preserved unchanged.
+
+### Not fixed, and why
+
+`wall_clock_sec` returns `0` on unparseable timestamps and on a negative delta,
+so "could not measure" would be indistinguishable from "no time elapsed". It is
+left OPEN-UNREPRODUCED rather than fixed: the real artifact reports `396`
+correctly against its own timestamps, and neither collapse path has been
+observed. Changing a JSON contract and the HTML renderer that reads it, on a
+defect that cannot be demonstrated, is the speculative work this program exists
+to avoid.
+
+### Provenance
+
+These are 4 of 9 confirmed findings from a 34-agent receipt-integrity audit
+(606 tool uses, six evidence surfaces in parallel). Every candidate was
+adversarially refuted by an independent agent before counting: **28 candidates
+-> 9 confirmed, 19 refuted.** That 68% refutation rate is the point -- nineteen
+plausible-looking findings would have become false claims about our own
+product. With v9.37.0's HIGH chain, 7 of 9 are now fixed.
+
+Guarded by `tests/test-static-analysis-noop-not-pass.sh`, which now carries 10
+assertions across all four fixes plus the v9.37.0 pair. Each fix was
+mutation-verified in both directions: reverting it goes red, and over-correcting
+goes red too.
+
 ## v9.37.0
 
 A gate that scanned nothing no longer reports a pass, and the receipt says NOT
