@@ -5,6 +5,85 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.35.0
+
+When the model you pinned is not the model that ran, the receipt now says so.
+
+### Added
+
+- **`model_substituted` records.** An operator can pin a model and get a
+  different one. The substitution is often legitimate -- a `fable` pin collapses
+  to `opus` because Claude Fable 5 was reported unavailable at the Claude API --
+  but until now it was **silent**: the receipt showed an opus run and nothing
+  recorded that a pin existed, what it was, or why it was not honored.
+
+  A silent correct substitution is indistinguishable from a silent wrong one.
+  Neither can be audited, and neither can be refuted by someone holding evidence
+  against it. Our wedge is a receipt you can check yourself; a receipt that
+  omits which model actually ran does not deliver that.
+
+  `emit_model_substituted` now records `pinned`, `dispatched`, `reason` and
+  `site` at the dispatch chokepoint (`autonomy/run.sh`), and
+  `src/audit/subscriber.js` maps the event into the tamper-evident chain so it
+  reaches the receipt rather than sitting unread in `events.jsonl`.
+
+  **Behaviour is unchanged.** The same model is dispatched as before. This makes
+  the existing collapse visible and attributable, nothing more.
+
+  Guarded by `tests/test-model-substitution-visible.sh` (7 assertions). Five
+  mutations verified, including the three that matter: removing the call at the
+  dispatch site, dropping `reason` from the record, and deleting the audit
+  mapping so the event reaches no reader.
+
+### What this release deliberately does NOT do
+
+- **It does not change the `fable` -> `opus` mapping.** I set out to, on the
+  grounds that the comment ("Fable 5 is not available at the Claude API") looked
+  stale: the CLI accepts both `--model fable` and `--model claude-fable-5-1`,
+  exit 0.
+
+  That test does not prove what I wanted it to prove. `ANTHROPIC_API_KEY` was
+  unset -- the CLI authenticates by subscription, while the comment cites an
+  error from the **raw API**. Different transports, different model
+  availability, and `loki-ts/src/runner/sdk_invoker.ts` uses the SDK rather than
+  the CLI. The premise can be false on one route and true on the other at the
+  same time.
+
+  The collapse is also not a forgotten line: it is a deliberately maintained
+  four-site invariant (`providers/claude.sh`, the static fallback and dispatch
+  backstop in `run.sh`, and the cost estimator in `autonomy/loki`, which quotes
+  opus pricing *on purpose* so the quote matches dispatch), defended by ~8
+  assertions in `tests/test-model-override.sh`.
+
+  Flipping it would have meant rewriting those assertions to match a belief I
+  could not verify, and would have made the estimator quote $10/$50 for runs
+  that may still dispatch opus on the SDK route -- a new cost-honesty defect
+  introduced while claiming to fix one. `test-model-override.sh` passes
+  **unmodified** in this release, which is the check that the contract was not
+  quietly redefined.
+
+  Settling it needs a direct `/v1/messages` call with a real API key. Until
+  then the comment's claim is the better-evidenced one: it cites an observed
+  error, and my test probed a different transport. The new record makes the
+  question self-answering -- a user with a key now sees
+  `reason=fable_unavailable_at_api` and has the receipt to refute it.
+
+- **It does not de-vendor `capability_router.ts`'s tier defaults.** Planned, then
+  dropped after reading the code: `routeTaskClass` is default-OFF, has exactly
+  one caller (`autonomous.ts:753`), and an operator pin already wins at `:171`
+  through provider-neutral env vars. A non-Anthropic user has a working override
+  path today, so changing the defaults would be a refactor with no user-visible
+  defect behind it.
+
+### Honest limits
+
+- The record is emitted on the bash dispatch route. A substitution performed
+  elsewhere (the estimator's quote path, or the SDK route) is not yet covered;
+  those sites agree with dispatch today, so the receipt is consistent, but the
+  guarantee is currently one site deep.
+- This does not make the audit chain stronger. What the receipt is worth is
+  still bounded by `docs/AUDIT-CHAIN-THREAT-MODEL.md`.
+
 ## v9.34.1
 
 v9.34.0 did not publish: its own new test failed CI, so Release refused. The

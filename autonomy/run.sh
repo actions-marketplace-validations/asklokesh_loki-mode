@@ -2484,6 +2484,39 @@ print(json.dumps(event))
 }
 
 # Emit structured event with key-value pairs
+# Record that the operator's explicitly-pinned model was NOT the model dispatched.
+#
+# WHY THIS EXISTS: a tier resolution that quietly returns something other than the
+# pin is indistinguishable, in the receipt, from a run that got what it asked for.
+# The substitution itself is often legitimate; the SILENCE is the defect. This
+# emits both an event (machine-readable) and an audit line (the tamper-evident
+# chain), so the swap and its stated reason can be audited and, if wrong,
+# refuted by whoever has the evidence to refute it.
+#
+# Never changes the dispatched model and never fails the caller: an observability
+# record that can break a run would be worse than the silence it replaces.
+emit_model_substituted() {
+    local pinned="$1" dispatched="$2" reason="$3" site="$4"
+
+    # Nothing to report when the pin was honored.
+    [ "$pinned" = "$dispatched" ] && return 0
+
+    emit_event_json "model_substituted" \
+        "pinned=$pinned" \
+        "dispatched=$dispatched" \
+        "reason=$reason" \
+        "site=$site" 2>/dev/null || true
+
+    if type audit_agent_action >/dev/null 2>&1; then
+        audit_agent_action "model_substituted" \
+            "Pinned model '$pinned' dispatched as '$dispatched' ($reason)" \
+            "site=$site" 2>/dev/null || true
+    fi
+
+    log_warn "Model pin '$pinned' dispatched as '$dispatched' ($reason)" 2>/dev/null || true
+    return 0
+}
+
 emit_event_json() {
     local event_type="$1"
     shift
@@ -22668,6 +22701,14 @@ except Exception as exc:
         # effort/model strings and have no fable equivalent (v7.39.1).
         if [ "${PROVIDER_NAME:-claude}" = "claude" ] && [ "$tier_param" = "fable" ]; then
             tier_param="opus"
+            # The operator asked for one model and is getting another. A
+            # substitution may well be CORRECT (a model genuinely unavailable on
+            # this transport), but a SILENT one never is: without this record the
+            # receipt shows an opus run and nothing says the pin was fable, so
+            # nobody can audit the swap or refute the reason behind it.
+            # Behaviour is unchanged -- this only makes the existing collapse
+            # visible and attributable.
+            emit_model_substituted "fable" "opus" "fable_unavailable_at_api" "run.sh:dispatch_backstop"
         fi
         echo "=== RARV Phase: $rarv_phase, Tier: $CURRENT_TIER ($tier_param) ===" | tee -a "$log_file" "$agent_log"
         log_info "RARV Phase: $rarv_phase -> Tier: $CURRENT_TIER ($tier_param)"
