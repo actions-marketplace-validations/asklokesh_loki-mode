@@ -20,6 +20,12 @@ var EVENT_TO_AUDIT = {
     'session_end': { what: 'session_end', why: 'Loki session terminated' },
     'phase_change': { what: 'phase_change', why: 'RARV phase transition' },
     'policy_denied': { what: 'policy_violation', why: 'Policy engine blocked action' },
+    // The operator pinned one model and a different one was dispatched. The
+    // substitution may be legitimate (a model unavailable on this transport),
+    // but it must never be SILENT: without a record the receipt shows only the
+    // dispatched model, so the swap cannot be audited and its stated reason
+    // cannot be refuted by whoever has evidence against it.
+    'model_substituted': { what: 'model_substituted', why: 'Pinned model was not the model dispatched' },
     // Distinct from policy_denied: the policy was never EVALUATED. A policy
     // file was present (so enforcement was intended) but node was unavailable,
     // so run.sh refused fail-closed rather than proceeding unenforced. The
