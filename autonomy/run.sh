@@ -19440,6 +19440,7 @@ load_queue_tasks() {
     # Handles both formats, includes description, acceptance criteria, and user stories
     local extract_script='
 import json
+import os
 import sys
 
 def extract_tasks(filepath, prefix):
@@ -19451,7 +19452,23 @@ def extract_tasks(filepath, prefix):
             return ""
 
         results = []
-        for i, task in enumerate(tasks[:3]):  # Limit to first 3 tasks
+        # BOUND BY CHARACTERS, NOT BY AN ARBITRARY TASK COUNT.
+        #
+        # This was `tasks[:3]`, applied SEPARATELY to in-progress.json and
+        # pending.json. A release doc decomposed into 5 tasks silently lost 2
+        # from each file: the agent received a plan it was never told was
+        # truncated, and the founder-facing case ("hand it a release doc") was
+        # quietly capped at 3.
+        #
+        # A count is the wrong bound anyway: one rich PRD task with a 300-char
+        # description plus acceptance criteria can outweigh ten legacy one-liners.
+        # The real constraint is prompt budget, so bound on that and say so when
+        # the budget is hit, rather than truncating in silence.
+        _budget = int(os.environ.get("LOKI_QUEUE_TASK_CHARS", "6000") or "6000")
+        _max_tasks = int(os.environ.get("LOKI_QUEUE_MAX_TASKS", "25") or "25")
+        _used = 0
+        _shown = 0
+        for i, task in enumerate(tasks[:_max_tasks]):
             if not isinstance(task, dict):
                 continue
             task_id = task.get("id") or "unknown"
@@ -19475,7 +19492,11 @@ def extract_tasks(filepath, prefix):
                 story = task.get("user_story", "")
                 if story:
                     lines.append(f"  User Story: {story}")
-                results.append("\n".join(lines))
+                _entry = "\n".join(lines)
+                if _used + len(_entry) > _budget and _shown > 0:
+                    break
+                results.append(_entry)
+                _used += len(_entry); _shown += 1
             else:
                 # Legacy format: extract action from payload
                 task_type = task.get("type") or "unknown"
@@ -19491,8 +19512,21 @@ def extract_tasks(filepath, prefix):
                 action = str(action).replace("\n", " ").replace("\r", "")[:500]
                 if len(str(action)) > 500:
                     action += "..."
-                results.append(f"{prefix}[{i+1}] id={task_id} type={task_type}: {action}")
+                _entry = f"{prefix}[{i+1}] id={task_id} type={task_type}: {action}"
+                if _used + len(_entry) > _budget and _shown > 0:
+                    break
+                results.append(_entry)
+                _used += len(_entry); _shown += 1
 
+        # Disclose truncation instead of hiding it. An agent told it has the
+        # whole plan when it does not will confidently build the wrong subset.
+        _remaining = len(tasks) - _shown
+        if _remaining > 0:
+            results.append(
+                "[... %d more task(s) not shown: prompt budget %d chars reached. "
+                "Raise LOKI_QUEUE_TASK_CHARS or LOKI_QUEUE_MAX_TASKS to include them.]"
+                % (_remaining, _budget)
+            )
         return "\n".join(results)
     except:
         return ""
