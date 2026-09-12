@@ -5,6 +5,136 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.41.0
+
+The upgrade that could not work, and the diagnosis that never fired.
+
+### The bug, as a user hit it
+
+```
+$ bun install -g loki-mode
+installed loki-mode@9.39.0 with binaries: - loki
+$ loki --version
+Loki Mode v9.22.3
+A newer Loki Mode is available: 9.35.0 (you have 9.22.3). Update: bun install -g loki-mode
+```
+
+Three different version numbers in four lines, and the advice is unfollowable:
+the user just ran that exact command. Reported from the field twice.
+
+**Cause: PATH shadowing.** An older copy sits EARLIER on PATH than the one the
+package manager writes (typically `~/.local/bin/loki`, symlinked into a
+Homebrew node prefix, ahead of `~/.bun/bin/loki`). Every reinstall updates the
+copy that is not winning, so the user loops forever.
+
+### Fixed
+
+- **The shadow check was gated behind a registry lookup.** v9.36.0 added
+  `findShadowedNewerInstall`, and it works. But the call sat INSIDE the "a newer
+  release exists" branch, so it only ran after a successful registry check said
+  the running version was outdated. Two consequences, both hit in the field:
+  with the registry unreachable the user got **silence**, and with a stale
+  <=24h cache they got the generic "install 9.35.0" nudge quoting a version
+  that was neither installed nor latest.
+
+  Shadowing is a local, on-disk fact. It does not depend on the registry, the
+  cache, or the network, so nothing about a registry result should gate
+  reporting it. The check now runs FIRST. The ordinary "newer release" nudge is
+  unchanged and still does the registry lookup, just after.
+
+- **`loki doctor` did not detect it at all.** Doctor is where a user goes when
+  something is wrong, and on the bash route (which a default `loki` invocation
+  takes) there was no shadow handling anywhere. It now walks PATH, resolves each
+  entry through realpath, and reports every OTHER install with its version and
+  location as a BLOCKER, stating plainly that reinstalling will not fix it.
+
+  Verified against the real shadow on a developer machine (running 9.40.0 from a
+  Homebrew node prefix while 9.39.0 sat in `~/.bun/bin`), and against two
+  negative controls: a single install reports OK, and the SAME install reachable
+  through two PATH entries is deduped by realpath rather than reported as
+  shadowing itself.
+
+### Guard
+
+Three tests in `loki-ts/tests/util/update_check.test.ts`, covering the two cases
+that were unreachable before (registry down, stale cache quoting a wrong
+version) plus a no-shadow case proving the ordinary nudge is unchanged. All 19
+pre-existing tests in that file pass **unmodified**. Mutation-verified: putting
+the registry gate back in front of the shadow check turns the registry-down test
+red, which is exactly the production symptom.
+
+### Why this took two releases to get right
+
+v9.36.0 fixed the wrong half. It made the message better while leaving it behind
+a gate that the failing case never passes, so the improved message could not
+reach the users who needed it. A fix that is correct but unreachable is not a
+fix, which is the same defect class as the reachability audit in v9.39.0.
+
+## v9.40.0
+
+Authored reviewer personas now reach the prompt, and a shipped test that could
+silently invert itself.
+
+### Fixed
+
+- **All 41 agent types carry hand-written persona prose that was thrown away.**
+  `agents/types.json` gives every type a real authored persona ("You are a
+  senior backend engineer specializing in server-side development, API design,
+  and distributed systems..."). The selector SET that persona on the specialist
+  dict and the reviewers payload then copied only `name`, `focus` and `checks`,
+  so it was discarded before any prompt was built.
+
+  Nothing looked broken, which is why it survived: the role still reached the
+  reviewer through a SYNTHESIZED line ("Review from X perspective: ..."). What
+  was lost was the specific authored expertise that makes a specialist reviewer
+  worth more than a generic one.
+
+  Wired through all six sites: payload (built-in and installed specialists),
+  read-out, export, prompt interpolation, and unset. The persona leads the
+  prompt; the "Your SOLE focus is" constraint that keeps a blind reviewer in its
+  lane is untouched.
+
+  **Strictly additive.** A specialist with no persona, or a whitespace-only one,
+  produces a prompt byte-identical to the previous behavior. Verified by driving
+  the prompt logic directly in both directions.
+
+- **`tests/test-provider-arm-coverage.sh` (shipped in v9.39.0) contained a
+  latent self-inverting bug.** It used `printf '%s' "$blk" | grep -q ...` under
+  `set -o pipefail`. `grep -q` exits at the first match and closes the pipe, so
+  `printf` dies of SIGPIPE and pipefail reports the PIPELINE as failed even
+  though grep MATCHED.
+
+  It passed only because the provider case block is currently small enough that
+  printf finishes before grep exits. Demonstrated with input past the pipe
+  buffer: grep matches and the pipeline still returns 141. As the file grew, a
+  correct provider arm would have started reading as missing. Now greps a file
+  instead of a pipe.
+
+- **`agent-skills/README.md` claimed a runtime loader that does not exist.**
+  It stated "Agents automatically discover skills in this directory at runtime"
+  and showed `discover_agent_skills()`. That function exists nowhere in the
+  repository, and `agent-skills/` is in no distribution artifact, so nothing
+  reads those files on any route. Marked as a proposed pattern and design
+  sketch, pointing at `skills/` as the live system. Documentation fix; building
+  an unrequested loader would have been the wrong answer.
+
+### Guard
+
+`tests/test-reviewer-persona-reaches-prompt.sh` (6 assertions) checks the
+persona is carried AND that the focus constraint survives AND that an absent
+persona is byte-identical to before. It guards against vacuity by asserting
+that agents/types.json still carries personas at all, so it cannot pass while
+protecting nothing. Mutation-verified both directions.
+
+### How the second fix was found
+
+By writing the same trap twice. The SIGPIPE inversion was already recorded in
+this project's memory, and it was written into a new test anyway, where it broke
+four assertions against code proven correct. Passive memory did not intercept
+authoring, so the rule moved into a skill that runs as a checklist WHILE a guard
+is written. Applying that checklist to already-shipped tests found the live
+instance above. A rule that only fires after the failure is not a control.
+
 ## v9.39.0
 
 Three capabilities the product advertised and could not actually perform.

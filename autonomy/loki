@@ -13839,6 +13839,64 @@ else:
     fi
     echo ""
 
+    # PATH SHADOWING. Reported from the field twice, and it defeats upgrading
+    # entirely: `bun install -g loki-mode` reports installing 9.39.0, then
+    # `loki --version` prints 9.22.3, because an OLDER copy sits earlier on
+    # PATH (typically ~/.local/bin -> a Homebrew node prefix, ahead of
+    # ~/.bun/bin). Reinstalling cannot fix it; every reinstall updates the copy
+    # that is NOT winning, so the user loops forever on advice that cannot work.
+    #
+    # This is a blocker, not a warning: the user is running code they did not
+    # install and cannot upgrade by the documented route.
+    #
+    # Resolved by realpath so two PATH entries pointing at the SAME install are
+    # not reported as shadowing each other.
+    # Resolve symlinks with whatever the host has. macOS ships no `realpath`
+    # on older versions, so fall back to readlink and finally to the path
+    # itself -- an unresolved path is still comparable, just less precise.
+    _doctor_resolve() {
+        if command -v realpath >/dev/null 2>&1; then
+            realpath "$1" 2>/dev/null || printf '%s' "$1"
+        elif command -v readlink >/dev/null 2>&1; then
+            readlink -f "$1" 2>/dev/null || printf '%s' "$1"
+        else
+            printf '%s' "$1"
+        fi
+    }
+    _running_real="$(command -v loki 2>/dev/null || true)"
+    if [ -n "$_running_real" ]; then
+        _running_real="$(_doctor_resolve "$_running_real")"
+        _shadow_found=""
+        _shadow_seen=""
+        _oldIFS="$IFS"; IFS=':'
+        for _d in $PATH; do
+            [ -n "$_d" ] || continue
+            [ -x "$_d/loki" ] || continue
+            _r="$(_doctor_resolve "$_d/loki")"
+            case "$_shadow_seen" in *"|$_r|"*) continue ;; esac
+            _shadow_seen="${_shadow_seen}|$_r|"
+            [ "$_r" = "$_running_real" ] && continue
+            # <pkg>/bin/loki -> package.json two levels up
+            _pj="$(dirname "$(dirname "$_r")")/package.json"
+            [ -f "$_pj" ] || continue
+            _v="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('version',''))" "$_pj" 2>/dev/null || true)"
+            [ -n "$_v" ] || continue
+            _shadow_found="${_shadow_found}\n      $_v at $_d/loki"
+        done
+        IFS="$_oldIFS"
+        if [ -n "$_shadow_found" ]; then
+            echo -e "  ${RED}FAIL${NC}  Multiple loki installs on PATH; you are running $(get_version 2>/dev/null || echo unknown)"
+            echo -e "  ${DIM}      Running: $_running_real${NC}"
+            printf "  ${DIM}      Others:%b${NC}\n" "$_shadow_found"
+            echo -e "  ${DIM}      Reinstalling updates a copy that is not winning on PATH.${NC}"
+            _doctor_block "Multiple loki installs on PATH. Run 'which -a loki', then remove or re-point every entry EARLIER than the one you want. Reinstalling alone will not fix this."
+            fail_count=$((fail_count + 1))
+        else
+            echo -e "  ${GREEN}OK${NC}    Single loki install on PATH"
+        fi
+        echo ""
+    fi
+
     # Summary
     echo -e "${BOLD}Summary:${NC} ${GREEN}$pass_count passed${NC}, ${RED}$fail_count failed${NC}, ${YELLOW}$warn_count warnings${NC}"
     echo ""
