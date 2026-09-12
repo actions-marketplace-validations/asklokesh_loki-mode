@@ -5,6 +5,71 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.41.0
+
+The upgrade that could not work, and the diagnosis that never fired.
+
+### The bug, as a user hit it
+
+```
+$ bun install -g loki-mode
+installed loki-mode@9.39.0 with binaries: - loki
+$ loki --version
+Loki Mode v9.22.3
+A newer Loki Mode is available: 9.35.0 (you have 9.22.3). Update: bun install -g loki-mode
+```
+
+Three different version numbers in four lines, and the advice is unfollowable:
+the user just ran that exact command. Reported from the field twice.
+
+**Cause: PATH shadowing.** An older copy sits EARLIER on PATH than the one the
+package manager writes (typically `~/.local/bin/loki`, symlinked into a
+Homebrew node prefix, ahead of `~/.bun/bin/loki`). Every reinstall updates the
+copy that is not winning, so the user loops forever.
+
+### Fixed
+
+- **The shadow check was gated behind a registry lookup.** v9.36.0 added
+  `findShadowedNewerInstall`, and it works. But the call sat INSIDE the "a newer
+  release exists" branch, so it only ran after a successful registry check said
+  the running version was outdated. Two consequences, both hit in the field:
+  with the registry unreachable the user got **silence**, and with a stale
+  <=24h cache they got the generic "install 9.35.0" nudge quoting a version
+  that was neither installed nor latest.
+
+  Shadowing is a local, on-disk fact. It does not depend on the registry, the
+  cache, or the network, so nothing about a registry result should gate
+  reporting it. The check now runs FIRST. The ordinary "newer release" nudge is
+  unchanged and still does the registry lookup, just after.
+
+- **`loki doctor` did not detect it at all.** Doctor is where a user goes when
+  something is wrong, and on the bash route (which a default `loki` invocation
+  takes) there was no shadow handling anywhere. It now walks PATH, resolves each
+  entry through realpath, and reports every OTHER install with its version and
+  location as a BLOCKER, stating plainly that reinstalling will not fix it.
+
+  Verified against the real shadow on a developer machine (running 9.40.0 from a
+  Homebrew node prefix while 9.39.0 sat in `~/.bun/bin`), and against two
+  negative controls: a single install reports OK, and the SAME install reachable
+  through two PATH entries is deduped by realpath rather than reported as
+  shadowing itself.
+
+### Guard
+
+Three tests in `loki-ts/tests/util/update_check.test.ts`, covering the two cases
+that were unreachable before (registry down, stale cache quoting a wrong
+version) plus a no-shadow case proving the ordinary nudge is unchanged. All 19
+pre-existing tests in that file pass **unmodified**. Mutation-verified: putting
+the registry gate back in front of the shadow check turns the registry-down test
+red, which is exactly the production symptom.
+
+### Why this took two releases to get right
+
+v9.36.0 fixed the wrong half. It made the message better while leaving it behind
+a gate that the failing case never passes, so the improved message could not
+reach the users who needed it. A fix that is correct but unreachable is not a
+fix, which is the same defect class as the reachability audit in v9.39.0.
+
 ## v9.40.0
 
 Authored reviewer personas now reach the prompt, and a shipped test that could
