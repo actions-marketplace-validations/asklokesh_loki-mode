@@ -5,6 +5,76 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.42.0
+
+A benchmark number that counted strings, an unbounded spend default, and a
+supply-chain gate that did not exist.
+
+### Fixed
+
+- **"99.67% SWE-bench" was a count of non-empty strings.** Re-measuring the
+  stored 300-instance run: **179 of 300 model_patch values were prose, not
+  diffs** (a model preamble followed by a fenced diff). `clean_patch` stripped a
+  fence only at position 0, so any preamble defeated it. `qa_agent` then
+  validated with substring tests over the whole blob (`"---" in patch`, `"@@" in
+  patch`), which prose quoting a diff satisfies: **178 of 179 prose entries
+  passed every format check**, with `attempts == 1`, so the retry loop never
+  fired. `generated_count` incremented on any non-empty string, and that counter
+  is what was published.
+
+  Three fixes: the extractor finds a fenced diff anywhere (falling back to the
+  first real diff line, and never fabricating), the validator is anchored to
+  LINE STARTS which prose cannot satisfy by accident, and the counter requires a
+  real diff header.
+
+  Measured on the same data after the fix: **174 of 179 prose entries now yield
+  a genuine diff, 5 are honestly rejected, 0 remain falsely certified.** A
+  genuine clean diff still validates.
+
+  All four published instances of 99.67% in this file are annotated in place
+  rather than deleted. **No corrected figure is published**: producing one
+  requires re-running the harness, and an estimate would repeat the original
+  error of publishing a number nobody measured.
+
+- **`LOKI_BUDGET_LIMIT` shipped as unlimited.** This file's own F4 analysis
+  already named it as one of three runaway valves that all ship disabled,
+  leaving a measured 8.3-day iteration ceiling as the only backstop. Now
+  defaults to 100.00 USD, well above the measured envelope (median 0.48 per
+  trial, max 3.06 across 79 trials). Breaching PAUSES and saves state; it never
+  kills work. Uses `${VAR-default}`, so an explicit empty value still means
+  unlimited and the operator's choice is honored.
+
+- **`pinned-subset.json` declared `dataset: "SWE-bench Verified"`** while its own
+  `VERIFICATION_STATUS` said `UNVERIFIED_AS_VERIFIED_SPLIT` and its note said the
+  ids came from a LITE run. The note was honest; the field a consumer reads was
+  not.
+
+### Added
+
+- **`tests/detect-hallucinated-deps.sh`** -- a slopsquatting guard. A model can
+  emit a dependency name that does not exist, and an attacker who registers it
+  owns code execution in every install that follows
+  (arxiv.org/pdf/2606.13918, 2026-06-15). The repo had no dependency
+  verification at all.
+
+  Three states, not two: resolved / MISSING / **unchecked**. No network or a 5xx
+  means NOT CHECKED, never a pass. Verified against a fabricated npm name and a
+  fabricated PyPI name, against 88 of this repo's real dependencies (zero false
+  positives), and with an unreachable registry.
+
+  One bug was found while verifying it: `curl -fsS` exits non-zero on 404, so the
+  fallback discarded the status code and every MISSING package was reported as
+  unchecked. Without catching that, the detector would have been theatre.
+
+### Provenance
+
+Found by a web-sourced research fan-out: 91 agents, 1,770 tool uses, 0 errors,
+82 proposals across eight domains. Every proposal was independently verified
+against the codebase and its sources fetched. **27 BUILD, 22 ALREADY_BUILT, 27
+NOT_WORTH_IT, 4 UNSOURCED.** Only a third survived, which is the point: 22
+proposals were things Loki already had, and 4 cited sources that did not support
+the claim.
+
 ## v9.41.0
 
 The upgrade that could not work, and the diagnosis that never fired.
