@@ -5,6 +5,54 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.45.0
+
+The first artifact a user sees no longer misstates the product or ignores the
+user.
+
+### Fixed
+
+- **The generated PRD reported `Loki Mode CLI v6.0.0`.** A hardcoded literal at
+  `autonomy/issue-providers.sh`, printing on a v9.44.0 install: three majors
+  stale. This is the first file the `loki start owner/repo#123` path produces
+  and the document the agent then works from, so it is what a user reads in
+  their first five minutes. A product whose entire pitch is a verifiable receipt
+  cannot misreport its own version in its own first artifact.
+
+  The real version is now plumbed through from `get_version()` at the call site
+  (`autonomy/loki:10457`). Absent that, it reports `unknown` rather than a number
+  it cannot substantiate.
+
+- **Acceptance Criteria discarded the user's own requirements.** The section was
+  a fixed four-line list beginning "Address all requirements specified in the
+  issue body above". An issue whose body enumerated three specific checkboxes
+  had them rendered in the PRD and then overridden by that boilerplate in the
+  same document.
+
+  Checkboxes and numbered lists are now extracted from the issue body and become
+  the acceptance criteria. Measured on a real issue shape: three `- [ ]` items
+  in, three numbered criteria out.
+
+  **It never fabricates.** A body with no checklist still gets the default list,
+  and that output says so explicitly ("The issue body lists no explicit
+  checklist, so these are defaults") rather than presenting defaults as if the
+  user had written them.
+
+### Guard
+
+`tests/test-issue-prd-is-honest.sh` (7 assertions) drives the real generator
+rather than asserting on source text, and checks BOTH directions: a body with a
+checklist must surface the user's items and must not show filler, and a body
+without one must fall back AND label the fallback. Mutation-verified: restoring
+the hardcoded version goes red, and disabling extraction goes red.
+
+### Provenance
+
+From a 71-agent research fan-out against primary sources (1,298 tool uses, 0
+errors). Every claimed gap was adversarially verified: **61 claimed gaps -> 9
+BUILD, 31 not worth it, 19 already built, 1 unsourced.** An 85% kill rate is the
+point; most "missing" capabilities were already present.
+
 ## v9.44.0
 
 An MCP tool that was broken on every call that did real work.
