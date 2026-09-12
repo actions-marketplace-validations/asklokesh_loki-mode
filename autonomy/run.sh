@@ -6707,19 +6707,48 @@ copy_skill_files() {
     # Also copy SKILL.md to .loki/ and rewrite paths for workspace access
     if [ -f "$PROJECT_DIR/SKILL.md" ]; then
         # Rewrite skill paths from skills/ to .loki/skills/
-        sed -e 's|skills/00-index\.md|.loki/skills/00-index.md|g' \
-            -e 's|skills/model-selection\.md|.loki/skills/model-selection.md|g' \
-            -e 's|skills/quality-gates\.md|.loki/skills/quality-gates.md|g' \
-            -e 's|skills/testing\.md|.loki/skills/testing.md|g' \
-            -e 's|skills/troubleshooting\.md|.loki/skills/troubleshooting.md|g' \
-            -e 's|skills/production\.md|.loki/skills/production.md|g' \
-            -e 's|skills/parallel-workflows\.md|.loki/skills/parallel-workflows.md|g' \
-            -e 's|skills/providers\.md|.loki/skills/providers.md|g' \
-            -e 's|Read skills/|Read .loki/skills/|g' \
+        # ONE regex, not a hardcoded filename list. The old form named 8 skills
+        # explicitly plus a `Read skills/` catchall, so any NEW skill silently
+        # kept an unrewritten path, and three bare paths in SKILL.md survived
+        # because they say "See", not "Read". The negated class avoids rewriting
+        # an already-correct `.loki/skills/`.
+        # Sentinel-protect, rewrite, restore. This is PORTABLE and idempotent.
+        #
+        # The old form named 8 skills explicitly plus a `Read skills/` catchall,
+        # so any NEW skill silently kept an unrewritten path, and bare paths
+        # introduced by "See skills/..." survived because they are not "Read".
+        # A `sed -E 's|(^|[^.])skills/|...'` one-liner looks tidier but BSD sed
+        # rejects it ("RE error: parentheses not balanced"), which would fail
+        # SILENTLY on macOS and leave every path unrewritten -- verified by
+        # running it. Protecting the already-correct prefixes first is what lets
+        # the bare rewrite be unconditional.
+        sed -e 's|\.loki/skills/|@@LOKI_S@@|g' \
+            -e 's|\.loki/references/|@@LOKI_R@@|g' \
+            -e 's|skills/|.loki/skills/|g' \
+            -e 's|references/|.loki/references/|g' \
+            -e 's|@@LOKI_S@@|.loki/skills/|g' \
+            -e 's|@@LOKI_R@@|.loki/references/|g' \
             "$PROJECT_DIR/SKILL.md" > ".loki/SKILL.md"
     fi
 
-    log_info "Copied $copied skill files to .loki/skills/"
+    # ALSO copy references/. The copied skills cite references/*.md 21 times
+    # across 8 files, every one of which existed in the repo and was NEVER
+    # copied, so the agent followed 21 dead paths and silently lost the guidance
+    # this function believes it shipped. Copying skills without their references
+    # is shipping half a manual.
+    local refs_src="$PROJECT_DIR/references"
+    local refs_dst=".loki/references"
+    local refs_copied=0
+    if [ -d "$refs_src" ]; then
+        mkdir -p "$refs_dst"
+        for ref_file in "$refs_src"/*.md; do
+            if [ -f "$ref_file" ]; then
+                cp "$ref_file" "$refs_dst/" && refs_copied=$((refs_copied + 1))
+            fi
+        done
+    fi
+
+    log_info "Copied $copied skill files to .loki/skills/ and $refs_copied references to .loki/references/"
 }
 
 #===============================================================================
