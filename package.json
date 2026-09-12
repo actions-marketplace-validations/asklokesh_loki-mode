@@ -111,7 +111,8 @@
     "tests/detect-mock-problems.sh",
     "tests/detect-test-mutations.sh",
     "tests/detect-semantic-test-problems.sh",
-    "tests/detect-invariant-violations.sh"
+    "tests/detect-invariant-violations.sh",
+    "tests/detect-hallucinated-deps.sh"
   ],
   "scripts": {
     "prepack": "find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; find . -name '*.pyc' -delete 2>/dev/null; if command -v bun >/dev/null 2>&1; then (cd loki-ts && bun install --production && bun run build) || echo 'WARN: loki-ts build failed, using existing dist if present'; else echo 'WARN: bun not on PATH, skipping loki-ts build (using committed dist if present)'; fi; find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; find . -name '*.pyc' -delete 2>/dev/null; node tools/normalize-package-permissions.mjs .",
