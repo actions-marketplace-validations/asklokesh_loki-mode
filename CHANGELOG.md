@@ -5,6 +5,78 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.39.0
+
+Three capabilities the product advertised and could not actually perform.
+
+### Fixed
+
+- **`loki memory enable-hook` wrote a dead path into the user's real Claude
+  settings and reported success.** `claude/hooks/loki-session-end.sh` exists in
+  the git checkout but `claude/` was absent from `package.json` files[], so it
+  shipped in NO npm tarball. Verified against the published 9.38.0 package:
+  `package/claude/` does not exist (positive control: `package/autonomy/run.sh`
+  is present). The command built the path with no existence check
+  (`autonomy/loki:24584`), mutated `~/.claude/settings.json`, and printed a
+  green "SessionEnd hook ready".
+
+  Every npm user who ran it believed session capture was on while it captured
+  nothing: the hook fired on each `/clear`, failed with "No such file or
+  directory", and that failure surfaced nowhere a user reads.
+
+  Two changes, because either alone leaves a hole: `claude/hooks/` now ships,
+  AND the command fails closed when the script is missing rather than writing a
+  settings entry it cannot honor. Shipping the file fixes today's users; the
+  guard means a future packaging slip reports itself instead of lying.
+
+- **`loki agent run` was dead for every opencode user.** opencode is listed as
+  one of five active providers, `loki provider set opencode` accepts it with no
+  warning and writes `.loki/state/provider`, and then the provider case in
+  `cmd_agent` (`autonomy/loki:29430-29447`) had arms for claude, codex, cline
+  and aider only. The `*)` arm printed "Unknown provider: opencode" and returned
+  1 -- after already printing the persona banner, so it looked like it started
+  working and then died.
+
+  This was an omission, not an unsupported provider: the phase dispatcher in the
+  SAME file already had a working `opencode)` arm calling `provider_invoke`
+  (`providers/opencode.sh:121`). The error message even listed opencode as
+  supported.
+
+  Reproduced through the real entrypoint before the fix and after: the banner
+  now reaches the actual opencode CLI instead of dying in a case statement.
+
+- **`loki agent review` was missing BOTH opencode and aider.** Same shape, wider
+  blast radius, found while fixing the above.
+
+### Guard
+
+`tests/test-provider-arm-coverage.sh` (12 assertions) asserts each provider arm
+INDIVIDUALLY at each dispatch site, never a count -- a count cannot say WHICH
+provider vanished. It also guards against vacuity: if opencode ever stops being
+selectable, the suite says so rather than passing over a provider nobody can
+choose. Mutation-verified in both directions: removing the opencode arm or the
+aider arm each goes red, restoring goes green.
+
+This is the cross-cutting-registration defect that broke main for three releases
+when the fifth provider shipped. Nothing enforced that a new provider reached
+every dispatch site; now something does.
+
+### Provenance
+
+Found by a 64-agent reachability audit (1,081 tool uses, 0 errors) asking one
+question per capability: can a real user actually reach this? Every claim was
+adversarially refuted by three independent skeptics with distinct lenses before
+it counted. **19 claims -> 9 confirmed, 10 refuted (53%).**
+
+The refutations are the point. Three separate prior "findings" died on
+inspection this round and the record has been corrected: the policy engine is
+reachable (the writer is a REST endpoint, `dashboard/api_v2.py:791`, not a CLI
+command); `mergeability_score.py` is an operator-run benchmark tool working as
+documented, not a dead gate; and "41 agent types documented vs 5 that run"
+compared a prompt-role catalogue against the review council, two unrelated
+subsystems -- `references/agent-types.md:9` already says the 41 are
+"prompt-defined specifications ... not separate processes".
+
 ## v9.38.0
 
 Four receipt fields that degraded to values indistinguishable from success.

@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 # A gate that scanned nothing must not report a pass.
 #
+# SCOPE NOTE: this suite has outgrown its filename. It began as the guard for
+# the static_analysis no-op (below) and now guards every receipt-integrity fix
+# from the same audit: static_analysis (v9.37.0), unit_tests (v9.37.0),
+# phantom council reviewers (v9.38.0), and disabled_phases (v9.38.0). They
+# share one suite because they share ONE defect shape -- a receipt field that
+# degrades to a value indistinguishable from success -- and splitting them
+# would let a reader fix one while believing the shape was handled.
+# If you are looking for a receipt-honesty guard by name, it is here.
+#
 # THE DEFECT, found by a receipt-integrity audit and confirmed on a real
 # artifact: enforce_static_analysis used to `touch static-analysis.pass` and
 # return 0 when there were no changed files to check. The receipt reader
