@@ -10454,7 +10454,10 @@ cmd_run() {
 
     # Generate PRD
     local prd_content
-    prd_content=$(echo "$issue_json" | generate_prd_from_issue)
+    # Pass the REAL version through. The generator falls back to "unknown"
+    # without it, and it used to hardcode v6.0.0 -- printing a three-majors-stale
+    # version in the first artifact a user sees on the issue path.
+    prd_content=$(echo "$issue_json" | LOKI_VERSION="$(get_version)" generate_prd_from_issue)
 
     # Detached mode: fork to background
     if $run_detached; then

@@ -4724,7 +4724,7 @@ except Exception:
         if [ -n "$pr_url" ]; then
             printf '%-14s %s\n' "Pull request:" "$pr_url"
         elif [ "$outcome" = "complete" ]; then
-            printf '%-14s %s\n' "Pull request:" "not opened (set LOKI_DELEGATE_PR=1 to open one)"
+            printf '%-14s %s\n' "Pull request:" "not opened (no GitHub remote, gh not authed, or on a default branch)"
         fi
         printf '%-14s %s\n' "Tasks:" "pending=$pending in_progress=$in_progress completed=$completed failed=$failed"
         echo ""
@@ -5224,8 +5224,19 @@ except Exception:
 # both knobs never gets a double PR.
 #===============================================================================
 on_run_complete() {
-    # Default OFF.
-    if [ "${LOKI_DELEGATE_PR:-0}" != "1" ]; then
+    # DEFAULT ON as of v9.43.0.
+    #
+    # This shipped OFF, and the product literally printed "Pull request: not
+    # opened (set LOKI_DELEGATE_PR=1 to open one)" -- it knew what the user
+    # wanted and asked them to go read documentation instead of doing it. For
+    # the core use case ("I give it a GitHub issue and it resolves"), the PR IS
+    # the deliverable, so shipping it off meant shipping the product off.
+    #
+    # Safe to default on because every guard below was already built and is
+    # unchanged: requires a GitHub repo AND `gh auth status` AND a non-default
+    # branch; it opens a PR and NEVER merges; every call is best-effort so a
+    # failure cannot block completion. Opt out with LOKI_DELEGATE_PR=0.
+    if [ "${LOKI_DELEGATE_PR:-1}" != "1" ]; then
         return 0
     fi
     # Defer to the existing dedicated PR path to avoid a double PR.

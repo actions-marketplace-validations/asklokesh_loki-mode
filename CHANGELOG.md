@@ -5,6 +5,138 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.45.0
+
+The first artifact a user sees no longer misstates the product or ignores the
+user.
+
+### Fixed
+
+- **The generated PRD reported `Loki Mode CLI v6.0.0`.** A hardcoded literal at
+  `autonomy/issue-providers.sh`, printing on a v9.44.0 install: three majors
+  stale. This is the first file the `loki start owner/repo#123` path produces
+  and the document the agent then works from, so it is what a user reads in
+  their first five minutes. A product whose entire pitch is a verifiable receipt
+  cannot misreport its own version in its own first artifact.
+
+  The real version is now plumbed through from `get_version()` at the call site
+  (`autonomy/loki:10457`). Absent that, it reports `unknown` rather than a number
+  it cannot substantiate.
+
+- **Acceptance Criteria discarded the user's own requirements.** The section was
+  a fixed four-line list beginning "Address all requirements specified in the
+  issue body above". An issue whose body enumerated three specific checkboxes
+  had them rendered in the PRD and then overridden by that boilerplate in the
+  same document.
+
+  Checkboxes and numbered lists are now extracted from the issue body and become
+  the acceptance criteria. Measured on a real issue shape: three `- [ ]` items
+  in, three numbered criteria out.
+
+  **It never fabricates.** A body with no checklist still gets the default list,
+  and that output says so explicitly ("The issue body lists no explicit
+  checklist, so these are defaults") rather than presenting defaults as if the
+  user had written them.
+
+### Guard
+
+`tests/test-issue-prd-is-honest.sh` (7 assertions) drives the real generator
+rather than asserting on source text, and checks BOTH directions: a body with a
+checklist must surface the user's items and must not show filler, and a body
+without one must fall back AND label the fallback. Mutation-verified: restoring
+the hardcoded version goes red, and disabling extraction goes red.
+
+### Provenance
+
+From a 71-agent research fan-out against primary sources (1,298 tool uses, 0
+errors). Every claimed gap was adversarially verified: **61 claimed gaps -> 9
+BUILD, 31 not worth it, 19 already built, 1 unsourced.** An 85% kill rate is the
+point; most "missing" capabilities were already present.
+
+## v9.44.0
+
+An MCP tool that was broken on every call that did real work.
+
+### Fixed
+
+- **`loki_graph_query` raised `NameError: name 'subprocess' is not defined`.**
+  `mcp/server.py` imports `subprocess` inside `_maybe_autoreindex_code` (:1724)
+  and nowhere else. `loki_graph_query` called `subprocess.run` at :2578 with the
+  name in NO enclosing scope, so every invocation that reached a real graph
+  failed. Not a cross-repo edge case: single-repo too. The early-return path
+  (no graph present) returned before the call, which is why the tool looked
+  alive.
+
+  One line: a function-local `import subprocess`.
+
+  Guarded by `tests/mcp/test_graph_query_executes.py`, which drives the function
+  against a real graph rather than asserting on source text. Mutation-verified:
+  removing the import turns it red.
+
+### How it was found, and a correction I owe the record
+
+A research agent proposed wiring a cross-repo graph merge. Verifying that
+proposal REFUTED it (the existing `graphify` CLI already merges cross-repo, and
+`mcp/server.py:2566` already builds the merged path, so the wrapper would have
+been exactly the fix-shaped non-feature this project has shipped too many of)
+and uncovered this instead.
+
+I then wrongly refuted the agent's finding. I ran an AST check confirming a
+local `import subprocess` was present and concluded the tool worked. It was
+present because the agent had already patched the file; I validated the fix, not
+the bug. Checking the committed version showed the name in neither scope, and
+executing the original statement sequence reproduced `NameError` directly.
+
+The lesson is specific and worth keeping: when verifying a claim about code an
+agent may have touched, check the COMMITTED version, not the working tree.
+
+## v9.43.0
+
+The pull request is the deliverable. It no longer needs a flag.
+
+### Changed
+
+- **`LOKI_DELEGATE_PR` now defaults ON.** On completion the product used to
+  print `Pull request: not opened (set LOKI_DELEGATE_PR=1 to open one)`. It knew
+  exactly what the user wanted and asked them to go read documentation instead
+  of doing it. For the core use case -- hand it a GitHub issue and get a
+  resolution -- the PR IS the outcome, so shipping it off shipped the product
+  off.
+
+  **Nothing about the safety model changed.** Every guard was already built and
+  is unchanged: it requires a GitHub repo AND a successful `gh auth status` AND
+  a non-default branch, it opens a PR and NEVER merges, and every call is
+  best-effort so a failure cannot block completion. `LOKI_DELEGATE_PR=0` opts
+  out, and an explicit 0 is honored.
+
+  The completion line no longer advertises a flag that is now the default; it
+  names the actual reason a PR was not opened (no GitHub remote, gh not
+  authenticated, or on a default branch).
+
+### Why this release exists
+
+Measured against this repo's own history: **671 releases in eight months, 248
+fix-shaped and 37 feature-shaped.** The project has been repairing itself rather
+than shipping product. A separate measurement explains the retention gap that
+comes with that: **80 `LOKI_*` flags default OFF**, and they gate the best parts
+of the engine -- the auto-PR path, the simple-build fast path, the entire
+Bun/SDK route. A user installs, runs `loki start`, and gets the slow,
+unautomated version of a product whose good half is behind flags they have no
+reason to know exist.
+
+npm downloads are healthy and accelerating (1,819 in a day against 4,923 in the
+week). The defect is not discovery. It is what happens after install.
+
+This is the first of those defaults to flip. Each one is a separate release with
+its own guard, because a default that takes an ACTION is only safe while every
+condition around it holds.
+
+Guarded by `tests/test-auto-pr-default-on.sh` (7 assertions). It checks the
+default AND each safety condition individually, so a future edit that loosens
+the auth check or the default-branch check fails here. Mutation-verified in both
+directions: reverting the default goes red, and removing the gh-auth guard also
+goes red.
+
 ## v9.42.0
 
 A benchmark number that counted strings, an unbounded spend default, and a
