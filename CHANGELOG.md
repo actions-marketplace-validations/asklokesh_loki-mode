@@ -5,6 +5,49 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.46.0
+
+The agent was handed a manual with half its pages missing.
+
+### Fixed
+
+- **`copy_skill_files` copied skills and never copied their references.**
+  `autonomy/run.sh` copied `skills/*.md` into `.loki/skills/` and nothing, in
+  any file, copied `references/`. The copied skills cite `references/*.md`
+  **21 times across 8 files** (`skills/00-index.md` alone has 11), and every one
+  of those files exists in the repo. So the agent followed 21 dead paths every
+  run and silently lost guidance this function believed it had shipped.
+
+  Measured after the fix: 26 reference files copied, **0 dead cited paths**.
+
+- **The SKILL.md path rewrite named 8 filenames by hand.** It rewrote
+  `skills/00-index.md`, `skills/model-selection.md` and six siblings explicitly,
+  plus a `Read skills/` catchall. Three consequences, all silent: any NEW skill
+  kept an unrewritten path, a path written as "See skills/..." survived because
+  it is not "Read", and `references/` paths were never rewritten at all.
+
+  Replaced with one portable, idempotent transform: protect already-correct
+  `.loki/` prefixes with a sentinel, rewrite bare paths unconditionally, restore.
+  Measured: 17 rewritten paths, 0 bare paths left, no `.loki/.loki/` doubling.
+
+### The portability trap this nearly shipped with
+
+The obvious replacement is a single `sed -E 's|(^|[^.])skills/|\1.loki/skills/|g'`.
+**BSD sed rejects it** -- `RE error: parentheses not balanced` -- which fails
+SILENTLY on macOS and leaves every path unrewritten. It was caught by executing
+the function rather than reading it, and the guard now reproduces that exact
+mutation: substituting the `-E` form turns the suite red with "the rewrite is a
+no-op".
+
+### Guard
+
+`tests/test-skills-references-copied.sh` (6 assertions) EXECUTES
+`copy_skill_files` against the real repo rather than asserting on source text,
+and checks the thing that actually matters: every `references/` path cited by a
+copied skill must resolve inside `.loki/`. It guards against vacuity by
+asserting the skills still cite references at all. Mutation-verified both ways:
+removing the copy goes red, and the BSD-incompatible sed goes red.
+
 ## v9.45.0
 
 The first artifact a user sees no longer misstates the product or ignores the
