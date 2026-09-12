@@ -28950,7 +28950,7 @@ Loki Mode already implements more comprehensive versions of:
 | Recovery | RARV + circuit breakers + git checkpoints | Sisyphus: session recovery |
 | Quality Gates | 7 gates + blind review + devil's advocate | None comparable |
 | Enterprise Security | Audit logging, staged autonomy, path restrictions | Atom: BYOK |
-| Benchmarks | 98.78% HumanEval, 99.67% SWE-bench | SETA: 46.5% Terminal-Bench |
+| Benchmarks | 98.78% HumanEval, 99.67% SWE-bench [RETRACTED v9.42.0] | SETA: 46.5% Terminal-Bench |
 
 **Potential additions evaluated but rejected:**
 - LSP/AST integration (Sisyphus) - specialized feature, adds complexity without core value
@@ -29351,7 +29351,7 @@ Loki Mode already implements most research-backed patterns:
 | Dynamic tool selection | 5/10/15/20/all | [OK] By complexity (5 levels) |
 | Memory system | None | [OK] Episodic/Semantic/Procedural |
 | Anti-sycophancy | None | [OK] Blind review + Devil's Advocate |
-| Benchmarks | GAIA #1, HLE 37.1% | HumanEval 98.78%, SWE-bench 99.67% |
+| Benchmarks | GAIA #1, HLE 37.1% | HumanEval 98.78%, SWE-bench 99.67% [RETRACTED v9.42.0] |
 
 ---
 
@@ -29446,6 +29446,27 @@ Loki Mode already implements most research-backed patterns:
 
 ### Added - Loki Mode SWE-bench Benchmark (99.67% Patch Generation)
 
+> **CORRECTION, added 2026-09-12 (v9.42.0). The 99.67% figure below is wrong
+> and is retained only so the record is not quietly rewritten.**
+>
+> That number is `generated_count` = 299/300, a counter that incremented on any
+> NON-EMPTY model_patch string. Re-measuring the stored predictions
+> (`benchmarks/results/2026-01-05-10-37-54/`): **179 of 300 were prose, not
+> diffs** -- a model preamble followed by a fenced diff that the extractor never
+> stripped, because it only removed a fence at position 0. The format validator
+> then certified 178 of those 179, because its checks were substring tests over
+> the whole blob that prose quoting a diff satisfies.
+>
+> So 99.67% measured string non-emptiness. It was never a resolve rate, and it
+> was not an honest patch-generation rate either. **No corrected figure is
+> published here**, because producing one requires re-running the harness with
+> the fixed extractor; an estimate would repeat the original error of publishing
+> a number nobody measured.
+>
+> Fixed in v9.42.0: the extractor now finds a fenced diff anywhere, the
+> validator is anchored to line starts, and the counter requires a real diff
+> header. Guarded by `benchmarks/bench/tests/test_patch_extraction_not_prose.py`.
+
 **Full SWE-bench Lite Multi-Agent Benchmark** - 299/300 problems!
 
 | System | SWE-bench Patch Gen | Notes |
@@ -29504,6 +29525,13 @@ Loki Mode already implements most research-backed patterns:
 ## [2.23.0] - 2026-01-05
 
 ### Added - Full SWE-bench Lite Benchmark (300 Problems)
+
+> **RETRACTED 2026-09-12 (v9.42.0).** See the correction on the other SWE-bench
+> entry in this file. 99.67% is `generated_count` = 299/300, a counter that
+> incremented on any non-empty string; re-measuring the stored predictions found
+> **179 of 300 were prose, not diffs**. The figure measured string
+> non-emptiness. No corrected number is published, because one requires
+> re-running the harness with the fixed extractor.
 
 **99.67% Patch Generation on SWE-bench Lite** - 299/300 problems successfully generated patches!
 

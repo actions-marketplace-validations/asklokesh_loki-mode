@@ -1881,7 +1881,23 @@ for i, problem in enumerate(problems):
         if result["model_patch"]:
             f.write(result["model_patch"])
 
-    if result["model_patch"] and not (result.get("error") or "").startswith("Format"):
+    # Count a VALIDATED DIFF, not a non-empty string.
+    #
+    # MEASURED DEFECT: this used to increment on any non-empty model_patch. On
+    # the stored 300-instance run, 179 of 300 were prose (a preamble plus a
+    # fenced diff that clean_patch never extracted), and qa_agent's substring
+    # checks certified 178 of them. So generated_count counted strings, and the
+    # figure published as "99.67% patch generation" (299/300) was a count of
+    # non-empty strings that were 59.3% prose.
+    #
+    # A receipt that counts the wrong thing is the defect class this product
+    # exists to detect, so the counter now requires a real diff header at a line
+    # start -- the same structural test qa_agent uses.
+    _is_real_diff = bool(result["model_patch"]) and any(
+        _l.startswith(("--- ", "diff --git "))
+        for _l in (result["model_patch"] or "").splitlines()
+    )
+    if _is_real_diff and not (result.get("error") or "").startswith("Format"):
         generated_count += 1
         if result["attempts"] > 1:
             fixed_by_rarv += 1

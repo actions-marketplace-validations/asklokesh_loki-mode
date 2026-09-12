@@ -507,8 +507,27 @@ RESOURCE_CHECK_INTERVAL=${LOKI_RESOURCE_CHECK_INTERVAL:-300}  # Check every 5 mi
 RESOURCE_CPU_THRESHOLD=${LOKI_RESOURCE_CPU_THRESHOLD:-80}     # CPU % threshold
 RESOURCE_MEM_THRESHOLD=${LOKI_RESOURCE_MEM_THRESHOLD:-80}     # Memory % threshold
 
-# Budget / Cost Limit (opt-in, empty = unlimited)
-BUDGET_LIMIT=${LOKI_BUDGET_LIMIT:-""}  # USD amount, e.g., "50.00"
+# Budget / Cost Limit.
+#
+# DEFAULT-ON as of v9.42.0. This shipped as `""` (unlimited), and run.sh's own
+# F4 analysis names it as one of three runaway valves that all shipped
+# DISABLED: LOKI_BUDGET_LIMIT="" returns immediately, LOKI_MAX_DURATION=0 never
+# stops, leaving LOKI_MAX_ITERATIONS=1000 (a measured 8.3-DAY ceiling) as the
+# only backstop. A user who mistypes a spec, or hits a loop, had no cost
+# backstop at all.
+#
+# 100 USD, not a tight number. Measured envelope from 79 recorded benchmark
+# trials: median 0.48 USD/trial, max 3.06. A real build is far under this, so
+# the cap catches runaways, not ordinary work.
+#
+# SAFE BY CONSTRUCTION: breaching PAUSES (writes .loki/PAUSE and saves state);
+# it never kills work or discards a deliverable. The user removes .loki/PAUSE
+# to resume, or raises LOKI_BUDGET_LIMIT. Set LOKI_BUDGET_LIMIT="" to restore
+# the old unlimited behavior explicitly.
+BUDGET_LIMIT=${LOKI_BUDGET_LIMIT-"100.00"}  # USD. Note `-` not `:-`: an
+                                            # explicit empty value means the
+                                            # operator chose unlimited, and is
+                                            # honored.
 
 # Background Mode
 BACKGROUND_MODE=${LOKI_BACKGROUND:-false}                # Run in background
