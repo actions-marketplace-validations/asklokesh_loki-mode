@@ -5,6 +5,67 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.47.0
+
+A second repository the agent can actually read, plans that arrive whole, and
+the flake that blocked two releases.
+
+### Added
+
+- **`LOKI_ADD_DIRS` grants the agent read access to sibling repositories.**
+  Nothing in `autonomy/`, `providers/`, `loki-ts/src/` or `bin/` ever passed
+  `--add-dir` or `additionalDirectories` (0 files; positive control
+  `run_autonomous` = 7 files). An agent asked to change a shared type in
+  `../service-b` could not read it, did **not** error, and guessed, so the user
+  got a change that does not compile with no signal why.
+
+  Colon-separated, matching PATH convention, wired into the auto-flags builder
+  so every call site inherits it. Gated on CLI flag support, so an older CLI
+  degrades instead of erroring.
+
+  **A nonexistent entry is skipped WITH A WARNING, never passed through.** A
+  typo reaching the CLI aborts it and takes the whole run down, turning a
+  convenience into an outage; dropping it silently would reproduce the exact
+  silent-wrong-output defect being fixed.
+
+### Fixed
+
+- **A decomposed plan was capped at 3 tasks.** `load_queue_tasks` used
+  `tasks[:3]`, applied SEPARATELY to `in-progress.json` and `pending.json`, so a
+  release doc decomposed into 5 tasks silently lost 2 from each file. The agent
+  received a partial plan and was never told it was partial.
+
+  A count was the wrong bound anyway: one rich PRD task (300-char description
+  plus acceptance criteria plus a user story) can outweigh ten legacy one-liners.
+  The bound is now characters (`LOKI_QUEUE_TASK_CHARS`, default 6000), and
+  **truncation is disclosed in the prompt** instead of hidden. Measured: 5 tasks
+  in, 5 tasks out; at a tight budget, at least one task always survives and the
+  remainder is announced.
+
+- **The CI flake that blocked two releases.**
+  `tests/test-review-assurance-tail.sh` used
+  `quality_review="$(find ... -type d | head -1)"` under its own
+  `set -o pipefail`. `head -1` closes the pipe, `find` dies of SIGPIPE, and the
+  pipeline reports 141 even though the value was captured correctly.
+
+  It only fires once `find` emits enough output to fill the pipe buffer, so it is
+  **load-dependent**: the suite passed 44/0 locally every single time and failed
+  twice on a loaded CI shard. Reproduced directly: 4,000 entries through
+  `find | head -1` under pipefail returns **rc=141**. Replaced with a pipe-free
+  glob loop.
+
+  Verified that `while read ... done < <(cmd | head -N)` does NOT have this
+  defect (process substitution does not propagate the inner status: reads 40
+  lines, rc=0), so the same-shaped lines elsewhere are safe and were left alone
+  rather than changed cosmetically.
+
+### Guards
+
+`tests/test-add-dir-reaches-provider.sh` (7 assertions) and
+`tests/test-queue-tasks-not-truncated.sh` (6 assertions). Both drive the real
+code rather than asserting on source text, both carry a vacuity guard, and both
+are mutation-verified in both directions.
+
 ## v9.46.0
 
 The agent was handed a manual with half its pages missing.
