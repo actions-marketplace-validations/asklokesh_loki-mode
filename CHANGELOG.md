@@ -5,6 +5,43 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.44.0
+
+An MCP tool that was broken on every call that did real work.
+
+### Fixed
+
+- **`loki_graph_query` raised `NameError: name 'subprocess' is not defined`.**
+  `mcp/server.py` imports `subprocess` inside `_maybe_autoreindex_code` (:1724)
+  and nowhere else. `loki_graph_query` called `subprocess.run` at :2578 with the
+  name in NO enclosing scope, so every invocation that reached a real graph
+  failed. Not a cross-repo edge case: single-repo too. The early-return path
+  (no graph present) returned before the call, which is why the tool looked
+  alive.
+
+  One line: a function-local `import subprocess`.
+
+  Guarded by `tests/mcp/test_graph_query_executes.py`, which drives the function
+  against a real graph rather than asserting on source text. Mutation-verified:
+  removing the import turns it red.
+
+### How it was found, and a correction I owe the record
+
+A research agent proposed wiring a cross-repo graph merge. Verifying that
+proposal REFUTED it (the existing `graphify` CLI already merges cross-repo, and
+`mcp/server.py:2566` already builds the merged path, so the wrapper would have
+been exactly the fix-shaped non-feature this project has shipped too many of)
+and uncovered this instead.
+
+I then wrongly refuted the agent's finding. I ran an AST check confirming a
+local `import subprocess` was present and concluded the tool worked. It was
+present because the agent had already patched the file; I validated the fix, not
+the bug. Checking the committed version showed the name in neither scope, and
+executing the original statement sequence reproduced `NameError` directly.
+
+The lesson is specific and worth keeping: when verifying a claim about code an
+agent may have touched, check the COMMITTED version, not the working tree.
+
 ## v9.43.0
 
 The pull request is the deliverable. It no longer needs a flag.
