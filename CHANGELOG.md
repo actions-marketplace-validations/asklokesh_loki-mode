@@ -5,6 +5,53 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.43.0
+
+The pull request is the deliverable. It no longer needs a flag.
+
+### Changed
+
+- **`LOKI_DELEGATE_PR` now defaults ON.** On completion the product used to
+  print `Pull request: not opened (set LOKI_DELEGATE_PR=1 to open one)`. It knew
+  exactly what the user wanted and asked them to go read documentation instead
+  of doing it. For the core use case -- hand it a GitHub issue and get a
+  resolution -- the PR IS the outcome, so shipping it off shipped the product
+  off.
+
+  **Nothing about the safety model changed.** Every guard was already built and
+  is unchanged: it requires a GitHub repo AND a successful `gh auth status` AND
+  a non-default branch, it opens a PR and NEVER merges, and every call is
+  best-effort so a failure cannot block completion. `LOKI_DELEGATE_PR=0` opts
+  out, and an explicit 0 is honored.
+
+  The completion line no longer advertises a flag that is now the default; it
+  names the actual reason a PR was not opened (no GitHub remote, gh not
+  authenticated, or on a default branch).
+
+### Why this release exists
+
+Measured against this repo's own history: **671 releases in eight months, 248
+fix-shaped and 37 feature-shaped.** The project has been repairing itself rather
+than shipping product. A separate measurement explains the retention gap that
+comes with that: **80 `LOKI_*` flags default OFF**, and they gate the best parts
+of the engine -- the auto-PR path, the simple-build fast path, the entire
+Bun/SDK route. A user installs, runs `loki start`, and gets the slow,
+unautomated version of a product whose good half is behind flags they have no
+reason to know exist.
+
+npm downloads are healthy and accelerating (1,819 in a day against 4,923 in the
+week). The defect is not discovery. It is what happens after install.
+
+This is the first of those defaults to flip. Each one is a separate release with
+its own guard, because a default that takes an ACTION is only safe while every
+condition around it holds.
+
+Guarded by `tests/test-auto-pr-default-on.sh` (7 assertions). It checks the
+default AND each safety condition individually, so a future edit that loosens
+the auth check or the default-branch check fails here. Mutation-verified in both
+directions: reverting the default goes red, and removing the gh-auth guard also
+goes red.
+
 ## v9.42.0
 
 A benchmark number that counted strings, an unbounded spend default, and a
