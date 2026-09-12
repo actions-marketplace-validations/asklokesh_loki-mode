@@ -5,6 +5,71 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v9.40.0
+
+Authored reviewer personas now reach the prompt, and a shipped test that could
+silently invert itself.
+
+### Fixed
+
+- **All 41 agent types carry hand-written persona prose that was thrown away.**
+  `agents/types.json` gives every type a real authored persona ("You are a
+  senior backend engineer specializing in server-side development, API design,
+  and distributed systems..."). The selector SET that persona on the specialist
+  dict and the reviewers payload then copied only `name`, `focus` and `checks`,
+  so it was discarded before any prompt was built.
+
+  Nothing looked broken, which is why it survived: the role still reached the
+  reviewer through a SYNTHESIZED line ("Review from X perspective: ..."). What
+  was lost was the specific authored expertise that makes a specialist reviewer
+  worth more than a generic one.
+
+  Wired through all six sites: payload (built-in and installed specialists),
+  read-out, export, prompt interpolation, and unset. The persona leads the
+  prompt; the "Your SOLE focus is" constraint that keeps a blind reviewer in its
+  lane is untouched.
+
+  **Strictly additive.** A specialist with no persona, or a whitespace-only one,
+  produces a prompt byte-identical to the previous behavior. Verified by driving
+  the prompt logic directly in both directions.
+
+- **`tests/test-provider-arm-coverage.sh` (shipped in v9.39.0) contained a
+  latent self-inverting bug.** It used `printf '%s' "$blk" | grep -q ...` under
+  `set -o pipefail`. `grep -q` exits at the first match and closes the pipe, so
+  `printf` dies of SIGPIPE and pipefail reports the PIPELINE as failed even
+  though grep MATCHED.
+
+  It passed only because the provider case block is currently small enough that
+  printf finishes before grep exits. Demonstrated with input past the pipe
+  buffer: grep matches and the pipeline still returns 141. As the file grew, a
+  correct provider arm would have started reading as missing. Now greps a file
+  instead of a pipe.
+
+- **`agent-skills/README.md` claimed a runtime loader that does not exist.**
+  It stated "Agents automatically discover skills in this directory at runtime"
+  and showed `discover_agent_skills()`. That function exists nowhere in the
+  repository, and `agent-skills/` is in no distribution artifact, so nothing
+  reads those files on any route. Marked as a proposed pattern and design
+  sketch, pointing at `skills/` as the live system. Documentation fix; building
+  an unrequested loader would have been the wrong answer.
+
+### Guard
+
+`tests/test-reviewer-persona-reaches-prompt.sh` (6 assertions) checks the
+persona is carried AND that the focus constraint survives AND that an absent
+persona is byte-identical to before. It guards against vacuity by asserting
+that agents/types.json still carries personas at all, so it cannot pass while
+protecting nothing. Mutation-verified both directions.
+
+### How the second fix was found
+
+By writing the same trap twice. The SIGPIPE inversion was already recorded in
+this project's memory, and it was written into a new test anyway, where it broke
+four assertions against code proven correct. Passive memory did not intercept
+authoring, so the rule moved into a skill that runs as a checklist WHILE a guard
+is written. Applying that checklist to already-shipped tests found the live
+instance above. A rule that only fires after the failure is not a control.
+
 ## v9.39.0
 
 Three capabilities the product advertised and could not actually perform.

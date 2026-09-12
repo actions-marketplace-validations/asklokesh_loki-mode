@@ -15113,14 +15113,20 @@ reviewers = mandatory + [
         {
             "name": name,
             "focus": SPECIALISTS[name]["focus"],
-            "checks": SPECIALISTS[name]["checks"]
+            "checks": SPECIALISTS[name]["checks"],
+            # persona is hand-written prose from agents/types.json (all 41 types
+            # carry one). It was set on the specialist dict and then dropped
+            # here, so it never reached a prompt. Carried through with .get so a
+            # specialist without one is unaffected.
+            "persona": SPECIALISTS[name].get("persona", "")
         }
         for name in selected
     ] + [
         {
             "name": name,
             "focus": INSTALLED_SPECIALISTS[name]["focus"],
-            "checks": INSTALLED_SPECIALISTS[name]["checks"]
+            "checks": INSTALLED_SPECIALISTS[name]["checks"],
+            "persona": INSTALLED_SPECIALISTS[name].get("persona", "")
         }
         for name in installed_selected
     ]
@@ -15301,6 +15307,7 @@ REVIEW_SELECTION_RECORD
         reviewer_shard_index=$(echo "$dispatch_specialists" | python3 -c "import sys,json; print(json.load(sys.stdin)['reviewers'][$i]['shard_index'])")
         reviewer_focus=$(echo "$dispatch_specialists" | python3 -c "import sys,json; print(json.load(sys.stdin)['reviewers'][$i]['focus'])")
         reviewer_checks=$(echo "$dispatch_specialists" | python3 -c "import sys,json; print(json.load(sys.stdin)['reviewers'][$i]['checks'])")
+        reviewer_persona=$(echo "$dispatch_specialists" | python3 -c "import sys,json; print(json.load(sys.stdin)['reviewers'][$i].get('persona',''))")
         dispatch_names+=("$reviewer_name")
         dispatch_logical_indices+=("$reviewer_logical_index")
         dispatch_shard_indices+=("$reviewer_shard_index")
@@ -15310,6 +15317,7 @@ REVIEW_SELECTION_RECORD
         export LOKI_REVIEW_PROMPT_NAME="$reviewer_logical_name"
         export LOKI_REVIEW_PROMPT_FOCUS="$reviewer_focus"
         export LOKI_REVIEW_PROMPT_CHECKS="$reviewer_checks"
+        export LOKI_REVIEW_PROMPT_PERSONA="$reviewer_persona"
         export LOKI_REVIEW_PROMPT_DIFF_FILE="$diff_file"
         export LOKI_REVIEW_PROMPT_FILES_FILE="$files_file"
         export LOKI_REVIEW_PROMPT_TESTS_FILE="$loki_dir/quality/test-results.json"
@@ -15350,6 +15358,7 @@ from pathlib import Path
 name = os.environ["LOKI_REVIEW_PROMPT_NAME"]
 focus = os.environ["LOKI_REVIEW_PROMPT_FOCUS"]
 checks = os.environ["LOKI_REVIEW_PROMPT_CHECKS"]
+persona = os.environ.get("LOKI_REVIEW_PROMPT_PERSONA", "")
 
 with open(os.environ["LOKI_REVIEW_PROMPT_FILES_FILE"], "r") as f:
     files = f.read().strip()
@@ -15466,7 +15475,9 @@ metadata. This saves tokens without treating dependency changes as unreviewed.""
 - An ordinary missing test is Medium or Low unless it is tied to a cited changed high-impact trust boundary or explicit acceptance criterion.
 - Do not invent findings to satisfy the requested focus."""
 
-prompt = f"""You are {name}. Your SOLE focus is: {focus}.
+_persona_line = (persona.strip() + "\n\n") if persona.strip() else ""
+
+prompt = f"""{_persona_line}You are {name}. Your SOLE focus is: {focus}.
 
 Review ONLY for: {checks}.
 
@@ -15513,7 +15524,7 @@ BUILD_PROMPT
             return 1
         fi
         prompt_bindings+=("$built_prompt_sha")
-        unset LOKI_REVIEW_PROMPT_NAME LOKI_REVIEW_PROMPT_FOCUS LOKI_REVIEW_PROMPT_CHECKS
+        unset LOKI_REVIEW_PROMPT_NAME LOKI_REVIEW_PROMPT_FOCUS LOKI_REVIEW_PROMPT_CHECKS LOKI_REVIEW_PROMPT_PERSONA
         unset LOKI_REVIEW_PROMPT_DIFF_FILE LOKI_REVIEW_PROMPT_FILES_FILE
         unset LOKI_REVIEW_PROMPT_TESTS_FILE LOKI_REVIEW_PROMPT_BUILD_FILE
         unset LOKI_REVIEW_PROMPT_REQUIREMENTS_BUNDLE LOKI_REVIEW_PROMPT_HELPER
